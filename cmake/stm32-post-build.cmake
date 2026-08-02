@@ -1,6 +1,8 @@
 # Shared helpers for STM32 targets.
 # Generates a flash-only .bin + .hex from a target's .elf and prints a size report.
-# Concrete paths (no generator expressions) for maximum CMake-version robustness.
+# Concrete paths (no generator expressions) — gen-exprs in POST_BUILD errored on
+# CMake 4.4, and we target single-config generators (Make / Ninja single-config).
+# Multi-config (Ninja Multi-Config, Xcode) is NOT supported by this helper.
 
 function(pfm3_add_flash_artifacts target elf)
     get_filename_component(_dir "${elf}" DIRECTORY)

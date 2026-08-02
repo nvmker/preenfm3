@@ -47,7 +47,7 @@ _pfm3_find_program(CMAKE_AR           ar)
 _pfm3_find_program(CMAKE_RANLIB       ranlib)
 
 # Validate the toolchain generation once. This build is tuned for Arm GNU 15.x
-# (GCC-7-compat -Wno-error flags, the -Ofast/-ffast-math assumption, newlib 15).
+# (GCC-7-compat -Wno-error flags, Release -O2, newlib 15).
 if(NOT _PFM3_GCC_CHECKED)
     set(_PFM3_GCC_CHECKED TRUE CACHE INTERNAL "GCC version checked")
     execute_process(
