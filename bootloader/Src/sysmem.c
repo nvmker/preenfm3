@@ -50,6 +50,9 @@
 #include <errno.h>
 #include <stdio.h>
 
+/* newlib 15 no longer exposes caddr_t (char *); provide it locally. */
+typedef char *caddr_t;
+
 /* Variables */
 extern int errno;
 register char * stack_ptr asm("sp");

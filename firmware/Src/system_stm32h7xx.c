@@ -345,8 +345,8 @@ float fracn1, pllvco = 0 ;
 void SystemInit_ExtMemCtl(void)
 {
 #if defined (DATA_IN_ExtSDRAM)
-  register uint32_t tmpreg = 0, timeout = 0xFFFF;
-  register __IO uint32_t index;
+  uint32_t tmpreg = 0, timeout = 0xFFFF;
+  __IO uint32_t index;
 
   /* Enable GPIOD, GPIOE, GPIOF, GPIOG, GPIOH and GPIOI interface
       clock */
