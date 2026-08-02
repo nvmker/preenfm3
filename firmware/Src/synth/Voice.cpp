@@ -4365,11 +4365,11 @@ void Voice::fxAfterBlock() {
             }
             fxParamA1 = (fxParamTmp + 9.0f * fxParamA1) * .1f;
             // Low pass... on the Sampling rate
-            register float fxFreq = fxParamA1;
+            float fxFreq = fxParamA1;
 
-            register float *sp = this->sampleBlock;
+            float *sp = this->sampleBlock;
 
-            register float localPhase = fxPhase;
+            float localPhase = fxPhase;
 
             //        localPower = fxParam1 = pow(2, (int)(1.0f + 15.0f * params.effect.param2));
             //        localStep = fxParam2 = 1 / fxParam1;
@@ -4383,11 +4383,11 @@ void Voice::fxAfterBlock() {
             fxParamB1 = param2Sum;
             fxParamB2 = effectTypeF;
 
-            register float localPower = fxParam1;
-            register float localStep = fxParam2;
+            float localPower = fxParam1;
+            float localStep = fxParam2;
 
-            register float localv0L = v0L;
-            register float localv0R = v0R;
+            float localv0L = v0L;
+            float localv0R = v0R;
 
             for (int k = 0; k < BLOCK_SIZE; k++) {
                 localPhase += fxFreq;
@@ -4395,8 +4395,8 @@ void Voice::fxAfterBlock() {
                     localPhase -= 1.0f;
                     // Simulate floor by making the conversion always positive
                     // simplify version
-                    register int iL = (*sp) * localPower + .75f;
-                    register int iR = (*(sp + 1)) * localPower + .75f;
+                    int iL = (*sp) * localPower + .75f;
+                    int iR = (*(sp + 1)) * localPower + .75f;
                     localv0L = localStep * iL;
                     localv0R = localStep * iR;
                 }
