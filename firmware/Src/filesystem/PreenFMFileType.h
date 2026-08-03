@@ -57,6 +57,7 @@ enum FILE_ENUM {
 
 #ifndef BOOTLOADER
 #define NUMBEROFDX7BANKS 256
+#define NUMBEROFDX7SUBDIRS 256
 #define NUMBEROFPREENFMBANKS 128
 #define NUMBEROFPREENFMMIXERS 128
 #define NUMBEROFPREENFMSEQUENCES 128
@@ -68,6 +69,7 @@ enum FILE_ENUM {
 
 #ifdef BOOTLOADER
 #define NUMBEROFDX7BANKS 1
+#define NUMBEROFDX7SUBDIRS 1
 #define NUMBEROFPREENFMBANKS 1
 #define NUMBEROFPREENFMMIXERS 1
 #define NUMBEROFSCALASCALEFILES 1
@@ -197,6 +199,9 @@ protected:
 
     int initFiles();
     int readNextFile(struct PFM3File *bank);
+    // Enumerate immediate subdirectories of `path` into `out` (up to `cap`).
+    // Reused by the DX7 folder picker; the future browser calls it at any depth.
+    int enumerateSubDirs(const char* path, struct PFM3File* out, int cap);
 
     void swapFiles(struct PFM3File *bankFiles, int i, int j);
     void sortFiles(struct PFM3File *bankFiles, int numberOfFiles);

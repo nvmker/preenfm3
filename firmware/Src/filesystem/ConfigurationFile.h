@@ -21,6 +21,7 @@
 
 #include "PreenFMFileType.h"
 #include "ScalaFile.h"
+#include "DX7SysexFile.h"
 
 class ConfigurationFile: public PreenFMFileType {
 public:
@@ -31,11 +32,17 @@ public:
 	void loadConfig(uint8_t* midiConfigBytes);
 	void saveConfig(uint8_t* midiConfigBytes);
 
+	// Lets the config parser read/write the DX7 folder picker state.
+	void setDX7SysexFile(DX7SysexFile *dx7SysexFile) { dx7SysexFile_ = dx7SysexFile; }
+
 protected:
 	const char* getFolderName();
 	bool isCorrectFile(char *name, int size) { return true; }
 
 	void fillMidiConfig(uint8_t* midiConfigBytes, char* line);
+
+private:
+	DX7SysexFile *dx7SysexFile_;
 };
 
 #endif /* CONFIGURATIONFILE_H_ */
