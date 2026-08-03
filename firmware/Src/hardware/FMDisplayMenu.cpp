@@ -204,6 +204,14 @@ void FMDisplayMenu::encoderTurned(int currentTimbre, int encoder, int ticks) {
                 }
             }
             break;
+        case MENU_PRESET_LOAD_SELECT_DX7_FOLDER:
+            if (encoder == 0) {
+                int dx7DirCount = synthState_->getStorage()->getDX7SysexFile()->getSubDirCount();
+                if (dx7DirCount > 0) {
+                    changePresetSelect(&fullState->dx7FolderNumber, ticks, dx7DirCount - 1);
+                }
+            }
+            break;
         case MENU_SD_RENAME_MIXER_SELECT_FILE:
         case MENU_MIXER_SAVE_SELECT:
         case MENU_MIXER_LOAD_SELECT:
@@ -635,6 +643,47 @@ void FMDisplayMenu::buttonPressed(int currentTimbre, int button) {
         }
     }
 
+    // DX7 folder picker transitions
+    if (nextMenu->menuState == MENU_PRESET_LOAD_SELECT_DX7_FOLDER) {
+        // Entering the picker: enumerate the root's subfolders now
+        int dx7DirCount = synthState_->getStorage()->getDX7SysexFile()->initSubDirs();
+        if (dx7DirCount == 0) {
+            // Flat root (no subfolders): read .syx directly from root, skip picker
+            synthState_->getStorage()->getDX7SysexFile()->selectRoot();
+            fullState->dx7BankNumber = 0;
+            fullState->dx7PresetNumber = 0;
+            nextMenu = MenuItemUtil::getMenuItem(MENU_PRESET_LOAD_SELECT_DX7_BANK);
+        } else {
+            // Restore cursor to the persisted folder; if it no longer exists (stale dx7current),
+            // fall back to the root so we never read from a ghost path.
+            const char *sel = synthState_->getStorage()->getDX7SysexFile()->getSelectedSubDir();
+            int matched = -1;
+            if (sel[0] != 0) {
+                for (int i = 0; i < dx7DirCount; i++) {
+                    const char *name = synthState_->getStorage()->getDX7SysexFile()->getSubDir(i)->name;
+                    int j = 0;
+                    while (name[j] != 0 && name[j] == sel[j]) { j++; }
+                    if (name[j] == 0 && sel[j] == 0) { matched = i; break; }
+                }
+            }
+            if (matched >= 0) {
+                fullState->dx7FolderNumber = matched;
+            } else {
+                synthState_->getStorage()->getDX7SysexFile()->selectRoot();
+                fullState->dx7FolderNumber = 0;
+            }
+        }
+    } else if (oldMenu == MENU_PRESET_LOAD_SELECT_DX7_FOLDER && nextMenu->menuState == MENU_PRESET_LOAD_SELECT_DX7_BANK) {
+        // User confirmed a folder: apply selection and persist it
+        synthState_->getStorage()->getDX7SysexFile()->selectSubDir(fullState->dx7FolderNumber);
+        fullState->dx7BankNumber = 0;
+        fullState->dx7PresetNumber = 0;
+        // Persistence disabled: saveConfig's SD write (remove+save of PROPERTIES)
+        // hangs in this GCC15 -O2 build — reproduces from Menu>Config save too.
+        // Re-enable once the SD-write regression is fixed.
+        // synthState_->getStorage()->getConfigurationFile()->saveConfig(fullState->midiConfigValue);
+    }
+
     // Action depending on Next menu
     updatePreviousChoice(nextMenu->menuState);
 
@@ -930,6 +979,12 @@ void FMDisplayMenu::displayMenuState(FullState *fullState) {
             tft_->setCursorInPixel(1 * TFT_BIG_CHAR_WIDTH, 8 * TFT_BIG_CHAR_HEIGHT + 6);
             tft_->printSmallChars("d - save in mixer");
             break;
+        case MENU_PRESET_LOAD_SELECT_DX7_FOLDER:
+            tft_->setCursorInPixel(1 * TFT_BIG_CHAR_WIDTH, 6 * TFT_BIG_CHAR_HEIGHT + 6);
+            tft_->printSmallChars("a - dx7 folder");
+            tft_->setCursorInPixel(1 * TFT_BIG_CHAR_WIDTH, 8 * TFT_BIG_CHAR_HEIGHT + 6);
+            tft_->printSmallChars("1 - open folder");
+            break;
         case MENU_PRESET_LOAD_SELECT_DX7_BANK:
             tft_->setCursorInPixel(1 * TFT_BIG_CHAR_WIDTH, 6 * TFT_BIG_CHAR_HEIGHT + 6);
             tft_->printSmallChars("a - dx7 sysex file");
@@ -999,6 +1054,14 @@ void FMDisplayMenu::newMenuSelect(FullState *fullState) {
     int length;
 
     switch (fullState->currentMenuItem->menuState) {
+        case MENU_PRESET_LOAD_SELECT_DX7_FOLDER:
+            if (fullState->dx7FolderNumber < synthState_->getStorage()->getDX7SysexFile()->getSubDirCount()) {
+                displayBankSelect(fullState->dx7FolderNumber, true, synthState_->getStorage()->getDX7SysexFile()->getSubDir(fullState->dx7FolderNumber)->name);
+            } else {
+                displayBankSelect(fullState->dx7FolderNumber, false, "");
+            }
+            displayPatchSelect(0, 0);
+            break;
         case MENU_PRESET_LOAD_SELECT_DX7_BANK:
             displayBankSelect(fullState->dx7BankNumber, (fullState->preenFMBank->fileType != FILE_EMPTY), fullState->preenFMBank->name);
             if (fullState->preenFMBank->fileType != FILE_EMPTY) {

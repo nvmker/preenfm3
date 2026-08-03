@@ -61,6 +61,7 @@ enum MenuState {
     MENU_PRESET_SAVE_ENTER_NAME,
     MENU_PRESET_LOAD_SELECT,
     MENU_PRESET_LOAD_SELECT_DX7_BANK,
+    MENU_PRESET_LOAD_SELECT_DX7_FOLDER,
 
     MENU_PRESET_RANDOMIZER,
     MENU_PRESET_NEW,
@@ -168,6 +169,7 @@ struct FullState {
 
     uint16_t dx7BankNumber;
     uint8_t dx7PresetNumber;
+    uint8_t dx7FolderNumber;
     const struct PFM3File *dx7Bank;
     struct Randomizer randomizer;
     uint8_t mixerCurrentEdit;

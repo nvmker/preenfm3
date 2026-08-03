@@ -383,10 +383,15 @@ void SynthState::loadPreset(int timbre, PFM3File const *bank, int patchNumber, s
 }
 
 void SynthState::loadDx7Patch(int timbre, PFM3File const *bank, int patchNumber, struct OneSynthParams* params) {
+    uint8_t *dx7PackedPatch = storage->getDX7SysexFile()->dx7LoadPatch(bank, patchNumber);
+    if (dx7PackedPatch == 0) {
+        // Bank/patch unavailable (missing root, empty folder, short read): leave the engine untouched.
+        return;
+    }
     storeTestNote();
     propagateNoteOff();
     propagateBeforeNewParamsLoad(timbre);
-    hexter->loadHexterPatch(storage->getDX7SysexFile()->dx7LoadPatch(bank, patchNumber), params);
+    hexter->loadHexterPatch(dx7PackedPatch, params);
     propagateAfterNewParamsLoad(timbre);
     restoreTestNote();
 }
