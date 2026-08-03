@@ -27,14 +27,20 @@ set(CMAKE_CXX_EXTENSIONS ON)        # gnu++14
 set(CMAKE_C_FLAGS_DEBUG        "-Og -g3" CACHE STRING "" FORCE)
 set(CMAKE_CXX_FLAGS_DEBUG      "-Og -g3" CACHE STRING "" FORCE)
 set(CMAKE_ASM_FLAGS_DEBUG      "-g3"     CACHE STRING "" FORCE)
-# GCC 15 -Ofast / -O3 miscompile this firmware (verified on hardware: both
-# hang at boot — GCC 15's -O3 vectorization/inlining trips latent UB in the
-# hand-tuned synth DSP; GCC 7 ran -Ofast fine). -O2 is the verified-working
-# level (boots + runs). To recover more perf later, bisect -O3 flags
-# (e.g. -O3 -fno-tree-vectorize).
-set(CMAKE_C_FLAGS_RELEASE      "-O2"  CACHE STRING "" FORCE)
-set(CMAKE_CXX_FLAGS_RELEASE    "-O2"  CACHE STRING "" FORCE)
-set(CMAKE_ASM_FLAGS_RELEASE    ""        CACHE STRING "" FORCE)
+# Historically GCC 15 -O3/-Ofast hard-faulted at boot. Root cause (found on
+# hardware via SWD, branch fix/o3-and-config-save): unaligned float stores in
+# Sequencer state serialization (*(float*)&buf[i] at odd offsets). At -O3 GCC
+# vectorizes those into `vstr`, which traps on misalignment on Cortex-M7
+# (CFSR.UNALIGNED -> HardFault). Fixed with unaligned-safe memcpy helpers, so
+# -O3 now boots and runs; -O2 remains the default for now.
+#
+# The Release optimization level is exposed as PFM3_RELEASE_OPT so a -O3 (or
+# -O3 -fno-tree-vectorize, etc.) build can be produced without editing this
+# file: configure a separate build dir with -DPFM3_RELEASE_OPT=-O3.
+set(PFM3_RELEASE_OPT "-O2" CACHE STRING "Release optimization level for C/C++")
+set(CMAKE_C_FLAGS_RELEASE      "${PFM3_RELEASE_OPT}" CACHE STRING "" FORCE)
+set(CMAKE_CXX_FLAGS_RELEASE    "${PFM3_RELEASE_OPT}" CACHE STRING "" FORCE)
+set(CMAKE_ASM_FLAGS_RELEASE    ""                     CACHE STRING "" FORCE)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type (Debug|Release)" FORCE)
