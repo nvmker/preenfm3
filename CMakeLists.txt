@@ -31,13 +31,14 @@ set(CMAKE_ASM_FLAGS_DEBUG      "-g3"     CACHE STRING "" FORCE)
 # hardware via SWD, branch fix/o3-and-config-save): unaligned float stores in
 # Sequencer state serialization (*(float*)&buf[i] at odd offsets). At -O3 GCC
 # vectorizes those into `vstr`, which traps on misalignment on Cortex-M7
-# (CFSR.UNALIGNED -> HardFault). Fixed with unaligned-safe memcpy helpers, so
-# -O3 now boots and runs; -O2 remains the default for now.
+# (CFSR.UNALIGNED -> HardFault). Fixed with unaligned-safe memcpy helpers;
+# -O3 and -Ofast now boot and run on hardware (verified: SysTick advances,
+# CFSR/HFSR clear). -Ofast is the default Release level.
 #
-# The Release optimization level is exposed as PFM3_RELEASE_OPT so a -O3 (or
-# -O3 -fno-tree-vectorize, etc.) build can be produced without editing this
-# file: configure a separate build dir with -DPFM3_RELEASE_OPT=-O3.
-set(PFM3_RELEASE_OPT "-O2" CACHE STRING "Release optimization level for C/C++")
+# The Release optimization level is exposed as PFM3_RELEASE_OPT, so a lower
+# level (-O2, -O3, -O3 -fno-tree-vectorize, ...) can be built without editing
+# this file: configure a separate build dir with -DPFM3_RELEASE_OPT=-O2.
+set(PFM3_RELEASE_OPT "-Ofast" CACHE STRING "Release optimization level for C/C++ (default -Ofast; -O2/-O3 also supported)")
 set(CMAKE_C_FLAGS_RELEASE      "${PFM3_RELEASE_OPT}" CACHE STRING "" FORCE)
 set(CMAKE_CXX_FLAGS_RELEASE    "${PFM3_RELEASE_OPT}" CACHE STRING "" FORCE)
 set(CMAKE_ASM_FLAGS_RELEASE    ""                     CACHE STRING "" FORCE)
