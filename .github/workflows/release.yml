@@ -1,0 +1,125 @@
+# Release: build firmware + bootloader, package pfm3_firmware_<ver>.zip
+# (mirroring the reference release layout + .sh flashers), and publish a
+# GitHub Release with auto-generated notes. Triggered by a v* tag push OR a
+# manual workflow_dispatch whose version must match the firmware header.
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 1.04 (must match version.h)"
+        required: true
+        type: string
+
+permissions:
+  contents: write # create the release + tag
+
+# Serialize ALL release runs (key on workflow name, not github.ref, so a tag
+# push and a same-version dispatch can't race to a double release). Releases
+# are rare + quick, so global serialization is an acceptable safety trade.
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  # Fail fast on a tag/input vs. version.h mismatch BEFORE the build runs.
+  precheck:
+    name: Resolve + assert version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # User/server-influenced values go through env (never inline ${{ }} in a
+      # run body) to avoid script injection via the dispatch input / tag name.
+      - name: Resolve tag + expected version
+        id: ver
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "push" ]; then
+            tag="$REF_NAME"   # refs/tags/v1.04 -> v1.04
+          else
+            in="$INPUT_VERSION"        # e.g. 1.04 (or v1.04)
+            in="${in//[[:space:]]/}"   # no valid version contains whitespace
+            in="${in#[vV]}"            # normalize: strip a leading v
+            tag="v$in"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "expected_raw=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Assert tag matches firmware/Inc/version.h
+        env:
+          EXPECTED_RAW: ${{ steps.ver.outputs.expected_raw }}
+        run: |
+          set -euo pipefail
+          out="$(scripts/ci/parse-versions.sh)"   # capture (don't eval empty)
+          eval "$out"
+          : "${FWRaw:?empty firmware version}"
+          # Compare on leading-v-stripped form so the prefix convention
+          # can't cause a misleading mismatch.
+          exp="${EXPECTED_RAW#[vV]}"
+          got="${FWRaw#[vV]}"
+          echo "expected (tag/input): $exp | firmware header: $got"
+          if [ "$exp" != "$got" ]; then
+            msg="mismatch: tag/input '$exp' != version.h '$got'"
+            echo "::error::$msg (bump version.h to match, re-run)"
+            exit 1
+          fi
+
+  build:
+    name: Build (Release)
+    needs: precheck
+    uses: ./.github/workflows/build.yml
+
+  release:
+    name: Stage + publish
+    needs: [precheck, build]
+    runs-on: ubuntu-latest
+    env:
+      FW: ${{ needs.build.outputs.fw_version }}
+      BL: ${{ needs.build.outputs.bl_version }}
+      ZIP: pfm3_firmware_${{ needs.build.outputs.fw_version }}.zip
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: preenfm3-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifacts
+
+      - name: Stage + zip release folder
+        run: |
+          set -euo pipefail
+          echo "=== downloaded artifacts ==="
+          find artifacts -type f -print
+          stage="$(mktemp -d)"
+          scripts/ci/stage-release.sh "$stage" "$FW" "$BL" \
+            artifacts/firmware/preenfm3.bin \
+            artifacts/bootloader/bootloader.bin
+          out="$GITHUB_WORKSPACE/$ZIP"
+          ( cd "$stage" && zip -r "$out" "pfm3_firmware_$FW" )
+          echo "=== zip contents ==="
+          unzip -l "$ZIP"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.precheck.outputs.tag }}
+          name: ${{ needs.precheck.outputs.tag }}
+          files: ${{ env.ZIP }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
