@@ -74,7 +74,7 @@ $(CMAKE_CACHE): CMakeLists.txt $(TOOLCHAIN_FILE) \
         flash flash-firmware flash-bootloader \
         flash-debug flash-firmware-debug flash-bootloader-debug \
         program program-firmware program-bootloader \
-        program-debug program-firmware-debug program-bootloader-debug
+        program-debug program-firmware-debug program-bootloader-debug test
 
 # Release: clean rebuild into build/release/ (default BUILD_DIR / BUILD_TYPE=Release).
 # Wipes only build/release/ (build/debug/ is left intact), then reconfigures and
@@ -107,6 +107,19 @@ lib: $(CMAKE_CACHE)
 # Remove the entire build/ tree (all configs: release, debug, ...).
 clean:
 	rm -rf build
+
+# --- Host-side unit tests (GoogleTest) --------------------------------------
+# Separate CMake project under tests/ — built with the HOST compiler (g++),
+# NOT arm-none-eabi-g++. Configured with NO -DCMAKE_TOOLCHAIN_FILE: the Arm
+# toolchain file applies tree-wide and can't co-exist with a host test build
+# (see tests/README.md). Reuses build/test/ if present (cmake -B is idempotent);
+# removed by `make clean` (build/test/ lives under build/).
+TEST_DIR ?= build/test
+
+test:
+	cmake -B $(TEST_DIR) -S tests
+	cmake --build $(TEST_DIR) -j
+	ctest --test-dir $(TEST_DIR) --output-on-failure
 
 # --- Flashing ---------------------------------------------------------------
 # `flash` = DFU (dfu-util, USB DFU mode); `program` = OpenOCD (debug probe; the
