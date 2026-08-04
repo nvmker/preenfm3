@@ -43,6 +43,7 @@ SynthState::SynthState() {
     fullState.preenFMMixerPresetNumber = 0;
     fullState.dx7BankNumber = 0;
     fullState.dx7PresetNumber = 0;
+    fullState.dx7FolderNumber = 0;
     // Default pfm3 edit page
     fullState.mainPage = -1;
     fullState.editPage = 0;
@@ -383,13 +384,19 @@ void SynthState::loadPreset(int timbre, PFM3File const *bank, int patchNumber, s
 }
 
 void SynthState::loadDx7Patch(int timbre, PFM3File const *bank, int patchNumber, struct OneSynthParams* params) {
-    uint8_t *dx7PackedPatch = storage->getDX7SysexFile()->dx7LoadPatch(bank, patchNumber);
-    if (dx7PackedPatch == 0) {
-        // Bank/patch unavailable (missing root, empty folder, short read): leave the engine untouched.
-        return;
-    }
+    // Silence the current note BEFORE the (blocking) SD read so the old patch
+    // doesn't keep sounding during the FatFS call — same ordering as loadPreset().
     storeTestNote();
     propagateNoteOff();
+
+    uint8_t *dx7PackedPatch = storage->getDX7SysexFile()->dx7LoadPatch(bank, patchNumber);
+    if (dx7PackedPatch == 0) {
+        // Bank/patch unavailable (missing root, empty folder, short read): leave
+        // the engine untouched — resume the audition note (no-op if none was
+        // playing) so the failed load is a true no-op.
+        restoreTestNote();
+        return;
+    }
     propagateBeforeNewParamsLoad(timbre);
     hexter->loadHexterPatch(dx7PackedPatch, params);
     propagateAfterNewParamsLoad(timbre);
