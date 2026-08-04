@@ -57,6 +57,13 @@ OOCD_TARGET    ?= target/stm32h7x.cfg
 # Reconfigure only when the cache is missing or any CMakeLists / toolchain file
 # changes. cmake -B is idempotent, so this is safe and skips on incremental builds.
 CMAKE_CACHE := $(BUILD_DIR)/CMakeCache.txt
+
+# Default goal: bare `make` does a clean Release rebuild of both images (the
+# `all` target), NOT the configure-only $(CMAKE_CACHE) rule below. Without this
+# GNU make's default goal would be that first rule and `make` would only run
+# `cmake -B` without building anything.
+.DEFAULT_GOAL := all
+
 $(CMAKE_CACHE): CMakeLists.txt $(TOOLCHAIN_FILE) \
                 firmware/CMakeLists.txt bootloader/CMakeLists.txt lib/CMakeLists.txt \
                 cmake/stm32-post-build.cmake

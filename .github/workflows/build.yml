@@ -66,10 +66,10 @@ jobs:
           echo "$tc_bin" >> "$GITHUB_PATH"
           "$tc_bin/arm-none-eabi-gcc" --version
 
-      # `make` (== `all`) wipes build/release/ then builds both images.
-      # The toolchain file resolves arm-none-eabi-* from PATH.
+      # `make all` wipes build/release/ then builds both images (clean Release
+      # rebuild). Explicit `all` - don't rely on the Makefile's default goal.
       - name: Build firmware + bootloader (Release)
-        run: make
+        run: make all
 
       - name: Parse versions from headers
         id: versions
