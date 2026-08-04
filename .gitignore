@@ -4,6 +4,9 @@
 # Legacy STM32CubeIDE artifacts (kept for reference; build is now CMake-only)
 **/DebugLQFP*
 **/Release*
+# release.yml is caught by **/Release* on case-insensitive filesystems
+# (macOS core.ignorecase=true); un-ignore it so the workflow ships.
+!.github/workflows/release.yml
 **/pfm3_firmware*
 TODO.txt
 README.txt

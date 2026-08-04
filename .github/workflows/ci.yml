@@ -1,0 +1,23 @@
+# CI: build every push + pull request. Calls the reusable build workflow.
+# For firmware, "test" == the cross-compile + link + artifact generation
+# succeeds — there is no hardware-in-the-loop test in CI.
+name: ci
+
+on:
+  push:
+    branches: ["**"] # all branches; tags excluded (release.yml owns v*)
+  pull_request:
+
+permissions:
+  contents: read
+
+# Cancel a superseded in-flight run for the same ref, but never cancel runs
+# on main (those should always complete).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  build:
+    name: Build (Release)
+    uses: ./.github/workflows/build.yml
