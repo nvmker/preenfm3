@@ -33,7 +33,7 @@ jobs:
     outputs:
       tag: ${{ steps.ver.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -91,7 +91,7 @@ jobs:
       BL: ${{ needs.build.outputs.bl_version }}
       ZIP: pfm3_firmware_${{ needs.build.outputs.fw_version }}.zip
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
