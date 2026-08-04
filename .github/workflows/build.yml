@@ -1,0 +1,100 @@
+# Reusable preenfm3 cross-build. Called by ci.yml (push/PR) and release.yml
+# (tag/dispatch). One build definition, two trigger policies, no duplication.
+#
+# Installs Arm GNU Toolchain 15.x (cached), builds firmware + bootloader in
+# Release via the top-level Makefile wrapper, parses the version headers,
+# exposes fw/bl versions as outputs, and uploads the .bin + .hex.
+name: build
+
+on:
+  workflow_call:
+    outputs:
+      fw_version:
+        description: "Firmware version, file form (e.g. 1_03)"
+        value: ${{ jobs.build.outputs.fw_version }}
+      bl_version:
+        description: "Bootloader version, file form (e.g. 1_09)"
+        value: ${{ jobs.build.outputs.bl_version }}
+
+permissions:
+  contents: read
+
+# Bump TOOLCHAIN_VER and the cache key together. 15.x is required by
+# doc/BUILDING.md; the apt gcc-arm-none-eabi is far older and misbuilds.
+env:
+  TOOLCHAIN_VER: "15.2.rel1"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      fw_version: ${{ steps.versions.outputs.FW }}
+      bl_version: ${{ steps.versions.outputs.BL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Cache Arm GNU Toolchain
+        id: cache-tc
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/arm-gnu-${{ env.TOOLCHAIN_VER }}
+          key: arm-gnu-toolchain-${{ env.TOOLCHAIN_VER }}-x86_64-arm-none-eabi
+
+      - name: Install Arm GNU Toolchain
+        if: steps.cache-tc.outputs.cache-hit != 'true'
+        env:
+          RUNNER_TOOL_CACHE: ${{ runner.tool_cache }}
+        run: |
+          set -eux
+          dest="$RUNNER_TOOL_CACHE/arm-gnu-$TOOLCHAIN_VER"
+          mkdir -p "$dest"
+          base="https://developer.arm.com/-/media/Files/downloads/gnu"
+          url="$base/$TOOLCHAIN_VER/binrel/"
+          url+="arm-gnu-toolchain-$TOOLCHAIN_VER-x86_64-arm-none-eabi.tar.xz"
+          curl -L --fail "$url" -o /tmp/tc.tar.xz
+          tar -xf /tmp/tc.tar.xz -C "$dest" --strip-components=1
+          rm -f /tmp/tc.tar.xz
+          "$dest/bin/arm-none-eabi-gcc" --version
+
+      - name: Add toolchain to PATH
+        env:
+          RUNNER_TOOL_CACHE: ${{ runner.tool_cache }}
+        run: |
+          tc_bin="$RUNNER_TOOL_CACHE/arm-gnu-$TOOLCHAIN_VER/bin"
+          echo "$tc_bin" >> "$GITHUB_PATH"
+          "$tc_bin/arm-none-eabi-gcc" --version
+
+      # `make all` wipes build/release/ then builds both images (clean Release
+      # rebuild). Explicit `all` - don't rely on the Makefile's default goal.
+      - name: Build firmware + bootloader (Release)
+        run: make all
+
+      - name: Parse versions from headers
+        id: versions
+        run: |
+          set -euo pipefail
+          # Capture first: eval of empty stdout would mask a parse failure.
+          out="$(scripts/ci/parse-versions.sh)"
+          eval "$out"
+          : "${FW:?empty FW version}" "${BL:?empty BL version}"
+          echo "firmware: $FWRaw (file form: $FW)"
+          echo "bootloader: $BLRaw (file form: $BL)"
+          {
+            echo "FW=$FW"
+            echo "BL=$BL"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          # Unique across re-runs so v4 accepts the upload.
+          name: preenfm3-build-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/release/firmware/preenfm3.bin
+            build/release/firmware/preenfm3.hex
+            build/release/bootloader/bootloader.bin
+            build/release/bootloader/bootloader.hex
+          if-no-files-found: error
+          retention-days: 30
