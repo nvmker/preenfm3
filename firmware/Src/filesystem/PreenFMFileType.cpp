@@ -45,6 +45,9 @@ const char* PreenFMFileType::getFileName(FILE_ENUM file) {
             return PROPERTIES_NAME;
         case MIDI_CONTROLLER_STATE:
             return MIDI_CONTROLLER_STATE_NAME;
+        case FIRMWARE:
+        default:
+            return FIRMWARE_DIR;
     }
 }
 
@@ -67,7 +70,7 @@ const char* PreenFMFileType::getFullName(const char *fileName) {
 }
 
 int PreenFMFileType::remove(FILE_ENUM file) {
-    f_unlink(getFileName(file));
+    return (int) f_unlink(getFileName(file));
 }
 
 int PreenFMFileType::load(FILE_ENUM file, int seek, void *bytes, int size) {

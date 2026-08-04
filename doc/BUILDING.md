@@ -22,8 +22,10 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake \
 ## Configure & build
 
 ```sh
-# Release (default; -O2 — NOT -Ofast/-O3: GCC 15 miscompiles the firmware → boot hang)
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake -DCMAKE_BUILD_TYPE=Release
+# Release (default; -Ofast). To use a lower optimization level instead, pass
+# -DPFM3_RELEASE_OPT=-O2 (or -O3) at configure time:
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake -DCMAKE_BUILD_TYPE=Release \
+      -DPFM3_RELEASE_OPT=-O2
 cmake --build build -j            # add -G Ninja at configure time for faster builds
 
 # Debug (-Og -g3 -DDEBUG)
