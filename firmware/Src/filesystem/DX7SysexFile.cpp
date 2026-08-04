@@ -20,19 +20,39 @@
 
 __attribute__((section(".ram_d2b")))  uint8_t dx7PackedPatch[DX7_PACKED_PATCH_SIZED];
 __attribute__((section(".ram_d2b"))) struct PFM3File dx7BankAlloc[NUMBEROFDX7BANKS];
+__attribute__((section(".ram_d2b"))) struct PFM3File dx7SubDirAlloc[NUMBEROFDX7SUBDIRS];
 
+
+// Copy a NUL-terminated string literal without depending on fsu_ (which is not
+// attached yet when the DX7SysexFile constructor runs).
+static void copyLiteral(char *dest, const char *src, int max) {
+    int k = 0;
+    while (k < max - 1 && src[k] != 0) {
+        dest[k] = src[k];
+        k++;
+    }
+    dest[k] = 0;
+}
 
 DX7SysexFile::DX7SysexFile() {
 	numberOfFilesMax_ = NUMBEROFDX7BANKS;
     dx7Bank = dx7BankAlloc;
 	myFiles_ = dx7Bank;
+
+	dx7SubDirs = dx7SubDirAlloc;
+	dx7SubDirCount_ = 0;
+
+	// Default DX7 root + active folder = DX7_DIR (config can override later).
+	copyLiteral(root_, DX7_DIR, sizeof(root_));
+	copyLiteral(currentDir_, DX7_DIR, sizeof(currentDir_));
+	selectedSubDir_[0] = 0;
 }
 
 DX7SysexFile::~DX7SysexFile() {
 }
 
 const char* DX7SysexFile::getFolderName() {
-	return DX7_DIR;
+	return currentDir_;
 }
 
 uint8_t* DX7SysexFile::dx7LoadPatch(const struct PFM3File* bank, int patchNumber) {
@@ -65,3 +85,80 @@ bool DX7SysexFile::isCorrectFile(char *name, int size)  {
 }
 
 
+// --- DX7 folder picker (E-picker β) ---------------------------------------
+
+// Rebuild currentDir_ = root_ [+ '/' + selectedSubDir_] and force the bank
+// list to be re-enumerated from the new folder on next access.
+void DX7SysexFile::rebuildCurrent() {
+    int k = 0;
+    while (k < (int)sizeof(currentDir_) - 1 && root_[k] != 0) {
+        currentDir_[k] = root_[k];
+        k++;
+    }
+    if (selectedSubDir_[0] != 0) {
+        if (k < (int)sizeof(currentDir_) - 1) {
+            currentDir_[k++] = '/';
+        }
+        int j = 0;
+        while (k < (int)sizeof(currentDir_) - 1 && selectedSubDir_[j] != 0) {
+            currentDir_[k++] = selectedSubDir_[j];
+            j++;
+        }
+    }
+    currentDir_[k] = 0;
+    isInitialized_ = false;
+}
+
+void DX7SysexFile::setRoot(const char* root) {
+    if (root == 0 || root[0] == 0) {
+        return;
+    }
+    copyLiteral(root_, root, sizeof(root_));
+    rebuildCurrent();
+}
+
+// Called from config load (dx7current). Empty/absent value => active = root.
+void DX7SysexFile::applySelectedSubDir(const char* subDirName) {
+    int k = 0;
+    if (subDirName != 0) {
+        while (k < (int)sizeof(selectedSubDir_) - 1 && subDirName[k] != 0) {
+            selectedSubDir_[k] = subDirName[k];
+            k++;
+        }
+    }
+    selectedSubDir_[k] = 0;
+    rebuildCurrent();
+}
+
+// Flat-root auto-skip: active folder = root itself.
+void DX7SysexFile::selectRoot() {
+    selectedSubDir_[0] = 0;
+    rebuildCurrent();
+}
+
+// User picked subfolder `index` from the picker list.
+void DX7SysexFile::selectSubDir(int index) {
+    if (index < 0 || index >= dx7SubDirCount_) {
+        selectRoot();
+        return;
+    }
+    int k = 0;
+    while (k < (int)sizeof(selectedSubDir_) - 1 && dx7SubDirs[index].name[k] != 0) {
+        selectedSubDir_[k] = dx7SubDirs[index].name[k];
+        k++;
+    }
+    selectedSubDir_[k] = 0;
+    rebuildCurrent();
+}
+
+int DX7SysexFile::initSubDirs() {
+    dx7SubDirCount_ = enumerateSubDirs(root_, dx7SubDirs, NUMBEROFDX7SUBDIRS);
+    return dx7SubDirCount_;
+}
+
+const struct PFM3File* DX7SysexFile::getSubDir(int index) {
+    if (index < 0 || index >= dx7SubDirCount_) {
+        return &errorFile_;
+    }
+    return &dx7SubDirs[index];
+}

@@ -29,6 +29,7 @@ void Storage::init(struct OneSynthParams*timbre1, struct OneSynthParams*timbre2,
     mixerBank.init(timbre1, timbre2, timbre3, timbre4, timbre5, timbre6);
     scalaFile.setFileSystemUtils(&fsu);
     configurationFile.setFileSystemUtils(&fsu);
+    configurationFile.setDX7SysexFile(&dx7SysexFile);
     patchBank.setFileSystemUtils(&fsu);
     dx7SysexFile.setFileSystemUtils(&fsu);
     userWaveForm.setFileSystemUtils(&fsu);

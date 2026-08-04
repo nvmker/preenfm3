@@ -225,6 +225,48 @@ int PreenFMFileType::initFiles() {
     return numberOfFiles_;
 }
 
+// Enumerate immediate subdirectories of `path` (depth-1, no recursion).
+// Mirrors initFiles but keeps only AM_DIR entries. Shared static FILINFO is
+// single-threaded (UI/menu task only) — same constraint as initFiles.
+int PreenFMFileType::enumerateSubDirs(const char* path, struct PFM3File* out, int cap) {
+    int count = 0;
+    FRESULT res;
+    DIR dir;
+    static FILINFO fno;
+
+    for (int k = 0; k < cap; k++) {
+        out[k].fileType = FILE_EMPTY;
+    }
+
+    res = f_opendir(&dir, path);
+    if (res == FR_OK) {
+        while (count < cap) {
+            res = f_readdir(&dir, &fno);
+            if (res != FR_OK || fno.fname[0] == 0) {
+                break;
+            }
+            // Keep ONLY directories (opposite of initFiles' file filter).
+            // Skip "." / ".." / hidden dot entries (FatFS normally doesn't return them, but guard anyway).
+            if ((fno.fattrib & AM_DIR) && fno.fname[0] != '.') {
+                // Clean 8.3 name, NUL-terminated (no '~' padding): dir names are
+                // used both for display and to build the read path.
+                int k = 0;
+                while (k < 12 && fno.fname[k] != 0) {
+                    out[count].name[k] = fno.fname[k];
+                    k++;
+                }
+                out[count].name[k] = 0;
+                out[count].fileType = FILE_OK;
+                count++;
+            }
+        }
+        f_closedir(&dir);
+    }
+
+    sortFiles(out, count);
+    return count;
+}
+
 int PreenFMFileType::readNextFile(struct PFM3File *bank) {
     return 0;
 }
