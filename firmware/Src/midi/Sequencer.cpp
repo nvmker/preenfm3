@@ -20,6 +20,18 @@
 #include "Synth.h"
 #include "FMDisplaySequencer.h"
 
+// Unaligned-safe serialization helpers for the sequencer state format.
+// The format packs float/uint16 fields into a uint8_t buffer at offsets that
+// are not guaranteed aligned. Writing/reading them via *(float*)&buf[i] /
+// *(uint16_t*)&buf[i] is strict-aliasing UB and, for float, hard-faults under
+// -O3: GCC vectorizes the cast into vstr/vldr, which trap on misalignment on
+// Cortex-M7. __builtin_memcpy keeps the exact byte layout and lowers to safe
+// integer stores/loads.
+static inline void     pfm3_seq_put_u16(uint8_t *p, uint16_t v) { __builtin_memcpy(p, &v, 2); }
+static inline uint16_t pfm3_seq_get_u16(const uint8_t *p)      { uint16_t v; __builtin_memcpy(&v, p, 2); return v; }
+static inline void     pfm3_seq_put_f32(uint8_t *p, float v)   { __builtin_memcpy(p, &v, 4); }
+static inline float    pfm3_seq_get_f32(const uint8_t *p)      { float v;    __builtin_memcpy(&v, p, 4); return v; }
+
 __attribute__((section(".ram_d3"))) SeqMidiAction actions[SEQ_ACTION_SIZE];
 __attribute__((section(".ram_d3"))) StepSeqValue stepNotes[NUMBER_OF_STEP_SEQUENCES][256];
 
@@ -645,19 +657,19 @@ void Sequencer::getFullDefaultState(uint8_t* buffer, uint32_t *size, uint8_t seq
     }
     // isExternalClockEnabled
     buffer[index++] = (uint8_t)1;
-    // tempo
-    *((float*)&buffer[index]) = 90.0f;
-    index+=sizeof(float);
+    // tempo (index==14 is 4-byte misaligned; use the unaligned-safe helper)
+    pfm3_seq_put_f32(&buffer[index], 90.0f);
+    index += sizeof(float);
     // Last free action
-    *((uint16_t*)&buffer[index]) = 12;
-    index+=sizeof(uint16_t);
+    pfm3_seq_put_u16(&buffer[index], 12);
+    index += sizeof(uint16_t);
 
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
         // stepUniqueValue
-        *((uint16_t*)&buffer[index]) = 1;
+        pfm3_seq_put_u16(&buffer[index], 1);
         index += sizeof(uint16_t);
         // instrumentTimerMask
-        *((uint16_t*)&buffer[index]) = 4095;
+        pfm3_seq_put_u16(&buffer[index], 4095);
         index += sizeof(uint16_t);
         // seqActivated
         buffer[index++] = 0;
@@ -685,14 +697,14 @@ void Sequencer::getFullState(uint8_t* buffer, uint32_t *size) {
         buffer[index++] = sequenceName_[s];
     }
     buffer[index++] = (uint8_t)(isExternalClockEnabled() ? 1 : 0);
-    *((float*)&buffer[index]) = tempo_;
-    index+=sizeof(float);
-    *((uint16_t*)&buffer[index]) = lastFreeAction_;
-    index+=sizeof(uint16_t);
+    pfm3_seq_put_f32(&buffer[index], tempo_);
+    index += sizeof(float);
+    pfm3_seq_put_u16(&buffer[index], lastFreeAction_);
+    index += sizeof(uint16_t);
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
-        *((uint16_t*)&buffer[index]) = stepUniqueValue_[t];
+        pfm3_seq_put_u16(&buffer[index], stepUniqueValue_[t]);
         index += sizeof(uint16_t);
-        *((uint16_t*)&buffer[index]) = instrumentTimerMask_[t];
+        pfm3_seq_put_u16(&buffer[index], instrumentTimerMask_[t]);
         index += sizeof(uint16_t);
         buffer[index++] = (seqActivated_[t] ? 1 : 0);
         buffer[index++] = (recording_[t] ? 1 : 0);
@@ -727,21 +739,17 @@ void Sequencer::loadStateVersion1(uint8_t* buffer) {
     }
     setExternalClock(buffer[index++] == 1);
 
-    // Needed to load from mem to float !
-    uint8_t tempoUint8[4];
-    for (int i = 0; i < 4; i++) {
-        tempoUint8[i] = buffer[index++];
-    }
-    float newTempo = * ((float*)tempoUint8);
-    setTempo(newTempo);
+    // tempo (unaligned-safe read; *(float*) would HardFault under -O3)
+    setTempo(pfm3_seq_get_f32(&buffer[index]));
+    index += sizeof(float);
 
-    lastFreeAction_ = *((uint16_t*)&buffer[index]) ;
-    index+=sizeof(uint16_t);
+    lastFreeAction_ = pfm3_seq_get_u16(&buffer[index]);
+    index += sizeof(uint16_t);
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
-        stepUniqueValue_[t] = *((uint16_t*)(&buffer[index]));
-        index+=sizeof(uint16_t);
-        instrumentTimerMask_[t] = *((uint16_t*)(&buffer[index]));
-        index+=sizeof(uint16_t);
+        stepUniqueValue_[t] = pfm3_seq_get_u16(&buffer[index]);
+        index += sizeof(uint16_t);
+        instrumentTimerMask_[t] = pfm3_seq_get_u16(&buffer[index]);
+        index += sizeof(uint16_t);
         seqActivated_[t]  = (buffer[index++] == 1);
         stepActivated_[t]  = (buffer[index++] == 1);
         recording_[t]  = (buffer[index++] == 1);
@@ -759,21 +767,17 @@ void Sequencer::loadStateVersion2(uint8_t* buffer) {
     }
     setExternalClock(buffer[index++] == 1);
 
-    // Needed to load from mem to float !
-    uint8_t tempoUint8[4];
-    for (int i = 0; i < 4; i++) {
-        tempoUint8[i] = buffer[index++];
-    }
-    float newTempo = * ((float*)tempoUint8);
-    setTempo(newTempo);
+    // tempo (unaligned-safe read; *(float*) would HardFault under -O3)
+    setTempo(pfm3_seq_get_f32(&buffer[index]));
+    index += sizeof(float);
 
-    lastFreeAction_ = *((uint16_t*)&buffer[index]) ;
-    index+=sizeof(uint16_t);
+    lastFreeAction_ = pfm3_seq_get_u16(&buffer[index]);
+    index += sizeof(uint16_t);
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
-        stepUniqueValue_[t] = *((uint16_t*)(&buffer[index]));
-        index+=sizeof(uint16_t);
-        instrumentTimerMask_[t] = *((uint16_t*)(&buffer[index]));
-        index+=sizeof(uint16_t);
+        stepUniqueValue_[t] = pfm3_seq_get_u16(&buffer[index]);
+        index += sizeof(uint16_t);
+        instrumentTimerMask_[t] = pfm3_seq_get_u16(&buffer[index]);
+        index += sizeof(uint16_t);
         seqActivated_[t]  = (buffer[index++] == 1);
         recording_[t]  = (buffer[index++] == 1);
         muted_[t]  = (buffer[index++] == 1);
