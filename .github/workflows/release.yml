@@ -110,8 +110,16 @@ jobs:
           scripts/ci/stage-release.sh "$stage" "$FW" "$BL" \
             artifacts/firmware/preenfm3.bin \
             artifacts/bootloader/bootloader.bin
-          out="$GITHUB_WORKSPACE/$ZIP"
-          ( cd "$stage" && zip -r "$out" "pfm3_firmware_$FW" )
+          # Stage the release folder into the workspace and zip it in place.
+          # Writing the archive to an absolute path from inside a subshell `cd`
+          # to a mktemp dir is fragile across zip builds (the Ubuntu runner
+          # emitted "zip warning: name not matched: <abspath>" then the archive
+          # was not findable by relative name). Zipping from cwd
+          # ($GITHUB_WORKSPACE) with a relative archive name is portable.
+          folder="pfm3_firmware_$FW"
+          cp -R "$stage/$folder" "$folder"
+          zip -r "$ZIP" "$folder"
+          test -f "$ZIP"
           echo "=== zip contents ==="
           unzip -l "$ZIP"
 
