@@ -674,14 +674,14 @@ void FMDisplayMenu::buttonPressed(int currentTimbre, int button) {
             }
         }
     } else if (oldMenu == MENU_PRESET_LOAD_SELECT_DX7_FOLDER && nextMenu->menuState == MENU_PRESET_LOAD_SELECT_DX7_BANK) {
-        // User confirmed a folder: apply selection and persist it
+        // User confirmed a folder: apply selection and persist it.
+        // saveConfig rewrites Settings.txt with the new dx7current (and dx7bankdir);
+        // the SD-write hard fault that kept this dormant was fixed in 6d75445
+        // (missing return in PreenFMFileType::remove()).
         synthState_->getStorage()->getDX7SysexFile()->selectSubDir(fullState->dx7FolderNumber);
         fullState->dx7BankNumber = 0;
         fullState->dx7PresetNumber = 0;
-        // Persistence disabled: saveConfig's SD write (remove+save of PROPERTIES)
-        // hangs in this GCC15 -O2 build — reproduces from Menu>Config save too.
-        // Re-enable once the SD-write regression is fixed.
-        // synthState_->getStorage()->getConfigurationFile()->saveConfig(fullState->midiConfigValue);
+        synthState_->getStorage()->getConfigurationFile()->saveConfig(fullState->midiConfigValue);
     }
 
     // Action depending on Next menu
