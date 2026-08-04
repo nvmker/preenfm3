@@ -28,11 +28,33 @@ public:
 
 	uint8_t* dx7LoadPatch(const struct PFM3File* bank, int patchNumber);
 
+	// --- DX7 folder picker (E-picker β) -----------------------------------
+	// Root is the top of the DX7 library (configurable via dx7bankdir, default
+	// DX7_DIR). The picker lists the root's immediate subfolders; the chosen
+	// folder becomes the active read folder (currentDir_). A flat root with no
+	// subfolders reads .syx directly from the root (today's behaviour).
+	void setRoot(const char* root);
+	const char* getRoot() { return root_; }
+	void applySelectedSubDir(const char* subDirName);
+	const char* getSelectedSubDir() { return selectedSubDir_; }
+	void selectRoot();
+	void selectSubDir(int index);
+	int initSubDirs();
+	int getSubDirCount() { return dx7SubDirCount_; }
+	const struct PFM3File* getSubDir(int index);
+
 protected:
 	const char* getFolderName();
 	bool isCorrectFile(char *name, int size);
 	struct PFM3File *dx7Bank;
 
+private:
+	void rebuildCurrent();
+	char root_[24];
+	char currentDir_[40];
+	char selectedSubDir_[13];
+	struct PFM3File *dx7SubDirs;
+	int dx7SubDirCount_;
 };
 
 #endif /* DX7SYSEXFILE_H_ */
