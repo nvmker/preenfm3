@@ -12,10 +12,10 @@ on:
 permissions:
   contents: read
 
-# Cancel a superseded in-flight run for the same ref, but never on main.
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+# NOTE: no `concurrency:` block here. As a reusable workflow, we inherit the
+# caller's (ci.yml) concurrency group. Declaring one here that resolves to the
+# same group as the caller triggers a self-deadlock and GitHub cancels the job
+# before it runs — see run #12 on this branch.
 
 jobs:
   test:
