@@ -25,7 +25,7 @@ bl_h="$repo_root/bootloader/Inc/version.h"
 
 # extract_raw <header> <macro>  -> echoes the quoted string value
 extract_raw() {
-	local header="$1" macro="$2" val cnt
+	local header="$1" macro="$2" val cnt re
 	val="$(sed -nE \
 		"s/^[[:space:]]*#[[:space:]]*define[[:space:]]+${macro}[[:space:]]+\"([^\"]+)\".*/\1/p" \
 		"$header")"
@@ -36,6 +36,14 @@ extract_raw() {
 	cnt="$(printf '%s\n' "$val" | grep -c .)"
 	if [ "$cnt" -gt 1 ]; then
 		echo "error: ${macro} defined $cnt times in ${header}" >&2
+		exit 1
+	fi
+	# Charset guard: the value is evaled downstream by the CI workflows, so
+	# reject anything outside dotted-decimal (with optional leading v) - this
+	# makes the eval provably safe AND catches malformed version strings.
+	re='^[vV]?[0-9]+(\.[0-9]+)*$'
+	if [[ ! "$val" =~ $re ]]; then
+		echo "error: ${macro}='$val' not a safe version (want vN.NN form, e.g. v1.03 / 1.09)" >&2
 		exit 1
 	fi
 	printf '%s' "$val"

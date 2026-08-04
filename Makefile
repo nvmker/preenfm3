@@ -42,7 +42,8 @@ TOOLCHAIN_FILE ?= cmake/arm-none-eabi-gcc.cmake
 # Flash image paths + addresses. FIRMWARE_BIN / BOOTLOADER_BIN track BUILD_DIR.
 FIRMWARE_BIN   ?= $(BUILD_DIR)/firmware/preenfm3.bin
 BOOTLOADER_BIN ?= $(BUILD_DIR)/bootloader/bootloader.bin
-# Firmware flashes after the bootloader (1920 KiB); bootloader at bank-1 start (128 KiB).
+# Firmware: 0x08020000 (128 KiB after the bootloader; firmware region 1920 KiB).
+# Bootloader: 0x08000000 (bank-1 start; 128 KiB).
 FW_FLASH_ADDR  ?= 0x08020000
 BL_FLASH_ADDR  ?= 0x08000000
 
