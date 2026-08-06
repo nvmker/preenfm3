@@ -70,4 +70,56 @@ target_compile_features(pfm3_tests PRIVATE cxx_std_14)
 # linking both trips a "duplicate libraries" warning on Apple's linker.
 target_link_libraries(pfm3_tests PRIVATE GTest::gtest_main)
 
+# --- Firmware host-testability seam (see tests/SEAM.md) ----------------------
+# Pulls host-compilable firmware TUs in behind the PFM3_HOST define. This block
+# is the ENTIRE coupling between the test build and the firmware: no toolchain
+# file, no firmware/CMakeLists.txt edit, no fake HAL headers.
+set(PFM3_FW_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../firmware")
+
+# Firmware headers are included flat ("Sequencer.h", "Common.h", ...), so mirror
+# firmware/CMakeLists.txt's include set. BEFORE keeps firmware headers ahead of
+# any future test-local header with a clashing basename.
+#
+# tests/host_shims goes FIRST on the path: it shadows lib/Inc/fatfs.h with a
+# minimal host shim that forward-declares FIL and omits the SD-disk/HAL chain
+# the real fatfs.h pulls in (see tests/host_shims/fatfs.h + SEAM.md). Every
+# other firmware header resolves to the real file.
+target_include_directories(pfm3_tests BEFORE PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/host_shims"
+    "${PFM3_FW_ROOT}/Inc"
+    "${PFM3_FW_ROOT}/Src"
+    "${PFM3_FW_ROOT}/Src/filesystem"
+    "${PFM3_FW_ROOT}/Src/hardware"
+    "${PFM3_FW_ROOT}/Src/midi"
+    "${PFM3_FW_ROOT}/Src/MidiController"
+    "${PFM3_FW_ROOT}/Src/midipal"
+    "${PFM3_FW_ROOT}/Src/SimpleEffect"
+    "${PFM3_FW_ROOT}/Src/synth"
+    "${PFM3_FW_ROOT}/Src/utils"
+    "${PFM3_FW_ROOT}/../lib/Inc")
+
+# Activates the in-TU seam guards in the firmware TUs (e.g. the LED/HAL block in
+# Sequencer.cpp). Defined ONLY here — never in firmware/CMakeLists.txt.
+target_compile_definitions(pfm3_tests PRIVATE PFM3_HOST)
+
+# Firmware statics carry __attribute__((section(".ram_d3" / ...))) for the Arm
+# linker script; on the host these are either accepted-with-note (ELF) or a
+# hard error (Mach-O, where the section guard in Sequencer.cpp gates them out).
+# Also silence one benign firmware-header smell that would otherwise spam the
+# host build: UINT_MAX redefinition (Synth.h). (The `return "##"` writable-string
+# warning in Sequencer.cpp is left visible — it's clang-only to suppress and a
+# real firmware smell worth seeing.) Both flags are portable across gcc/clang.
+target_compile_options(pfm3_tests PRIVATE
+    -Wno-attributes
+    -Wno-macro-redefined)
+
+# Coverage sessions add their firmware TU + any collaborator stubs here.
+# Target #1: Sequencer serialization (regression guard for the -Ofast
+# unaligned-float hard-fault). The stub supplies empty bodies for the
+# out-of-line Synth/FMDisplaySequencer methods Sequencer.cpp compiles-in but the
+# serialization tests never invoke — see tests/SEAM.md "Contact with the code".
+target_sources(pfm3_tests PRIVATE
+    "${PFM3_FW_ROOT}/Src/midi/Sequencer.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/stubs/sequencer_collaborators_stub.cpp")
+
 gtest_discover_tests(pfm3_tests)

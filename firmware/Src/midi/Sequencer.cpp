@@ -32,8 +32,17 @@ static inline uint16_t pfm3_seq_get_u16(const uint8_t *p)      { uint16_t v; __b
 static inline void     pfm3_seq_put_f32(uint8_t *p, float v)   { __builtin_memcpy(p, &v, 4); }
 static inline float    pfm3_seq_get_f32(const uint8_t *p)      { float v;    __builtin_memcpy(&v, p, 4); return v; }
 
-__attribute__((section(".ram_d3"))) SeqMidiAction actions[SEQ_ACTION_SIZE];
-__attribute__((section(".ram_d3"))) StepSeqValue stepNotes[NUMBER_OF_STEP_SEQUENCES][256];
+// `.ram_d3` names an STM32H7 SRAM-D3 region via the Arm linker script; the
+// attribute is a hard ERROR on Mach-O (macOS host) and irrelevant to host
+// semantics, so drop it under PFM3_HOST. See tests/SEAM.md.
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d3")))
+#endif
+SeqMidiAction actions[SEQ_ACTION_SIZE];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d3")))
+#endif
+StepSeqValue stepNotes[NUMBER_OF_STEP_SEQUENCES][256];
 
 
 Sequencer::Sequencer() {
@@ -317,6 +326,11 @@ void Sequencer::mainSequencerTic(uint16_t counter) {
     }
 
     //
+#ifndef PFM3_HOST
+    // Beat-display + control-LED block: drives a GPIO and reads the SysTick via
+    // HAL_GPIO_WritePin / HAL_GetTick (symbols only resolvable through CubeMX's
+    // main.h). Host unit tests exercise only the serialization path, never this
+    // function, so gate the whole block out under PFM3_HOST. See tests/SEAM.md.
     if ((current16bitTimer_ & 0x300) != lastBeat_) {
         lastBeat_ = current16bitTimer_ & 0x300;
         displaySequencer_->displayBeat();
@@ -327,6 +341,7 @@ void Sequencer::mainSequencerTic(uint16_t counter) {
         HAL_GPIO_WritePin(LED_CONTROL_GPIO_Port, LED_CONTROL_Pin, GPIO_PIN_RESET);
         ledTimer_ = 0Xffffffff;
     }
+#endif
 
 
     for (int i = 0; i < NUMBER_OF_TIMBRES; i++) {
