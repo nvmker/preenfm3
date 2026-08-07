@@ -33,7 +33,7 @@ jobs:
     outputs:
       tag: ${{ steps.ver.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
@@ -91,12 +91,17 @@ jobs:
       BL: ${{ needs.build.outputs.bl_version }}
       ZIP: pfm3_firmware_${{ needs.build.outputs.fw_version }}.zip
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
       - name: Download build artifacts
-        uses: actions/download-artifact@v4
+        # v7 is the first major defaulting to Node.js 24. Like upload-artifact,
+        # v5/v6 only preliminarily supported Node 24 but still ran Node 20 by
+        # default — pinning v6 would NOT clear the deprecation. We download a
+        # single named artifact (not by ID), so v7's path/digest changes don't
+        # affect us; same-run upload→download means hashes always match.
+        uses: actions/download-artifact@v7
         with:
           name: preenfm3-build-${{ github.run_id }}-${{ github.run_attempt }}
           path: artifacts
@@ -124,7 +129,9 @@ jobs:
           unzip -l "$ZIP"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        # v3 moves the runtime from Node.js 20 to Node.js 24; v2.x is the last
+        # Node 20 line and would trip the deprecation warning on release runs.
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.precheck.outputs.tag }}
           name: ${{ needs.precheck.outputs.tag }}

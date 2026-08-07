@@ -1,0 +1,39 @@
+# Reusable host-side unit test workflow (GoogleTest). Called by ci.yml
+# (push/PR). Builds the tests/ CMake project with the HOST compiler (no Arm
+# toolchain — tests/ is a standalone project for exactly this reason), runs
+# ctest, and fails on any test failure. Runs in parallel with the firmware
+# build so a green cross-compile can never mask a red unit test.
+name: tests
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# NOTE: no `concurrency:` block here. As a reusable workflow, we inherit the
+# caller's (ci.yml) concurrency group. Declaring one here that resolves to the
+# same group as the caller triggers a self-deadlock and GitHub cancels the job
+# before it runs — see run #12 on this branch.
+
+jobs:
+  test:
+    name: Host unit tests (GoogleTest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # No toolchain install: ubuntu-latest ships cmake >= 3.20 and g++ (C++14).
+      # tests/ pins GoogleTest v1.17.0 via FetchContent at configure time.
+      - name: Configure tests
+        run: cmake -B build/test -S tests
+
+      - name: Build tests
+        run: cmake --build build/test -j
+
+      # --output-on-failure surfaces assertion text inline on red.
+      - name: Run tests
+        run: ctest --test-dir build/test --output-on-failure
