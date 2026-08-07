@@ -114,12 +114,25 @@ target_compile_options(pfm3_tests PRIVATE
     -Wno-macro-redefined)
 
 # Coverage sessions add their firmware TU + any collaborator stubs here.
+#
 # Target #1: Sequencer serialization (regression guard for the -Ofast
 # unaligned-float hard-fault). The stub supplies empty bodies for the
 # out-of-line Synth/FMDisplaySequencer methods Sequencer.cpp compiles-in but the
 # serialization tests never invoke — see tests/SEAM.md "Contact with the code".
+#
+# Target #2: DX7 sysex import (crash/corruption guard on malformed sysex).
+# Hexter.cpp is host-compilable verbatim (no HAL, no source guards needed). It
+# references `defaultPreset` in voiceSetData()'s params-seeding memcpy; that
+# symbol is defined in Presets.cpp (pure const data, clean Common.h+
+# SynthState.h closure). We pull the REAL Presets.cpp rather than stubbing, so
+# the golden snapshot reflects actual firmware defaults (a zero-stub would
+# silently alter every field voiceSetData does not explicitly overwrite). No
+# collaborator stub is needed — Hexter's functions are pure, operating only on
+# the OneSynthParams POD.
 target_sources(pfm3_tests PRIVATE
     "${PFM3_FW_ROOT}/Src/midi/Sequencer.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/stubs/sequencer_collaborators_stub.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/stubs/sequencer_collaborators_stub.cpp"
+    "${PFM3_FW_ROOT}/Src/utils/Hexter.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/Presets.cpp")
 
 gtest_discover_tests(pfm3_tests)
