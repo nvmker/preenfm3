@@ -278,15 +278,17 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
     // We consider the random number is always ready here...
     uint32_t random32bit;
 #ifdef PFM3_HOST
-    // Host stub: no HAL RNG. Deterministic seed; the noise[] table content is
-    // unobserved by the host tests (which never render audio blocks). Arm path
-    // keeps the real RNG call + noise[] fill below.
+    // Host stub: no HAL RNG. Deterministic seed (0) feeds the shared noise[]
+    // fill below, so the host path populates the table exactly as firmware
+    // would (from a fixed seed) and never leaves it uninitialized. Only the
+    // HAL RNG acquisition — the single host-incompatible step — is gated out.
     random32bit = 0;
 #else
     if (unlikely(HAL_RNG_GenerateRandomNumber(&hrng, &random32bit) != HAL_OK)) {
         // Recreate on rnd from previous pass
         random32bit = noise[31] * 0x7fffffff;
     }
+#endif
 
     noise[0] = (random32bit & 0xffff) * .000030518f - 1.0f; // value between -1 and 1.
     noise[1] = (random32bit >> 16) * .000030518f - 1.0f; // value between -1 and 1.
@@ -295,7 +297,6 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
         noise[noiseIndex++] = (random32bit & 0xffff) * .000030518f - 1.0f; // value between -1 and 1.
         noise[noiseIndex++] = (random32bit >> 16) * .000030518f - 1.0f; // value between -1 and 1.
     }
-#endif
 
     numberOfPlayingVoices_ = 0;
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
