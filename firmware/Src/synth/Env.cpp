@@ -18,7 +18,13 @@
 #include "Env.h"
 
 // ram_d1
-float Env::incTab[1601] __attribute__((section(".instruction_ram")));
+// `.instruction_ram` is a Mach-O hard error on the host build (see
+// tests/SEAM.md, Target #1 appendix Correction 2); drop the section attribute
+// under PFM3_HOST. Inert under the Arm build.
+#ifndef PFM3_HOST
+__attribute__((section(".instruction_ram")))
+#endif
+float Env::incTab[1601];
 
 int Env::initTab = 0;
 
@@ -46,7 +52,10 @@ float envLog[] = {
 	};
 
 // User curves
-float userEnvCurves[4][64] __attribute__((section(".instruction_ram")));
+#ifndef PFM3_HOST
+__attribute__((section(".instruction_ram")))
+#endif
+float userEnvCurves[4][64];
 
 struct table allLfoTables[CURVE_TYPE_MAX] =  {
         { envExponential, 63 },

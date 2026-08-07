@@ -24,7 +24,11 @@ cmake_minimum_required(VERSION 3.20)
 
 project(preenfm3_tests
     VERSION 1.0.0
-    LANGUAGES CXX)
+    LANGUAGES C CXX)
+# C is enabled (alongside CXX) because firmware/Src/synth/waves.c — the
+# wave-table data TU that Osc.cpp's waveTables[] initializer references — is a
+# plain-C data file. Compiling it as C (not CXX) keeps it byte-identical to the
+# firmware Arm build. See Target #3 in the target_sources block below.
 
 # C++14 to match firmware/ + bootloader/ + lib/ standards, so any firmware code
 # pulled under test compiles under identical language rules on both sides.
@@ -129,10 +133,28 @@ target_compile_options(pfm3_tests PRIVATE
 # silently alter every field voiceSetData does not explicitly overwrite). No
 # collaborator stub is needed — Hexter's functions are pure, operating only on
 # the OneSynthParams POD.
+#
+# Target #3: synth math (silent-audio-regression guard). Osc.cpp / Env.cpp /
+# Matrix.cpp compile host-clean EXCEPT for three section attributes that are a
+# Mach-O hard error (see Target #1 appendix Correction 2); those are gated with
+# #ifndef PFM3_HOST in the firmware TUs themselves (Osc.cpp:38, Env.cpp:21,
+# Env.cpp:49 — same pattern as Sequencer.cpp). Link deps, all REAL firmware TUs
+# (no stubs, per the Hexter precedent of preferring real data):
+#   * Osc.cpp's waveTables[] initializer references sinTable/sawTable/... which
+#     live in waves.c (plain-C data TU -> needs the C language enabled above).
+#   * Env::init() calls checkIsLoop(), whose body indexes algoOpInformation;
+#     that table is defined in Common.cpp (pure data). Pulling the real
+#     Common.cpp (not a stub) keeps the carrier/modulator routing faithful.
+#   * Matrix.cpp has no extern deps beyond its own members.
 target_sources(pfm3_tests PRIVATE
     "${PFM3_FW_ROOT}/Src/midi/Sequencer.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/stubs/sequencer_collaborators_stub.cpp"
     "${PFM3_FW_ROOT}/Src/utils/Hexter.cpp"
-    "${PFM3_FW_ROOT}/Src/synth/Presets.cpp")
+    "${PFM3_FW_ROOT}/Src/synth/Presets.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/Osc.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/waves.c"
+    "${PFM3_FW_ROOT}/Src/synth/Env.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/Matrix.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/Common.cpp")
 
 gtest_discover_tests(pfm3_tests)
