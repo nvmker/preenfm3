@@ -35,7 +35,14 @@ float oscValuesFeedback[32];
 int Osc::oscValuesCpt = 1;
 
 // User waveforms
-float userWaveform[6][1024] __attribute__((section(".instruction_ram")));
+// `.instruction_ram` names an STM32H7 ITCM region via the Arm linker script;
+// the attribute is a hard ERROR on Mach-O (macOS host) and irrelevant to host
+// semantics, so drop it under PFM3_HOST. Inert under the Arm build. See
+// tests/SEAM.md (Target #1 appendix, Correction 2).
+#ifndef PFM3_HOST
+__attribute__((section(".instruction_ram")))
+#endif
+float userWaveform[6][1024];
 
 struct WaveTable waveTables[NUMBER_OF_WAVETABLES]  = {
         //		OSC_SHAPE_SIN = 0,

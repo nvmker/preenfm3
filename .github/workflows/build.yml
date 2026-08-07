@@ -31,13 +31,16 @@ jobs:
       fw_version: ${{ steps.versions.outputs.FW }}
       bl_version: ${{ steps.versions.outputs.BL }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           persist-credentials: false
 
       - name: Cache Arm GNU Toolchain
         id: cache-tc
-        uses: actions/cache@v4
+        # v5 is the first major defaulting to the Node.js 24 runtime; v4 ran on
+        # Node.js 20, which GitHub Actions deprecates (changelog 2025-09-19).
+        # Keep this on the node24 line or the run logs a deprecation warning.
+        uses: actions/cache@v5
         with:
           path: ${{ runner.tool_cache }}/arm-gnu-${{ env.TOOLCHAIN_VER }}
           key: arm-gnu-toolchain-${{ env.TOOLCHAIN_VER }}-x86_64-arm-none-eabi
@@ -87,9 +90,13 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+        # v6 is the first major defaulting to Node.js 24. CAVEAT: v5 only
+        # *preliminarily* supported Node 24 but still ran Node 20 by default
+        # (per upload-artifact's own v6 notes), so pinning v5 would NOT clear
+        # the Node.js 20 deprecation warning — must be v6+.
+        uses: actions/upload-artifact@v6
         with:
-          # Unique across re-runs so v4 accepts the upload.
+          # Unique across re-runs: upload-artifact rejects a duplicate name.
           name: preenfm3-build-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             build/release/firmware/preenfm3.bin

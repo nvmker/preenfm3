@@ -19,7 +19,14 @@
 
 
 // Standard 128kb memory
-float Lfo::invTab[2048] __attribute__((section(".ram_d1")));
+// `.ram_d1` names an STM32H7 SRAM-D1 region via the Arm linker script; the
+// attribute is a hard ERROR on Mach-O (macOS host) and irrelevant to host
+// semantics, so drop it under PFM3_HOST. The DEFINITION is preserved. Inert
+// under the Arm build. See tests/SEAM.md (Target #1 appendix Correction 2).
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d1")))
+#endif
+float Lfo::invTab[2048];
 int Lfo::initTab = 0;
 
 Lfo::Lfo() {

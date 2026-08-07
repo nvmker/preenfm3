@@ -28,12 +28,28 @@
  \param [in]    sat  Bit position to saturate to (0..31)
  \return             Saturated value
  */
+#ifdef PFM3_HOST
+// Host fallback: the ARM `usat` instruction and its "I" asm constraint do not
+// compile off-target (hard error during inline-asm constraint validation when
+// Voice.h is parsed). This portable C++ equivalent preserves USAT semantics
+// (unsigned saturate value to `sat` bits). Voice's saturating mix/pan math is
+// not exercised by the Sequencer serialization tests, but a correct fallback
+// keeps any future host synth-math tests faithful. See tests/SEAM.md.
+static inline uint32_t pfm3_host_usat(uint32_t value, int sat) {
+    if (sat <= 0) return 0;
+    if (sat >= 32) return value;
+    const uint32_t maxv = (1u << sat) - 1u;
+    return value > maxv ? maxv : value;
+}
+#define __USAT(ARG1,ARG2) pfm3_host_usat((uint32_t)(ARG1), (int)(ARG2))
+#else
 #define __USAT(ARG1,ARG2) \
 ({                          \
   uint32_t __RES, __ARG1 = (ARG1); \
   asm ("usat %0, %1, %2" : "=r" (__RES) :  "I" (ARG2), "r" (__ARG1) ); \
   __RES; \
  })
+#endif
 
 class Timbre;
 

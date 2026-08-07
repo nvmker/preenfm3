@@ -69,22 +69,66 @@ float sigmoid(float x)
 }
 //***------------***------------***------------***------------***----- FxBus -------***------------***------------***------------
 
-float FxBus::delay1Buffer[delay1BufferSize] __attribute__((section(".ram_d1")));
-float FxBus::delay2Buffer[delay2BufferSize] __attribute__((section(".ram_d1")));
-float FxBus::delay3Buffer[delay3BufferSize] __attribute__((section(".ram_d2")));
-float FxBus::delay4Buffer[delay4BufferSize] __attribute__((section(".ram_d2")));
+// `.ram_d1` / `.ram_d2` / `.ram_d2b` name STM32H7 SRAM regions via the Arm
+// linker script; the attributes are a hard ERROR on Mach-O (macOS host) and
+// irrelevant to host semantics, so drop them under PFM3_HOST. The DEFINITIONS
+// are preserved (FxBus methods reference these symbols). Inert under the Arm
+// build. See tests/SEAM.md (Target #1 appendix Correction 2; Target #4).
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d1")))
+#endif
+float FxBus::delay1Buffer[delay1BufferSize];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d1")))
+#endif
+float FxBus::delay2Buffer[delay2BufferSize];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2")))
+#endif
+float FxBus::delay3Buffer[delay3BufferSize];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2")))
+#endif
+float FxBus::delay4Buffer[delay4BufferSize];
 
-float FxBus::predelayBuffer[predelayBufferSize] __attribute__((section(".ram_d2")));
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2")))
+#endif
+float FxBus::predelayBuffer[predelayBufferSize];
 
-float FxBus::inputBuffer1[inputBufferLen1] __attribute__((section(".ram_d2")));
-float FxBus::inputBuffer2[inputBufferLen2] __attribute__((section(".ram_d2")));
-float FxBus::inputBuffer3[inputBufferLen3] __attribute__((section(".ram_d2")));
-float FxBus::inputBuffer4[inputBufferLen4] __attribute__((section(".ram_d2")));
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2")))
+#endif
+float FxBus::inputBuffer1[inputBufferLen1];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2")))
+#endif
+float FxBus::inputBuffer2[inputBufferLen2];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2")))
+#endif
+float FxBus::inputBuffer3[inputBufferLen3];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2")))
+#endif
+float FxBus::inputBuffer4[inputBufferLen4];
 
-float FxBus::diffuserBuffer1[diffuserBufferLen1] __attribute__((section(".ram_d2")));
-float FxBus::diffuserBuffer2[diffuserBufferLen2] __attribute__((section(".ram_d2")));
-float FxBus::diffuserBuffer3[diffuserBufferLen3] __attribute__((section(".ram_d2b")));
-float FxBus::diffuserBuffer4[diffuserBufferLen4] __attribute__((section(".ram_d2b")));
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2")))
+#endif
+float FxBus::diffuserBuffer1[diffuserBufferLen1];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2")))
+#endif
+float FxBus::diffuserBuffer2[diffuserBufferLen2];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+float FxBus::diffuserBuffer3[diffuserBufferLen3];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+float FxBus::diffuserBuffer4[diffuserBufferLen4];
 
 FxBus::FxBus() {}
 
