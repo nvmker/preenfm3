@@ -411,3 +411,88 @@ The serialization size is **80 bytes** (per-timbre block is 8 bytes:
 `u16 stepUnique + u16 timerMask + u8 seqActivated + u8 recording + u8 muted +
 u8 instrumentStepSeq`), not the 68 informally estimated during seam design. The
 tempo offset (**14**, the regression target) is unaffected.
+
+---
+
+## Appendix: contact with the code (Target #2 implementation findings)
+
+*Added when the Hexter (DX7 sysex) target was implemented. The seam needed ZERO
+new firmware guards — `Hexter.cpp` compiled verbatim, exactly as §b predicted.
+The notable event was the crash-class bug this target was built to catch — and
+it fired on the first structured-garbage input under ASAN.*
+
+### Finding — unbounded table index in `voiceSetData` (global-buffer-overflow)
+
+The whole point of Target #2 (per `tests/README.md` row 2: "crash/corruption on
+malformed sysex") was to surface exactly this class of bug. The ASAN build
+caught one on the first structured-garbage input.
+
+**Site:** `firmware/Src/utils/Hexter.cpp:932`
+
+```cpp
+params->matrixRowState2.mul = dx7_voice_amd_to_ol_adjustment[(patch[140])] / 100.0f;
+```
+
+- `dx7_voice_amd_to_ol_adjustment` is `const float[100]` (400 bytes) — a
+  file-scope global in `Hexter.cpp`.
+- `patch[140]` (unpacked LFO AMD) is copied **raw** from `packed[115]` by
+  `patchUnpack`'s "lamd" loop (`*up++ = *pp++`, no mask). The `packed[115] →
+  unpacked[140]` mapping was confirmed empirically. Every **other** table access
+  in `voiceSetData` is wrapped in `limit(…,0,99)`; this one alone is not.
+- Any patch whose `packed[115] >= 100` reads past the 100-entry global.
+
+**Captured ASAN/UBSAN trace** (Apple clang 21, arm64 host, `index 125`):
+
+```text
+Hexter.cpp:932:32: runtime error: index 125 out of bounds for type 'const float[100]'
+==ERROR: AddressSanitizer: global-buffer-overflow ... READ of size 4
+    #0 Hexter::voiceSetData(OneSynthParams*, unsigned char*) Hexter.cpp:932
+    #1 Hexter::loadHexterPatch(unsigned char*, OneSynthParams*)  Hexter.cpp:183
+... located 100 bytes after global variable 'dx7_voice_amd_to_ol_adjustment' of size 400
+```
+
+**Two amplifiers worth noting** (both shape the test design):
+
+1. **The read's result is immediately discarded.** `matrixRowState2.mul` is
+   reassigned to `0.0f` two statements after line 932, so the line is
+   effectively dead — but the OOB read still executes (UB). On-device under
+   `-Ofast`, an adversarial sysex with a huge LFO-AMD byte could read past the
+   flash-resident table into an unmapped region and hard-fault: the same crash
+   class Target #1 guarded for the sequencer. The bug is NOT observable in the
+   imported `OneSynthParams` output, so the test cannot lock it via an output
+   golden — only via the ASAN trace.
+2. **Large indexes skip ASAN's global redzone.** `packed[115]==255` (an
+   all-`0xFF` patch) reads index 255, which lands on an adjacent valid global —
+   ASAN-silent, but still wrong-data UB. (This is why the all-ones test passed
+   despite also being OOB.) "Green under ASAN" is therefore necessary but not
+   sufficient; the malformed-input tests **clamp** `packed[115]` to `<=99`
+   rather than relying on ASAN to flag every case.
+
+**Resolution (per the no-fix mandate):** **NOT** fixed in firmware. The test
+suite documents the finding (`HexterUnboundedIndex` suite + the captured trace)
+and the malformed-input tests clamp `packed[115]` to `<=99` so the green suite
+exercises the firmware's actual (narrow) safety envelope instead of aborting.
+A separate firmware change should add the missing `limit(patch[140], 0, 99)` —
+and, since the read is dead, likely delete the line entirely.
+
+### Also characterized (preserved as golden, NOT fixed)
+
+- **`transposeMultiply` dead branch** — in `voiceSetData`, `else if (transpose
+  < -18)` is unreachable after `if (transpose < -6)`, so `transposeMultiply`
+  never reaches `0.25f`. The `HexterTransposeDeadBranch` suite asserts the
+  current (`0.5f`-only) behavior so a future fix is a visible, deliberate
+  change.
+
+### Actual Hexter-seam surface (replaces the summary-table row)
+
+| File | Change | Why |
+| --- | --- | --- |
+| `firmware/Src/utils/Hexter.cpp` | **none** | host-compilable verbatim, as §b predicted — no HAL, no ARM asm, no section attrs |
+| `tests/CMakeLists.txt` | `target_sources` += `Hexter.cpp` + `Presets.cpp` (the REAL `Presets.cpp`, not a stub) | `voiceSetData` seeds `params` from `defaultPreset` via a float-wise memcpy; pulling real `Presets.cpp` keeps the golden snapshot faithful to actual firmware defaults |
+| `tests/hexter_test.cpp` | 18 ctest entries: pure-helper goldens, pipeline golden + determinism, malformed-input crash guard, span-contract finding, **unbounded-index finding**, transpose dead-branch golden | coverage |
+| `tests/stubs/*` | **none added** | Hexter's functions are pure over the `OneSynthParams` POD — no collaborator symbols to satisfy (contrast Sequencer's 13-method stub) |
+
+No new host-incompatible constructs surfaced in `Hexter.cpp`. The `fatfs.h`
+shim, the `Common.h` `strcmp` guard, the `Voice.h` `__USAT` fallback, and the
+section-attribute/Mach-O guards from the Target #1 appendix all carry over
+unchanged — Targets #3 and #4 inherit them as-is.
