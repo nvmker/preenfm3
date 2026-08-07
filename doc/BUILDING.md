@@ -58,7 +58,7 @@ so prefer the `.bin`). There is no `cmake --target flash`; pick one of:
 Flash regions:
 
 | Image | Address |
-|---|---|
+| --- | --- |
 | Bootloader | `0x08000000` (128 KiB, bank 1) |
 | Firmware | `0x08020000` (after the bootloader) |
 
@@ -103,6 +103,27 @@ The standard field-update path once the bootloader is installed:
 
 This updates **firmware only**; to change the bootloader, use method A or B.
 
+## Tests (host-side unit tests)
+
+Host-side C++ unit tests live under [`tests/`](../tests), built with
+**GoogleTest** and run with **CTest**. They compile with the **host compiler**
+(`g++`/`clang++`), not `arm-none-eabi-gcc` — so `tests/` is a standalone CMake
+project you configure *without* `-DCMAKE_TOOLCHAIN_FILE`. (The toolchain file
+applies to the whole CMake tree; it can't co-exist with a host-built test
+target, so tests/ is not `add_subdirectory`-ed into the firmware build.)
+
+```sh
+make test          # configure + build + run, into build/test/
+
+# or raw CMake:
+cmake -B build/test -S tests
+cmake --build build/test -j
+ctest --test-dir build/test --output-on-failure
+```
+
+See [`tests/README.md`](../tests/README.md) for the scope (currently
+scaffolding + a smoke test), conventions, and the coverage roadmap.
+
 ## Project structure
 
 ```
@@ -112,4 +133,5 @@ cmake/stm32-post-build.cmake        .bin/.hex + size helper
 lib/CMakeLists.txt                  preenfm3lib (static archive: FatFs, display, input, SD/BSP)
 firmware/CMakeLists.txt             preenfm3 executable (links preenfm3lib; preenfm3_2MB.ld)
 bootloader/CMakeLists.txt           bootloader executable (links preenfm3lib; STM32H753VITX_FLASH.ld)
+tests/CMakeLists.txt                host-side GoogleTest unit tests (standalone project, host compiler)
 ```

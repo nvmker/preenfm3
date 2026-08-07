@@ -1,0 +1,14 @@
+# clangd configuration. Scoped: only affects files under tests/.
+#
+# tests/ is a standalone CMake project built with the HOST compiler and linked
+# against GoogleTest, which is fetched via FetchContent at configure time. Its
+# include paths (gtest/gtest.h, etc.) only exist in build/test/compile_commands.json
+# AFTER `cmake -B build/test -S tests` has run. Without this block, clangd/pur-lens
+# can't resolve those headers and reports a spurious "file not found".
+#
+# Firmware/bootloader/lib files are untouched (they fall through to defaults).
+# Run `cmake -B build/test -S tests` (or `make test`) once to generate the DB.
+If:
+  PathMatch: ^tests/.*\.(cpp|cc|cxx|hpp|h)$
+CompileFlags:
+  CompilationDatabase: build/test

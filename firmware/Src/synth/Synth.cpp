@@ -15,13 +15,32 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+// `stm32h7xx_hal.h` is the CubeMX HAL header; it has no host build. Synth's
+// compiled body references two HAL calls (HAL_RNG_GenerateRandomNumber in
+// buildNewSampleBlock, HAL_Delay in beforeNewParamsLoad) and one HAL-typed
+// extern (hrng), each gated below; the rest of Synth.cpp is pure DSP/routing
+// logic over the Timbre/Voice graph and needs no HAL types. Guard the include
+// out under PFM3_HOST. Inert under the Arm build. See tests/SEAM.md (Target #4
+// appendix).
+#ifndef PFM3_HOST
 #include "stm32h7xx_hal.h"
+#endif
 #include "Synth.h"
 #include "Menu.h"
 #include "Sequencer.h"
 
+#ifndef PFM3_HOST
 extern RNG_HandleTypeDef hrng;
+#endif
 extern float noise[32];
+#ifdef PFM3_HOST
+// `SystemCoreClock` is the CMSIS system-clock variable (normally declared via
+// the HAL chain in system_stm32h7xx.h, gated out under PFM3_HOST). The host
+// build defines it in the test stub TU; declare it here so Synth::init's
+// reference resolves. NOT a HAL stub: plain uint32_t extern. See tests/SEAM.md
+// (Target #4 appendix).
+extern uint32_t SystemCoreClock;
+#endif
 
 Synth::Synth(void) {
 }
@@ -258,10 +277,18 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
 
     // We consider the random number is always ready here...
     uint32_t random32bit;
+#ifdef PFM3_HOST
+    // Host stub: no HAL RNG. Deterministic seed (0) feeds the shared noise[]
+    // fill below, so the host path populates the table exactly as firmware
+    // would (from a fixed seed) and never leaves it uninitialized. Only the
+    // HAL RNG acquisition — the single host-incompatible step — is gated out.
+    random32bit = 0;
+#else
     if (unlikely(HAL_RNG_GenerateRandomNumber(&hrng, &random32bit) != HAL_OK)) {
         // Recreate on rnd from previous pass
         random32bit = noise[31] * 0x7fffffff;
     }
+#endif
 
     noise[0] = (random32bit & 0xffff) * .000030518f - 1.0f; // value between -1 and 1.
     noise[1] = (random32bit >> 16) * .000030518f - 1.0f; // value between -1 and 1.
@@ -513,9 +540,11 @@ void Synth::beforeNewParamsLoad(int timbre) {
     timbres_[timbre].resetArpeggiator();
     // Stop all voices
     allNoteOffQuick(timbre);
+#ifndef PFM3_HOST
     // Let's allow the buffer to catch up
     // We can do that because we're in the lower priority thread
     HAL_Delay(5);
+#endif
 }
 ;
 

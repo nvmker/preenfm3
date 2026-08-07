@@ -21,3 +21,11 @@ jobs:
   build:
     name: Build (Release)
     uses: ./.github/workflows/build.yml
+
+  # Host-side GoogleTest unit tests — run in PARALLEL with the firmware build
+  # (no `needs:`) so a green cross-compile can't mask a red unit test, and
+  # vice-versa. tests/ is a standalone project (host compiler); see
+  # .github/workflows/tests.yml and tests/README.md.
+  test:
+    name: Host unit tests
+    uses: ./.github/workflows/tests.yml
