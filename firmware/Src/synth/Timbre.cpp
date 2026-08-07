@@ -22,12 +22,31 @@
 
 #define INV127 .00787401574803149606f
 #define INV16 .0625
+#ifdef PFM3_HOST
+// NULL: the firmware build gets it via the transitive HAL chain (Voice.h ->
+// Synth.h -> Timbre.h -> dwt -> stm32h7xx_hal.h -> ...). The host build gates
+// that chain out, so pull the standard C++ definition directly. Harmless
+// under Arm (NULL already defined). See tests/SEAM.md (Target #4 appendix).
+#include <cstddef>
+#endif
+
 #define INV_BLOCK_SIZE (1.0f / BLOCK_SIZE)
 
 // Regular memory
-float midiNoteScale[2][NUMBER_OF_TIMBRES][128] __attribute__((section(".ram_d1")));
+// `.ram_d1` / `.ram_d2b` name STM32H7 SRAM regions via the Arm linker script;
+// the attributes are a hard ERROR on Mach-O (macOS host) and irrelevant to
+// host semantics, so drop them under PFM3_HOST. The DEFINITIONS are
+// preserved (Timbre methods reference both). Inert under the Arm build. See
+// tests/SEAM.md (Target #1 appendix Correction 2; Target #4).
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d1")))
+#endif
+float midiNoteScale[2][NUMBER_OF_TIMBRES][128];
 float Timbre::unisonPhase[14] = { .37f, .11f, .495f, .53f, .03f, .19f, .89f, 0.23f, .71f, .19f, .31f, .43f, .59f, .97f };
-float Timbre::delayBuffer[NUMBER_OF_TIMBRES][delayBufferSize] __attribute__ ((section(".ram_d2b")));
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+float Timbre::delayBuffer[NUMBER_OF_TIMBRES][delayBufferSize];
 
 #define CALLED_PER_SECOND (PREENFM_FREQUENCY / 32.0f)
 
