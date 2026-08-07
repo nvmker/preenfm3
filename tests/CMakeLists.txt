@@ -155,6 +155,39 @@ target_sources(pfm3_tests PRIVATE
     "${PFM3_FW_ROOT}/Src/synth/waves.c"
     "${PFM3_FW_ROOT}/Src/synth/Env.cpp"
     "${PFM3_FW_ROOT}/Src/synth/Matrix.cpp"
-    "${PFM3_FW_ROOT}/Src/synth/Common.cpp")
+    "${PFM3_FW_ROOT}/Src/synth/Common.cpp"
+    # Target #4: MidiDecoder host coverage (decode + routing). The decode
+    # state machine (Tier 1) + NRPN assembly (Tier 2) need MidiDecoder.cpp; the
+    # routing capstone (Tier 3) needs the REAL Synth graph — Synth/Timbre/
+    # Voice/FxBus/Lfo* — plus midipal/ (NoteStack, EventScheduler) and
+    # SimpleEffect/ (SimpleComp + SimpleEnvelope) for the Synth's compressor
+    # members. SynthState.cpp is deliberately NOT pulled (its closure drags the
+    # FMDisplay family + HAL); the SynthState ctor is never called (the fixture
+    # memsets+patches), and its out-of-line non-virtual methods that Synth/
+    # Timbre/Voice reference are stubbed in midi_decoder_collaborators_stub.cpp.
+    # See tests/SEAM.md Target #4 appendix for the GO/NO-GO gate result + the
+    # full new seam surface.
+    "${PFM3_FW_ROOT}/Src/midi/MidiDecoder.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/Synth.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/Timbre.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/Voice.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/FxBus.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/Lfo.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/LfoOsc.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/LfoEnv.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/LfoEnv2.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/LfoStepSeq.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/MixerState.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/SynthStateAware.cpp"
+    "${PFM3_FW_ROOT}/Src/synth/SynthParamListener.cpp"
+    # Synth-graph closure: NoteStack + EventScheduler (midipal/) and SimpleComp
+    # + SimpleEnvelope (SimpleEffect/) are real firmware TUs the Synth/Timbre/
+    # Voice bodies reference. Pulled for real (not stubbed) so the note-on/off +
+    # compressor routing is faithful.
+    "${PFM3_FW_ROOT}/Src/midipal/note_stack.cpp"
+    "${PFM3_FW_ROOT}/Src/midipal/event_scheduler.cpp"
+    "${PFM3_FW_ROOT}/Src/SimpleEffect/SimpleComp.cpp"
+    "${PFM3_FW_ROOT}/Src/SimpleEffect/SimpleEnvelope.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/stubs/midi_decoder_collaborators_stub.cpp")
 
 gtest_discover_tests(pfm3_tests)

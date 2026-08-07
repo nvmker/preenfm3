@@ -76,12 +76,17 @@ upgrade: bump `GIT_TAG` here **and** the cache key in
 The scaffolding proves the harness runs. The next sessions add coverage, ranked
 by **impact × bug-likelihood**:
 
-| Target | File(s) | Guards against |
-| --- | --- | --- |
-| Sequencer serialization | `firmware/Src/midi/Sequencer.cpp` | regression of the `-Ofast` unaligned-float hard-fault |
-| DX7 sysex import | `firmware/Src/utils/Hexter.cpp` | crash/corruption on malformed sysex |
-| Synth math | `firmware/Src/synth/{Osc,Env,Matrix}.cpp` | silent audio regressions |
-| MIDI decode | `firmware/Src/midi/MidiDecoder.cpp` | stuck notes / wrong CC routing |
+| Target | File(s) | Guards against | Status |
+| --- | --- | --- | --- |
+| Sequencer serialization | `firmware/Src/midi/Sequencer.cpp` | regression of the `-Ofast` unaligned-float hard-fault | ✅ done (Target #1) |
+| DX7 sysex import | `firmware/Src/utils/Hexter.cpp` | crash/corruption on malformed sysex | ✅ done (Target #2; surfaced + fixed a global-buffer-overflow) |
+| Synth math | `firmware/Src/synth/{Osc,Env,Matrix}.cpp` | silent audio regressions | ✅ done (Target #3) |
+| MIDI decode | `firmware/Src/midi/MidiDecoder.cpp` | stuck notes / wrong CC routing | ✅ done (Target #4; decode state machine + NRPN assembly + routing through the real Synth graph) |
+
+All four roadmap targets are now covered. The host-testability seam is
+backwards-compatible: new coverage sessions can drop in another `*_test.cpp`
+and extend `target_sources` without revisiting the seam decision (see
+[SEAM.md](SEAM.md)).
 
 Each of these currently `#include`s HAL/STM32 headers transitively. The work is
 **extraction**: isolate the pure logic into a host-compilable translation unit
