@@ -36,4 +36,4 @@ struct FIL;
 }
 #endif
 
-#endif /* __fatfs_H */
+#endif /* PFM3_HOST_SHIM_FATFS_H */
