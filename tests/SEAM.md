@@ -137,7 +137,10 @@ untouched.
 
 - **Header stubs needed:** none.
 - **Source guards needed:** none. All three compile verbatim. (They `#include`
-  `SynthState.h`, whose closure is clean per the evidence above.)
+  `SynthState.h`, whose closure is clean per the evidence above.) **[CORRECTED
+  by Target #3 — see appendix: THREE section-attribute guards ARE needed
+  (Osc.cpp:38, Env.cpp:21, Env.cpp:49), exactly as Target #1 appendix
+  Correction 2 predicted.]**
 - **Runtime-table caveat:** `Env::init` populates `incTab[]` and `Osc::init`
   precomputes `waveTables[].precomputedValue/phaseMul`. Host tests must call
   `init()` once before asserting — same contract as firmware.
@@ -145,6 +148,17 @@ untouched.
   *matrix arithmetic* lives in `FMDisplay.cpp` and inlined headers. Testing
   `Matrix.cpp` alone is near-zero value; the roadmap row really means
   *Matrix + the connect logic*. Flag for the test-authoring step, not this seam.
+
+  > **STALE — corrected by Target #3 implementation:** there is **no
+  > `FMDisplay.cpp`** in the tree. The real matrix arithmetic is **inline in
+  > `Matrix.h`** (`computeAllDestinations()`, `setSource()`, `getDestination()`,
+  > `getSource()`); the `FMDisplay*` family is split across
+  > `firmware/Src/hardware/FMDisplay{3,Menu,Mixer,Editor,Sequencer}.cpp`, none
+  > of which is the matrix arithmetic. Matrix coverage = test the **inline
+  > header methods** (genuine `source × mul → destination` routing across the
+  > MTX1-4 rows, pure arithmetic → exact) with `Matrix.cpp`'s `init()` supplying
+  > the rows pointer. This is real value, not near-zero — do not under-scope
+  > it. See the Target #3 appendix.
 
 ### 4. `MidiDecoder.cpp` — decode under test (the one non-trivial target)
 
@@ -515,3 +529,126 @@ No new host-incompatible constructs surfaced in `Hexter.cpp`. The `fatfs.h`
 shim, the `Common.h` `strcmp` guard, the `Voice.h` `__USAT` fallback, and the
 section-attribute/Mach-O guards from the Target #1 appendix all carry over
 unchanged — Targets #3 and #4 inherit them as-is.
+
+---
+
+## Appendix: contact with the code (Target #3 implementation findings)
+
+*Added when the synth-math (Osc/Env/Matrix) target was implemented. Target #1
+appendix Correction 2 predicted the section-attribute guards; this appendix
+records what else reality required.*
+
+### Correction 6 — three section attributes ARE needed (as Correction 2 predicted)
+
+§b.3 claimed Osc/Env/Matrix "compile verbatim" with no source guards. **False on
+a Mach-O host**, exactly as Target #1 appendix Correction 2 forecast for the
+synth-math run. Three `__attribute__((section(".instruction_ram")))`
+declarations are hard errors under Apple clang (mach-o section specifier
+requires a segment and section separated by a comma); `-Wno-attributes` cannot
+downgrade them (target diagnostic, not an attribute warning). Gated with the
+established `#ifndef PFM3_HOST` leading-attribute pattern copied from
+`Sequencer.cpp:38-43`:
+
+| File | Site | Declaration |
+| --- | --- | --- |
+| `firmware/Src/synth/Osc.cpp:38` | `userWaveform[6][1024]` | section attr |
+| `firmware/Src/synth/Env.cpp:23` | `Env::incTab[1601]` | section attr |
+| `firmware/Src/synth/Env.cpp:57` | `userEnvCurves[4][64]` | section attr |
+
+Inert under the Arm build (the attribute is preserved verbatim inside
+`#ifndef PFM3_HOST`); the cross-build links clean and the firmware binary is
+byte-identical.
+
+### Correction 7 — link deps are REAL firmware TUs, not stubs (waves.c, Common.cpp)
+
+§b said Osc/Env/Matrix need no stubs. True for collaborator METHODS (none), but
+the compiled bodies reference two **data** symbols whose definitions live in
+sibling firmware TUs:
+
+- **`waves.c`** — `Osc.cpp`'s `waveTables[]` initializer references `sinTable`,
+  `sawTable`, `squareTable`, `sinSquareTable`, `sinOrZeroTable`, `sinPosTable`,
+  all defined in `firmware/Src/synth/waves.c` (a plain-**C** data TU). Pulled for
+  real (not stubbed) so the wavetable pointers — and thus every DSP golden —
+  reflect actual firmware data. Required enabling the **C** language in the test
+  `project(... LANGUAGES C CXX)`; `waves.c` compiles byte-identically to the
+  firmware Arm build.
+- **`Common.cpp`** — `Env::init()` calls `checkIsLoop()` (inline in `Env.h`),
+  whose body indexes `algoOpInformation[(int)*algoNumber][envNumber]`. That
+  table is defined in `firmware/Src/synth/Common.cpp` (pure data). Pulled for
+  real so the carrier/modulator routing is faithful (a zero-stub would make
+  every env a non-modulator and silently change loop/release behavior).
+
+`Matrix.cpp` has no extern deps beyond its own members. No collaborator-method
+stub file was needed (contrast Sequencer's 13-method stub).
+
+### Notable approach — minimal `SynthState` (memset + `tuning_` patch)
+
+`Osc::newNote` / `getNoteRealFrequencyEstimation` dereference exactly one
+`SynthState` field — the public `mixerState.tuning_` (multiplied by `INV440`).
+`SynthState`'s constructor is out-of-line (`SynthState.cpp`, not compiled here),
+so a real construction would not link. The fixture instead backs the pointer
+with a zeroed, `alignof(SynthState)`-aligned byte buffer and patches
+`mixerState.tuning_ = 440.0f` (neutralising `INV440`). Osc never dispatches a
+virtual or touches another member, so:
+
+- the member write lands at the byte offset the compiler computes from the
+  class definition (no layout guesswork);
+- UBSAN's vptr check does not fire on a plain data-member access (it fires only
+  on virtual dispatch / member-fn call through a bad vptr), so this is clean
+  under `-fsanitize=undefined`;
+- ASAN is a non-issue (the buffer is real, properly sized/aligned).
+
+Object lifetime is technically not begun, which is why this is documented here
+rather than used indiscriminately — it is a scoped, justified deviation for a
+struct the firmware treats as a bag of bytes with one float field. `Env` and
+`Matrix` need no `SynthState`.
+
+### Latent bug PRESERVED as golden — `getNoteRealFrequencyEstimation` fall-through
+
+`Osc::getNoteRealFrequencyEstimation` (Osc.cpp ~L220) has **no `break`**
+between the `OSC_FT_KEYBOARD`, `OSC_FT_FIXE`, and `OSC_FT_KEYHZ` cases. All
+three fall through to the KEYHZ formula; the KEYBOARD and FIXE results are
+computed then immediately overwritten. Asserted as the CURRENT golden:
+
+- `OscFreqEstimationFallThrough.AllFrequencyTypesYieldKeyHzFormula` — all
+  three frequencyTypes return the SAME (KEYHZ-formula) value for identical
+  inputs. A future fix that adds the breaks flips this test.
+- `OscFreqEstimationFallThrough.NewNoteDifferentiatesByFrequencyType` —
+  contrast proof: `Osc::newNote`'s switch DOES have breaks, so it yields three
+  DISTINCT `mainFrequency` values. This pins the bug as estimation-specific
+  (not a property of the enum or inputs) and documents the intended behavior a
+  fix should restore.
+
+NOT fixed here — flagged for a separate firmware change, exactly as Target #2
+did for the `transposeMultiply` dead branch.
+
+### Signal-fidelity note — host goldens guard the shared source, not -Ofast
+
+The oscillator/envelope hot paths are pure float arithmetic; the host test
+compiles them under strict IEEE (no `-Ofast`). A firmware-only `-Ofast`
+reordering that does not also manifest in the host build would not be caught
+here — but the realistic silent-regression classes (wavetable **table-layout**
+change, `Osc::init` **precompute-math** change, **index-wrap** change, Env
+**curve-table / incTab** change, Matrix **routing** change) are shared between
+the host and firmware builds (same source), so the host goldens DO guard them.
+Captured goldens: a 32-sample `getNextBlock` block at A4 (SIN), and a 25-point
+`getNextAmpExp` trace across a full noteOn→release ADSR (envExponential curve).
+A tiny `EXPECT_NEAR` (1e-5) absorbs 1-ULP host FPU / FMA-contraction differences
+across gcc/clang, x86/arm64; pure-int matrix arithmetic and single-derive
+checks stay exact.
+
+### Actual synth-math seam surface (replaces the summary-table row)
+
+| File | Change | Why |
+| --- | --- | --- |
+| `firmware/Src/synth/Osc.cpp:38` | `#ifndef PFM3_HOST` around the `userWaveform` section attr | Mach-O hard error |
+| `firmware/Src/synth/Env.cpp:23,57` | `#ifndef PFM3_HOST` around the `incTab` + `userEnvCurves` section attrs | Mach-O hard error |
+| `tests/CMakeLists.txt` | enable `C` language; `target_sources` += `Osc.cpp` + `waves.c` + `Env.cpp` + `Matrix.cpp` + `Common.cpp` | waveTables data + `algoOpInformation` link deps |
+| `tests/synth_math_test.cpp` | 21 ctest entries: Osc DSP goldens (OFF/frozen/advancing/block-vs-sample) + estimation fall-through + newNote contrast; Env incTab-formula + ADSR lifecycle + curve-routing + 25-pt trace; Matrix single-row + MTX1-4 coupling + MTX2/3/4 + skip-rule + row0-assign | coverage |
+| `tests/stubs/*` | **none added** | Osc/Env/Matrix have no out-of-line collaborator-method symbols; all link deps are real data TUs |
+
+No NEW host-incompatible construct beyond the three predicted section
+attributes. The `fatfs.h` shim, `Common.h` `strcmp` guard, `Voice.h` `__USAT`
+fallback, and the Sequencer section-attribute guards all carry over unchanged.
+Target #4 (MidiDecoder) remains the only target needing a header guard
+(`usbd_midi.h`) and HW-helper stubs.
