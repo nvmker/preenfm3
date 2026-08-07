@@ -468,12 +468,31 @@ Hexter.cpp:932:32: runtime error: index 125 out of bounds for type 'const float[
    sufficient; the malformed-input tests **clamp** `packed[115]` to `<=99`
    rather than relying on ASAN to flag every case.
 
-**Resolution (per the no-fix mandate):** **NOT** fixed in firmware. The test
-suite documents the finding (`HexterUnboundedIndex` suite + the captured trace)
-and the malformed-input tests clamp `packed[115]` to `<=99` so the green suite
-exercises the firmware's actual (narrow) safety envelope instead of aborting.
-A separate firmware change should add the missing `limit(patch[140], 0, 99)` —
-and, since the read is dead, likely delete the line entirely.
+**Resolution:** FIXED. The follow-up firmware change bounds the index with
+`limit(…,0,99)`, matching every other table access in `voiceSetData`:
+
+```cpp
+params->matrixRowState2.mul = dx7_voice_amd_to_ol_adjustment[limit(patch[140], 0, 99)] / 100.0f;
+```
+
+The dead-store (the read's result is still discarded two lines later) is
+intentionally left untouched — the bug was the OOB read, not the discard;
+deleting the line is a separate cleanup decision. The test suite flipped in
+lockstep with the fix:
+
+- The `packed[115]` clamps in the malformed-input tests are **removed** — they
+  now feed genuinely out-of-range bytes (125 via structured garbage, 255 via
+  all-ones) through the FULL pipeline to guard the clamp end-to-end under ASAN.
+  The exact input that previously aborted the suite (`packed[115]==125`) now
+  imports cleanly.
+- `HexterUnboundedIndex.OutOfRangeLfoAmdIndexIsClampedByFirmware` drives the
+  exact indices ASAN caught (100/125/255) directly into `voiceSetData` — the
+  unit-level guard that aborts under ASAN if the `limit()` is ever removed.
+- `HexterUnboundedIndex.AmdTableReadResultIsDiscardedByFirmware` is unchanged
+  (the discard golden survives the fix).
+
+Both host builds stay green (26/26, incl. ASAN/UBSAN), and the Arm cross-build
+links clean.
 
 ### Also characterized (preserved as golden, NOT fixed)
 

@@ -929,7 +929,7 @@ void Hexter::voiceSetData(struct OneSynthParams *params, uint8_t *patch)
 	params->matrixRowState1.dest1 = ALL_OSC_FREQ;
 
 	params->matrixRowState2.source = MATRIX_SOURCE_LFO2;
-	params->matrixRowState2.mul = dx7_voice_amd_to_ol_adjustment[(patch[140])] / 100.0f;
+	params->matrixRowState2.mul = dx7_voice_amd_to_ol_adjustment[limit(patch[140], 0, 99)] / 100.0f;
 	params->matrixRowState2.dest1 = ALL_MIX;
 
 	params->matrixRowState2.mul = 0.0f;
