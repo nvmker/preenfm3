@@ -15,20 +15,35 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+// `usbd_midi.h` pulls in the USB device middleware chain (usbd_ioreq.h ->
+// usbd_def.h -> usbd_conf.h -> main.h -> stm32h7xx_hal.h) which has no host
+// build. The MidiDecoder decode path never references any USBD_* symbol, so
+// guard the include out under PFM3_HOST. Inert under the Arm build. See
+// tests/SEAM.md (Target #4 appendix).
+#ifndef PFM3_HOST
 extern "C" {
 #include "usbd_midi.h"
 }
+#endif
 
 #include "MidiDecoder.h"
 #include "RingBuffer.h"
 
+// The two HAL-typed externs below are referenced only from the sendMidiDin5Out
+// / sendMidiUsbOut HW-touching helpers, which are stubbed out under PFM3_HOST
+// (see those methods). Guard the externs so the HAL types are never named in
+// the host compile. Inert under the Arm build.
+#ifndef PFM3_HOST
 extern USBD_HandleTypeDef hUsbDeviceFS;
+#endif
 
 // Let's call it MidiOut despite USB spec
 uint8_t usbMidiOutBuff[64];
 uint8_t *usbMidiOutBuffWrt;
 
+#ifndef PFM3_HOST
 extern UART_HandleTypeDef huart1;
+#endif
 
 #define INV127 .00787401574803149606f
 #define INV64  .015625f
@@ -1236,8 +1251,18 @@ void MidiDecoder::writeMidiCCOut(struct MidiEvent *toSend) {
 }
 
 void MidiDecoder::sendMidiDin5Out() {
+#ifdef PFM3_HOST
+    // Host stub: the real body enables the USART TX-empty interrupt so the
+    // USART ISR drains usartBufferOut; on host there is no ISR, and the host
+    // tests deliberately exclude the NRPN-send path that relies on it (see
+    // tests/SEAM.md Target #4 "Trap #1"). Early-return keeps the symbol
+    // linkable; the decode path (the test target) never calls this. Arm path
+    // keeps the real body below.
+    return;
+#else
     // Enable interupt to send Midi buffer :
     SET_BIT(huart1.Instance->CR1, USART_CR1_TXEIE_TXFNFIE);
+#endif
 }
 
 
@@ -1249,12 +1274,23 @@ void MidiDecoder::sendMidiUsbOutIfBufferFull() {
 
 
 void MidiDecoder::sendMidiUsbOut() {
+#ifdef PFM3_HOST
+    // Host stub: the real body hands the buffered USB-MIDI packets to the USB
+    // device layer via USBD_LL_Transmit (a HAL-typed call), which has no host
+    // implementation. The host tests never assert on USB-MIDI out output
+    // (Trap #1: the NRPN-send path that fills the buffer is excluded). Early-
+    // return keeps the symbol linkable for the few decode-adjacent code paths
+    // that call it (newParamValue when MIDICONFIG_SENDS is configured). Arm
+    // path keeps the real body below.
+    return;
+#else
     if (usbMidiOutBuffWrt != usbMidiOutBuff && this->synthState_->fullState.midiConfigValue[MIDICONFIG_USB] == USBMIDI_IN_AND_OUT) {
 
         USBD_LL_Transmit(&hUsbDeviceFS, MIDI_IN_EP, usbMidiOutBuff, usbMidiOutBuffWrt - usbMidiOutBuff);
         // go back to begining of buffer
         usbMidiOutBuffWrt = usbMidiOutBuff;
     }
+#endif
 }
 
 /*
