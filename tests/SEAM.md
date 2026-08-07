@@ -652,3 +652,226 @@ attributes. The `fatfs.h` shim, `Common.h` `strcmp` guard, `Voice.h` `__USAT`
 fallback, and the Sequencer section-attribute guards all carry over unchanged.
 Target #4 (MidiDecoder) remains the only target needing a header guard
 (`usbd_midi.h`) and HW-helper stubs.
+
+---
+
+## Appendix: contact with the code (Target #4 implementation findings)
+
+*Added when the MIDI decode target was implemented. Target #4 was forecast in
+§b.4 + §d.4 as the heaviest of the four targets by far (the only one where a
+header drags the HAL graph in, the only one with raw register writes, and the
+only one whose routing tests need the REAL Synth graph). Reality matched the
+forecast — and the link gate (the marquee risk) cleared, so all three tiers
+shipped.*
+
+### GO/NO-GO gate result — PASSED: the real Synth graph links on host
+
+The marquee risk (§d.4.2) was whether the real Synth graph — `Synth.cpp` +
+`Timbre.cpp` + `Voice.cpp` + `FxBus.cpp` + `Lfo*.cpp` + their closures — would
+link into the host build in reasonable effort. **It does.** The closure is 11
+real firmware TUs (no Synth refactor, no mock — Synth's methods stay non-virtual
+concrete, exactly as §d.4.2 mandated):
+
+| Real firmware TU pulled | Why |
+| --- | --- |
+| `midi/MidiDecoder.cpp` | the unit under test |
+| `synth/Synth.cpp` | noteOn/noteOff/setNewValueFromMidi/controlChange dispatch target |
+| `synth/Timbre.cpp` | Synth::noteOn → Timbre::noteOn → voice allocation (lowerNote_ observable) |
+| `synth/Voice.cpp` | Timbre::noteOn → Voice::noteOn (voice state) |
+| `synth/FxBus.cpp` | Synth::buildNewSampleBlock + MixerState member |
+| `synth/Lfo.cpp` / `LfoOsc.cpp` / `LfoEnv.cpp` / `LfoEnv2.cpp` / `LfoStepSeq.cpp` | Timbre/Voice LFO members |
+| `synth/MixerState.cpp` / `SynthStateAware.cpp` / `SynthParamListener.cpp` | SynthState base + mixer |
+| `midipal/note_stack.cpp` / `event_scheduler.cpp` | Timbre/Voice arpeggiator + note-stack members |
+| `SimpleEffect/SimpleComp.cpp` / `SimpleEnvelope.cpp` | Synth's `instrumentCompressor_[NUMBER_OF_TIMBRES]` member |
+
+`SynthState.cpp` is **deliberately NOT pulled**: its closure drags the FMDisplay
+family (`FMDisplayMixer/Menu/Editor/Sequencer.h`) + HAL (`HAL_RNG_*`). The
+SynthState ctor is never called — the test fixture backs SynthState with a
+`memset`+aligned buffer and `reinterpret_cast<SynthState*>` (Target #3
+minimal-SynthState precedent, scaled up). The out-of-line **non-virtual**
+SynthState methods the compiled Synth/Timbre/Voice bodies reference
+(`setCurrentInstrument`, `scalaSettingsChanged`, `setParamsAndTimbre`,
+`loadPresetFromMidi`) are stubbed in
+`tests/stubs/midi_decoder_collaborators_stub.cpp` — standard link-time test
+doubles for code paths the routing tests never drive (preset-load / Scala /
+instrument-switch flows).
+
+### Synth.cpp — four new PFM3_HOST guards (the predicted HAL surface)
+
+Synth.cpp's HAL surface is tiny and localized (the §b prediction of "none" for
+Osc/Env/Matrix held; for Synth it did not). Four guards, all inert under Arm:
+
+| File / site | Guard | Why |
+| --- | --- | --- |
+| `Synth.cpp` top | `#ifndef PFM3_HOST` around `#include "stm32h7xx_hal.h"` | the CubeMX HAL header has no host build |
+| `Synth.cpp` `extern RNG_HandleTypeDef hrng;` | `#ifndef PFM3_HOST` | HAL-typed extern (same pattern as the 2 MidiDecoder externs) |
+| `Synth.cpp` `Synth::init` RNG call site | `#ifdef PFM3_HOST … random32bit = 0; #else <real HAL_RNG call + noise[] fill> #endif` | mid-function gate replacing the host-incompatible CALL (extends the §b.4 carve-out from "early-return in HW helpers" to "mid-function in HW-call-bearing paths"; the test never calls `buildNewSampleBlock`, so the gated path is dead for testing). **Flagged** as a justified extension — see "Refined rule" below. |
+| `Synth.cpp` `Synth::beforeNewParamsLoad` `HAL_Delay(5)` | `#ifndef PFM3_HOST` around the call | host-incompatible call; tests never call `beforeNewParamsLoad` |
+
+`Synth.cpp` also declares `extern uint32_t SystemCoreClock;` under `#ifdef
+PFM3_HOST` (the CMSIS variable is normally declared via the HAL chain gated
+out; the host stub TU defines it). `noise[32]` needs no stub — it's defined in
+`Osc.cpp:25`, already pulled via Target #3.
+
+### Section-attribute guards — FxBus, Lfo, Timbre (as Target #1 appendix Correction 2 predicted)
+
+Target #1 appendix Correction 2 explicitly forecast that `FxBus.cpp` /
+`Lfo.cpp` / `Timbre.cpp` would need the same Mach-O section-attr guard as
+`Osc.cpp`/`Env.cpp`/`Sequencer.cpp`. They did. Each `__attribute__((section(
+".ram_d1"/".ram_d2"/".ram_d2b")))` declaration is rewritten to the leading-
+attribute pattern (verbatim from `Osc.cpp:38`): the attribute is gated under
+`#ifndef PFM3_HOST`, the **definition** is preserved so the symbol still links.
+Inert under Arm (the compiled output is byte-identical — a leading vs trailing
+`__attribute__` on a static-data-member definition applies identically).
+
+| File | Sites gated | Section names |
+| --- | --- | --- |
+| `synth/Lfo.cpp:22` | `Lfo::invTab[2048]` | `.ram_d1` |
+| `synth/FxBus.cpp:72-87` | 14 static-data-member definitions (`delay1-4Buffer`, `predelayBuffer`, `inputBuffer1-4`, `diffuserBuffer1-4`) | `.ram_d1`, `.ram_d2`, `.ram_d2b` |
+| `synth/Timbre.cpp:28,30` | `midiNoteScale[2][6][128]`, `Timbre::delayBuffer[6][N]` | `.ram_d1`, `.ram_d2b` |
+
+`Timbre.cpp` also picks up a `#ifdef PFM3_HOST #include <cstddef> #endif` —
+`Timbre.cpp:2604` uses `NULL` without a defining header (the firmware build
+gets it via the transitive HAL chain; host needs `<cstddef>`). Harmless under
+Arm (`NULL` already defined).
+
+### MidiDecoder.cpp — the §b.4 guards applied verbatim
+
+Exactly as §b.4 specified, no surprises:
+
+- `usbd_midi.h` include guarded out (`#ifndef PFM3_HOST extern "C" { #include "usbd_midi.h" } #endif`).
+- Two HAL-typed externs guarded (`USBD_HandleTypeDef hUsbDeviceFS`,
+  `UART_HandleTypeDef huart1`).
+- Two HW-touching helpers given `#ifdef PFM3_HOST … return; #else <real body> #endif`
+  early-return stubs: `sendMidiDin5Out` (the `SET_BIT(huart1.Instance->CR1,…)`
+  site) and `sendMidiUsbOut` (the `USBD_LL_Transmit(&hUsbDeviceFS,…)` site).
+- Left host-clean as-is: `sendMidiUsbOutIfBufferFull` (touches only
+  `usbMidiOutBuff`) and `writeMidiCCOut` (writes `usbMidiOutBuff` +
+  `usartBufferOut`).
+
+### Trap #1 (§d.4.1) — the NRPN-send hang — DODGED
+
+`sendCurrentPatchAsNrpns` ends each NRPN with `while (usartBufferOut.getCount()
+> 0) {}`, relying on the USART ISR to drain. With`sendMidiDin5Out` stubbed to
+no-op (no ISR on host), `usartBufferOut` NEVER drains → infinite loop. The
+SEND path is excluded from host scope exactly as §d.4.1 mandated: tests never
+call `sendCurrentPatchAsNrpns`,`newParamValue` (the param-change-out path), or
+`processAsyncActions` with a `SEND_PATCH_AS_NRPN` action. The DECODE-side
+enqueue of `SEND_PATCH_AS_NRPN` (NRPN paramMSB=127, paramLSB=127) IS tested —
+`MidiNrpn.ParamMsb127WithLsb127EnqueuesSendPatchAsNrpn` asserts
+`asyncActions.getCount()` increments, then does NOT drain the queue. The
+boundary is documented in the test file header.
+
+### FAVOR-REAL-DATA EXCEPTION — `allParameterRows` stubbed (not pulled)
+
+`allParameterRows` is a `struct AllParameterRowsDisplay` (an array of
+`ParameterRowDisplay*` row pointers) defined in
+`firmware/Src/hardware/FMDisplayEditor.cpp`. That TU is 4365 lines of TFT/UI
+code (`FirmwareTftDisplay.h`, `COLOR_*`, `LINE_PARAM_*`, `tft_->...`) and is
+NOT host-compilable in reasonable effort — so this is the ONE justified
+exception to the established decision rule ("pull the REAL firmware TU when it
+carries data or pure logic that influences a golden"). The stub
+(`midi_decoder_collaborators_stub.cpp`) provides ONE zero-initialized
+`ParameterRowDisplay` and points every `row[i]` at it. The zeroed
+`ParameterDisplay` entries have `displayType=DISPLAY_TYPE_NONE` (=0), so
+`MidiDecoder::decodeNrpn`'s FLOAT-family check is false and the raw NRPN value
+passes through unchanged to `synth->setNewValueFromMidi`. This lets the
+paramMSB<2 branch execute and dispatch without crashing; the value-
+transformation logic that depends on real `ParameterDisplay` data
+(`displayType`, `minValue`) is NOT under test here. The NRPN ASSEMBLY (the
+Tier 2 target) is independent of this data and is faithfully exercised.
+
+### Refined rule (supersedes §b.4 carve-out letter, preserves its spirit)
+
+> **`PFM3_HOST` guards in firmware may replace a host-incompatible CALL
+> mid-function (not just early-return-in-HW-helper), provided: (a) the call is
+> genuinely host-incompatible (HAL-typed symbol or HAL header); (b) the host
+> branch produces a deterministic, benign substitute; (c) the Arm path keeps
+> the real body verbatim inside `#ifndef PFM3_HOST`.** This extends the §b.4
+> carve-out ("early-return stubs in HW-touching helpers") to call sites inside
+> larger functions (e.g. `Synth::buildNewSampleBlock`'s RNG call) — same
+> spirit (replace the CALL, not business logic; Arm path unchanged), broader
+> shape. Flagged here so future targets inherit the corrected picture.
+
+### Latent firmware quirks characterized as golden (NOT fixed)
+
+- **`controlChange` CC_OMNI_ON / CC_OMNI_OFF channel match lacks the routing
+  path's `-1`.** `midiEventReceived`'s note-routing channel match is
+  `(instrumentState_[timbre].midiChannel - 1) == midiEvent.channel`; but
+  `controlChange`'s CC_OMNI_ON/OFF match is `instrumentState_[timbre].
+  midiChannel == midiEvent.channel` (NO `-1`). For a timbre listening on MIDI
+  channel 1 (midiChannel=1, event channel 0), CC_OMNI_ON on event channel 0
+  evaluates `1 == 0` → false and is silently DROPPED — even though NoteOns on
+  the same channel route correctly. Locked by
+  `MidiDecoderRouting.CcOmniOnChannelMatchUsesMidiChannelDirectlyNotMinusOne`
+  so a future fix (or a regression that spreads the inconsistency) is visible.
+  Flagged for a separate firmware change.
+- **Status byte mid-message is treated as DATA, not a re-anchor.** While
+  `MIDI_EVENT_IN_PROGRESS`, `newByte` calls `newMessageData(byte)` for ALL
+  bytes (including status bytes >= 0x80); the decoder does NOT re-anchor on a
+  status byte mid-message. (Spec-compliant MIDI re-anchors.) Locked by
+  `MidiDecoderRouting.MalformedByteStreamsDoNotCrashOrCorrupt` step 4.
+
+### Minimal-SynthState scaled up (Target #3 precedent, wider field set)
+
+Target #3's `Osc`-only minimal-SynthState (memset + one `tuning_` patch)
+scales to MidiDecoder, which dereferences a much wider field set:
+`fullState.synthMode`, `fullState.midiConfigValue[MIDICONFIG_*]`,
+`mixerState.globalChannel_/currentChannel_/MPE_inst1_/userCC_[]`,
+`mixerState.instrumentState_[t].{midiChannel,firstNote,lastNote,shiftNote,
+numberOfVoices,scaleFrequencies}` (scaleFrequencies is a `float*` — the
+fixture owns the backing tables and points each `instrumentState_[t]` at one),
+and `params` (pointed at `synth.getTimbre(0)->getParamRaw()` after
+`Synth::init` populates it). No virtual is dispatched through the resulting
+SynthState pointer (MidiDecoder and Synth::noteOn read plain data members), so
+UBSAN's vptr check does not fire. Object lifetime is technically not begun —
+documented as a scoped, justified deviation, same stance as Target #3.
+
+### Test-only private-state access — `#define private public`, scoped
+
+MidiDecoder's interesting decode state (`currentEventState.eventState`,
+`currentEvent.eventType/channel/value[]`, `currentNrpn[]`, `runningStatus`,
+`omniOn[]`, `bankNumber[]`, `songPosition`, `midiClockCpt`) is `private`. The
+refined SEAM rule forbids `PFM3_HOST` in firmware headers for anything but
+genuinely host-incompatible constructs, so a `friend` test hook in
+`MidiDecoder.h` is NOT allowed. Instead the test TU uses the standard,
+contained C++ pattern `#define private public` scoped AROUND the
+`MidiDecoder.h` include only: every firmware header `MidiDecoder.h` reaches is
+pre-included first (`Synth.h` covers the SynthState/Timbre/Voice/... closure;
+`RingBuffer.h` is pre-included for its private template data), so the macro
+affects ONLY the MidiDecoder class body. Zero firmware surface; no runtime
+cost; no ODR impact (access specifiers do not change class layout, and the
+pre-inclusion ensures every shared header is parsed identically across TUs).
+This is the same stance Target #2 took with `using Hexter::<protected-member>`
+— the only difference is `private` vs `protected` access, which `using`
+cannot cross.
+
+### Actual MidiDecoder-seam surface (replaces the summary-table row)
+
+| File | Change | Why |
+| --- | --- | --- |
+| `firmware/Src/midi/MidiDecoder.cpp` | `#ifndef PFM3_HOST` around the `extern "C" #include "usbd_midi.h"`; same around the 2 HAL-typed externs (`hUsbDeviceFS`, `huart1`); `#ifdef PFM3_HOST … return; #else <real> #endif` early-return stubs in `sendMidiDin5Out` + `sendMidiUsbOut` | `usbd_midi.h` header pulls HAL; the 2 externs are HAL-typed; the 2 helpers make HW calls (§b.4, applied verbatim) |
+| `firmware/Src/synth/Synth.cpp` | `#ifndef PFM3_HOST` around `#include "stm32h7xx_hal.h"` + `extern RNG_HandleTypeDef hrng;`; mid-function gate at the `HAL_RNG_GenerateRandomNumber` call site (host: deterministic seed); `#ifndef PFM3_HOST` around `HAL_Delay(5)`; `#ifdef PFM3_HOST extern uint32_t SystemCoreClock; #endif` | HAL header + HAL-typed extern + 2 HW calls + CMSIS var decl |
+| `firmware/Src/synth/FxBus.cpp` | leading-attribute pattern (`#ifndef PFM3_HOST __attribute__((section("…"))) #endif`) on all 14 `.ram_d1/.ram_d2/.ram_d2b` static-data-member definitions | Mach-O section-attr hard error (Correction 2 forecast) |
+| `firmware/Src/synth/Lfo.cpp` | same pattern on `Lfo::invTab[2048]` (`.ram_d1`) | Mach-O section-attr hard error |
+| `firmware/Src/synth/Timbre.cpp` | same pattern on `midiNoteScale` (`.ram_d1`) + `Timbre::delayBuffer` (`.ram_d2b`); `#ifdef PFM3_HOST #include <cstddef> #endif` for `NULL` | Mach-O section-attr hard error + NULL undef |
+| `tests/CMakeLists.txt` | `target_sources` += `MidiDecoder.cpp` + Synth graph (11 TUs) + NoteStack/EventScheduler/SimpleComp/SimpleEnvelope + new stub | decode + routing link graph |
+| `tests/stubs/sequencer_collaborators_stub.cpp` | **pruned** — removed 8 `Synth::*` + 1 `Timbre::midiClockSongPositionStep` stubs (now provided by the real Synth.cpp/Timbre.cpp); kept 4 `FMDisplaySequencer::*` stubs (FMDisplay family still not pulled) | duplicate-symbol avoidance |
+| `tests/stubs/midi_decoder_collaborators_stub.cpp` | NEW: `SystemCoreClock` definition; 4 `SynthState::*` non-virtual method stubs; `allParameterRows` zero-init stub (FAVOR-REAL-DATA exception) | link satisfaction for Synth graph + decodeNrpn safety |
+| `tests/midi_decoder_test.cpp` | NEW: 25 ctest entries (1 smoke + 7 Tier-1 decode + 8 Tier-2 NRPN + 9 Tier-3 routing), scoped `#define private public` for MidiDecoder privates, minimal SynthState fixture (memset + field patches), `asyncActions` extern (C++ linkage — NOT `extern "C"`) for SEND_PATCH_AS_NRPN observation | coverage |
+
+### Headline result
+
+- **Host build: 72/72 ctest entries pass** (47 carried over + 25 new). Includes
+  the 1 smoke + 7 Tier-1 decode-state-machine + 8 Tier-2 NRPN + 9 Tier-3
+  routing-through-real-Synth tests.
+- **ASAN+UBSAN build: 72/72 pass.** Malformed-input robustness (Target #2
+  stance) verified: truncated NoteOns, all-data-byte streams, oversized sysex,
+  and the CC_OMNI_ON/NRPN increment paths all complete cleanly under the
+  sanitizer.
+- **`arm-none-eabi` cross-build: links clean** (`preenfm3.elf` produced). All
+  firmware guards are inert under the Arm build (the original code paths are
+  preserved verbatim inside `#ifndef PFM3_HOST`; the section-attr leading-form
+  rewrite is semantically identical to the trailing form).
+
+All four `tests/README.md` roadmap rows are now covered.
