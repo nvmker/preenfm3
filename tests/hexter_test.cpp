@@ -31,23 +31,24 @@
 //   transposeMultiply therefore never reaches 0.25f. This suite asserts the
 //   CURRENT (0.5f-only) behavior.
 //
-// KNOWN LATENT BUG #2 — found BY this suite under ASAN (Target #2 earns its
-// keep). Flagged for a separate firmware fix; NOT fixed here.
-//   voiceSetData (firmware/Src/utils/Hexter.cpp:932):
-//     params->matrixRowState2.mul = dx7_voice_amd_to_ol_adjustment[(patch[140])] / 100.0f;
-//   dx7_voice_amd_to_ol_adjustment is `const float[100]` (a file-scope global
-//   in Hexter.cpp). patch[140] (unpacked LFO AMD) is copied RAW from
-//   packed[115] by patchUnpack's "lamd" loop — no mask, no limit(). Every
-//   OTHER table access in voiceSetData is wrapped in limit(…,0,99); this one
-//   alone is not. Any patch with packed[115] >= 100 reads past the 100-entry
-//   global. Under ASAN, packed[115]==125 aborts with global-buffer-overflow
-//   (full trace in the HexterUnboundedIndex suite). The read's result is ALSO
-//   immediately overwritten (matrixRowState2.mul is reassigned to 0.0f two
-//   statements later), so the line is effectively dead — but the OOB read
-//   itself executes (UB) and is a latent on-device hard-fault under adversarial
-//   sysex. The malformed-input tests below clamp packed[115] to <=99 to stay
-//   inside the firmware's actual safety envelope. Full finding in SEAM.md
-//   "Target #2 contact with the code".
+// FIRMWARE FIX GUARDED HERE (was Target #2's crash-class finding; now fixed).
+//   voiceSetData (firmware/Src/utils/Hexter.cpp:932) used to read the LFO-AMD
+//   table with an UNBOUNDED index:
+//     dx7_voice_amd_to_ol_adjustment[(patch[140])] / 100.0f;
+//   patch[140] is copied raw from packed[115] by patchUnpack's "lamd" loop, so
+//   any patch with packed[115] >= 100 read past the 100-entry global. Under
+//   ASAN, packed[115]==125 aborted with global-buffer-overflow (full trace in
+//   the HexterUnboundedIndex suite). The fix wraps the index in limit(…,0,99),
+//   matching every other table access in voiceSetData:
+//     dx7_voice_amd_to_ol_adjustment[limit(patch[140], 0, 99)] / 100.0f;
+//   The malformed-input tests below now feed genuinely out-of-range LFO-AMD
+//   bytes (125, 255) through the FULL pipeline to guard the clamp end-to-end,
+//   and the HexterUnboundedIndex suite guards it at the unit level. NOTE the
+//   read's result is STILL immediately discarded (matrixRowState2.mul is reset
+//   to 0.0f two statements later) — a pre-existing dead-store, intentionally
+//   left untouched by the fix (out of scope; the bug was the OOB read, not the
+//   discard). History + captured ASAN trace in tests/SEAM.md "Target #2 contact
+//   with the code".
 
 #include <gtest/gtest.h>
 
@@ -82,15 +83,6 @@ public:
 // DX7 packed patch is exactly 128 bytes; unpacked is 155.
 constexpr int kPackedSize = 128;
 constexpr int kUnpackedSize = 155;
-
-// patchUnpack copies packed[115] -> unpacked[140] verbatim (the "lamd" loop),
-// and voiceSetData reads unpacked[140] as a RAW index into the 100-entry
-// dx7_voice_amd_to_ol_adjustment table with no limit() — see the
-// HexterUnboundedIndex suite + SEAM.md "Target #2". Values >= 100 are an OOB
-// read, so the malformed-input tests clamp this one byte into [0,99] to stay
-// inside the firmware's actual safety envelope.
-constexpr int kLfoAmdPackedIndex = 115;
-constexpr int kLfoAmdSafeMax = 99;  // last valid index into float[100]
 
 // Deterministic synthetic packed patch. There is no committed sysex corpus, so
 // we synthesize input that exercises distinct bit patterns per byte. The exact
@@ -396,46 +388,41 @@ TEST(HexterMalformedInput, AllZeroPackedPatchImportsWithoutCrash) {
 }
 
 TEST(HexterMalformedInput, AllOnesPackedPatchImportsWithoutCrash) {
+    // all-0xFF: packed[115]=255 -> unpacked[140]=255 -> voiceSetData indexes
+    // dx7_voice_amd_to_ol_adjustment[limit(255,0,99)]. Pre-fix this was an OOB
+    // (index 255) that skipped ASAN's redzone onto an adjacent global (silent
+    // corruption); the Hexter.cpp:932 limit() fix makes it safe. This test now
+    // guards that clamp through the FULL pipeline (patchUnpack + voiceSetData).
     TestHexter h;
     uint8_t packed[kPackedSize];
     std::memset(packed, 0xFF, kPackedSize);
-    // Clamp the ONE unbounded table index so this stays inside the firmware's
-    // safety envelope (see HexterUnboundedIndex). Without it, packed[115]=255
-    // reads dx7_voice_amd_to_ol_adjustment[255] — an OOB that skips ASAN's
-    // redzone onto an adjacent global (silent corruption), exactly the bug
-    // class this target exists to surface.
-    packed[kLfoAmdPackedIndex] = kLfoAmdSafeMax;
     const OneSynthParams p = ImportPatch(&h, packed);
 
-    // 0xFF everywhere (amd byte clamped): patch[134]&0x1f == 31 -> DX7 algo 32
-    // -> ALG27. Name bytes all 0xFF (>127) -> remapped to space.
+    // 0xFF everywhere: patch[134]&0x1f == 31 -> DX7 algo 32 -> ALG27. Name
+    // bytes all 0xFF (>127) -> remapped to space.
     EXPECT_EQ(p.engine1.algo, ALG27);
     EXPECT_NEAR(p.osc1.frequencyMul, 5.5f, kArithTol);
     EXPECT_NEAR(p.osc6.frequencyMul, 5.5f, kArithTol);
     EXPECT_NEAR(p.env1Time.attackTime, 0.0003f, kLibmTol);
     EXPECT_EQ(static_cast<unsigned char>(p.presetName[0]), ' ');
     EXPECT_FALSE(std::isnan(p.osc1.frequencyMul));
-    // The amd-table read's result is discarded by the firmware (mul is reset to
-    // 0.0f two statements after line 932) — lock that dead-code discard as
-    // golden. See HexterUnboundedIndex.
+    // The amd-table read's result is still discarded by the firmware (mul is
+    // reset to 0.0f two statements after line 932) — see HexterUnboundedIndex.
     EXPECT_EQ(p.matrixRowState2.mul, 0.0f);
 }
 
 TEST(HexterMalformedInput, StructuredGarbageImportsWithoutCrash) {
     // A second, distinct bit pattern (high bits set, interleaved) to exercise
     // the fixed-frequency osc branch and the algorithm/matrix dispatch under
-    // non-trivial content. Golden is characterization-only (no crash + finite).
+    // non-trivial content. This generator yields packed[115]=125 -> unpacked
+    // [140]=125, the EXACT value that pre-fix aborted the suite under ASAN
+    // (global-buffer-overflow at Hexter.cpp:932). With the limit() fix the
+    // import completes; this test is the end-to-end ASAN guard for that fix.
     TestHexter h;
     uint8_t packed[kPackedSize];
     for (int i = 0; i < kPackedSize; i++) {
         packed[i] = static_cast<uint8_t>((0xA5 ^ (i * 13 + 1)) & 0x7F);
     }
-    // Clamp the ONE unbounded table index: this generator yields packed[115]=
-    // 125, which reads dx7_voice_amd_to_ol_adjustment[125] -> ASAN aborts (see
-    // HexterUnboundedIndex). Clamping keeps the test inside the safety envelope
-    // while still exercising every OTHER (firmware-limited) table access on
-    // rich, non-trivial content.
-    packed[kLfoAmdPackedIndex] = kLfoAmdSafeMax;
     const OneSynthParams p = ImportPatch(&h, packed);
 
     EXPECT_GE(p.engine1.algo, ALGO7);
@@ -550,25 +537,22 @@ TEST(HexterSpanContract, PatchUnpackReadsFull128ByteInputUnderAsan) {
 }
 
 // ===========================================================================
-// FINDING (Target #2): unbounded table index in voiceSetData — a genuine
-// global-buffer-overflow, discovered BY this suite under ASAN. Flagged for a
-// separate firmware fix; NOT fixed here (per the no-fix mandate — same stance
-// as the transpose dead-branch suite below).
+// Target #2's crash-class finding — NOW FIXED in firmware, guarded here.
 //
-// firmware/Src/utils/Hexter.cpp:932:
+// firmware/Src/utils/Hexter.cpp:932 used to read the LFO-AMD table with an
+// UNBOUNDED index:
 //   params->matrixRowState2.mul = dx7_voice_amd_to_ol_adjustment[(patch[140])] / 100.0f;
 //
 //  * dx7_voice_amd_to_ol_adjustment is `const float[100]` (400 bytes) — a
 //    file-scope global in Hexter.cpp.
 //  * patch[140] is unpacked byte 140, which patchUnpack fills from packed[115]
-//    via a raw `*up++ = *pp++` copy (the "lamd" loop) — NO mask, NO limit().
-//    The DX7 field is LFO AMD.
-//  * Every OTHER table access in voiceSetData is wrapped in limit(…,0,99); this
-//    one alone is not.
+//    via a raw `*up++ = *pp++` copy (the "lamd" loop) — NO mask.
+//  * Every OTHER table access in voiceSetData was already wrapped in
+//    limit(…,0,99); this one alone was not.
 //
-// So any patch whose packed[115] >= 100 reads past the 100-entry global. Under
-// the ASAN build, the structured-garbage generator hit packed[115]==125 and
-// ASAN aborted the process:
+// Any patch whose packed[115] >= 100 read past the 100-entry global. Under the
+// ASAN build, the structured-garbage generator hit packed[115]==125 and ASAN
+// aborted the process:
 //
 //   Hexter.cpp:932:32: runtime error: index 125 out of bounds for type 'const float[100]'
 //   ==ERROR: AddressSanitizer: global-buffer-overflow ... READ of size 4
@@ -576,25 +560,27 @@ TEST(HexterSpanContract, PatchUnpackReadsFull128ByteInputUnderAsan) {
 //       #1 Hexter::loadHexterPatch(unsigned char*, OneSynthParams*)  Hexter.cpp:183
 //   ... located 100 bytes after global variable 'dx7_voice_amd_to_ol_adjustment' of size 400
 //
-// Larger indexes (e.g. 255 from an all-0xFF patch) skip ASAN's global redzone
-// and land on an adjacent valid global — ASAN-silent, but still wrong-data UB.
-// (That is why the malformed-input tests above CLAMP packed[115] to <=99 rather
-// than relying on ASAN to flag every case.) NOTE the read's result is ALSO
-// immediately overwritten — matrixRowState2.mul is reassigned to 0.0f two
-// statements after line 932 — so the line is effectively dead; the OOB read is
-// nonetheless executed and is the crash class.
+// Larger indexes (e.g. 255 from an all-0xFF patch) skipped ASAN's global redzone
+// onto an adjacent valid global — ASAN-silent, but still wrong-data UB.
 //
-// We do NOT execute patch[140] >= 100 here (it aborts under ASAN — correctly).
-// Like the HexterSpanContract suite, we document the finding structurally.
+// The fix wraps the index in limit(…,0,99), matching every other table access
+// in voiceSetData:
+//   params->matrixRowState2.mul = dx7_voice_amd_to_ol_adjustment[limit(patch[140], 0, 99)] / 100.0f;
+//
+// NOTE the read's result is STILL immediately discarded — matrixRowState2.mul
+// is reassigned to 0.0f two statements after line 932 — so the line remains a
+// dead-store; the fix intentionally does NOT remove it (the bug was the OOB
+// read, not the discard; deleting is a separate cleanup decision). Full
+// history + the fix in tests/SEAM.md "Target #2 contact with the code".
 // ===========================================================================
 
 TEST(HexterUnboundedIndex, AmdTableReadResultIsDiscardedByFirmware) {
-    // The amd read is dead: line 932 writes matrixRowState2.mul, then a later
+    // Unchanged by the fix: line 932 writes matrixRowState2.mul, then a later
     // line overwrites it to 0.0f. Locking the discard as golden means a future
     // change that removes either the dead read OR the overwrite is visible.
     TestHexter h;
     uint8_t u[kUnpackedSize] = {};
-    u[140] = 50;  // any value in [0,99]; the result is discarded regardless
+    u[140] = 50;  // in-range; the result is discarded regardless
     struct OneSynthParams p;
     std::memset(&p, 0, sizeof(p));
     h.voiceSetData(&p, u);
@@ -602,14 +588,27 @@ TEST(HexterUnboundedIndex, AmdTableReadResultIsDiscardedByFirmware) {
         << "amd-table read result should be discarded (overwritten to 0.0f)";
 }
 
-TEST(HexterUnboundedIndex, DocumentationOnly_UnboundedLfoAmdIndexIsTheFinding) {
-    // No executable assertion: the bug IS the out-of-bounds read, whose effect
-    // is unobservable in the output (the value is discarded) and un-executable
-    // under ASAN (aborts). The structural proof lives in the suite header +
-    // tests/SEAM.md "Target #2 contact with the code". When the firmware adds
-    // the missing limit(patch[140], 0, 99), convert this into a positive clamp
-    // assertion and drop the packed[115] clamps in the malformed-input tests.
-    SUCCEED() << "finding documented; see suite header + SEAM.md";
+TEST(HexterUnboundedIndex, OutOfRangeLfoAmdIndexIsClampedByFirmware) {
+    // THE regression guard for the Hexter.cpp:932 limit() fix. Pre-fix this
+    // aborted the whole suite under ASAN (index 100/125/255 ->
+    // global-buffer-overflow). Post-fix the firmware clamps to [0,99] and the
+    // import completes. Drives voiceSetData directly with the exact out-of-range
+    // indices ASAN caught (no patchUnpack indirection). The integration-level
+    // guard is HexterMalformedInput.{AllOnes,StructuredGarbage} above; the
+    // transpose dead-branch below is a SEPARATE finding, still unfixed.
+    TestHexter h;
+    for (uint8_t oob : {uint8_t(100), uint8_t(125), uint8_t(255)}) {
+        SCOPED_TRACE(static_cast<int>(oob));
+        uint8_t u[kUnpackedSize] = {};
+        u[140] = oob;
+        struct OneSynthParams p;
+        std::memset(&p, 0, sizeof(p));
+        h.voiceSetData(&p, u);  // must not abort under ASAN
+        EXPECT_EQ(p.matrixRowState2.mul, 0.0f)
+            << "read result still discarded (clamp does not change the discard)";
+        EXPECT_FALSE(std::isnan(p.osc1.frequencyMul))
+            << "clamp failure would corrupt params";
+    }
 }
 
 // ===========================================================================
