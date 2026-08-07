@@ -2,42 +2,26 @@
 //
 // WHY THIS FILE EXISTS (see tests/SEAM.md "Contact with the code")
 // ----------------------------------------------------------------
-// Sequencer.cpp is host-compilable as a translation unit, but its compiled body
-// references out-of-line Synth / FMDisplaySequencer methods (in mainSequencerTic,
-// reset, stop, insertNote, ...). The serialization tests only ever exercise the
-// get/setFull* path, which dereferences neither collaborator. To LINK without
-// pulling in the full synth engine (Synth.cpp + Voice/Timbre/FxBus/...), we
-// supply empty definitions for exactly the methods Sequencer.cpp's compiled
-// body references. These are standard test doubles, NOT HAL fakes; they contain
-// no logic and must not drift from the real signatures (a mismatch fails to
-// compile, which is the intended early signal).
+// Sequencer.cpp is host-compilable as a translation unit, but its compiled
+// body references out-of-line Synth / Timbre / FMDisplaySequencer methods. In
+// Target #1 only Sequencer.cpp was pulled, so empty bodies for all referenced
+// methods lived here. Targets #4 pulls the REAL Synth graph (Synth.cpp /
+// Timbre.cpp / Voice.cpp / FxBus.cpp / ...), so the Synth::stopArpegiator /
+// allNoteOff / midiClock* / noteOn/noteOffFromSequencer and
+// Timbre::midiClockSongPositionStep stubs became duplicates and were REMOVED.
+// The FMDisplaySequencer stubs REMAIN: FMDisplaySequencer.cpp is part of the
+// TFT/UI FMDisplay family (not pulled) and Sequencer.cpp's compiled body still
+// references its out-of-line methods in paths the tests never exercise.
 //
-// Methods that are already inline in Synth.h / FMDisplaySequencer.h
-// (midiClockSongPositionStep, refresh, refreshMemory, refreshActivated,
-// refreshStepSeq) are deliberately NOT stubbed here.
+// Standard test doubles, NOT HAL fakes. Signature drift fails to compile
+// (intended early signal). Methods already inline in Synth.h /
+// FMDisplaySequencer.h (midiClockSongPositionStep, refresh, refreshMemory,
+// refreshActivated, refreshStepSeq) are deliberately NOT stubbed here.
 
-#include "Synth.h"
 #include "FMDisplaySequencer.h"
-#include "Timbre.h"  // for Timbre::midiClockSongPositionStep (see below)
-
-// --- Synth -------------------------------------------------------------------
-void Synth::stopArpegiator(int) {}
-void Synth::allNoteOff(int) {}
-void Synth::midiClockStart(bool) {}
-void Synth::midiClockContinue(int, bool) {}
-void Synth::midiClockStop(bool) {}
-void Synth::midiTick(bool) {}
-void Synth::noteOnFromSequencer(uint8_t, int16_t, uint8_t) {}
-void Synth::noteOffFromSequencer(uint8_t, int16_t) {}
 
 // --- FMDisplaySequencer ------------------------------------------------------
 void FMDisplaySequencer::displayBeat() {}
 void FMDisplaySequencer::newNoteEntered(int) {}
 void FMDisplaySequencer::updateCurrentData() {}
 void FMDisplaySequencer::sequencerWasUpdated(uint8_t, uint8_t, uint8_t) {}
-
-// --- Timbre ------------------------------------------------------------------
-// Synth::midiClockSongPositionStep is INLINE in Synth.h; Sequencer.cpp's
-// ticMillis() references it, so it is emitted into Sequencer.o and its body
-// calls Timbre::midiClockSongPositionStep. Empty body satisfies the link.
-void Timbre::midiClockSongPositionStep(int) {}
