@@ -395,7 +395,9 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
                 cb1 = buffer1;
                 while (cb1 < endcb1) {
                     cb1++;
-                    *cb1++ += (int32_t) ((*sampleFromTimbre++ + *sampleFromTimbre++) * .5f * sampleMultipler);
+                    const float sample0 = *sampleFromTimbre++;
+                    const float sample1 = *sampleFromTimbre++;
+                    *cb1++ += (int32_t) ((sample0 + sample1) * .5f * sampleMultipler);
                 }
                 break;
             case 1:
@@ -404,7 +406,9 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
             case 2:
                 cb1 = buffer1;
                 while (cb1 < endcb1) {
-                    *cb1++ += (int32_t) ((*sampleFromTimbre++ + *sampleFromTimbre++) * .5f * sampleMultipler);
+                    const float sample0 = *sampleFromTimbre++;
+                    const float sample1 = *sampleFromTimbre++;
+                    *cb1++ += (int32_t) ((sample0 + sample1) * .5f * sampleMultipler);
                     cb1++;
                 }
                 break;
@@ -412,7 +416,9 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
                 cb2 = buffer2;
                 while (cb2 < endcb2) {
                     cb2++;
-                    *cb2++ += (int32_t) ((*sampleFromTimbre++ + *sampleFromTimbre++) * .5f * sampleMultipler);
+                    const float sample0 = *sampleFromTimbre++;
+                    const float sample1 = *sampleFromTimbre++;
+                    *cb2++ += (int32_t) ((sample0 + sample1) * .5f * sampleMultipler);
                 }
                 break;
             case 4:
@@ -421,7 +427,9 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
             case 5:
                 cb2 = buffer2;
                 while (cb2 < endcb2) {
-                    *cb2++ += (int32_t) ((*sampleFromTimbre++ + *sampleFromTimbre++) * .5f * sampleMultipler);
+                    const float sample0 = *sampleFromTimbre++;
+                    const float sample1 = *sampleFromTimbre++;
+                    *cb2++ += (int32_t) ((sample0 + sample1) * .5f * sampleMultipler);
                     cb2++;
                 }
                 break;
@@ -429,7 +437,9 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
                 cb3 = buffer3;
                 while (cb3 < endcb3) {
                     cb3++;
-                    *cb3++ += (int32_t) ((*sampleFromTimbre++ + *sampleFromTimbre++) * .5f * sampleMultipler);
+                    const float sample0 = *sampleFromTimbre++;
+                    const float sample1 = *sampleFromTimbre++;
+                    *cb3++ += (int32_t) ((sample0 + sample1) * .5f * sampleMultipler);
                 }
                 break;
             case 7:
@@ -438,7 +448,9 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
             case 8:
                 cb3 = buffer3;
                 while (cb3 < endcb3) {
-                    *cb3++ += (int32_t) ((*sampleFromTimbre++ + *sampleFromTimbre++) * .5f * sampleMultipler);
+                    const float sample0 = *sampleFromTimbre++;
+                    const float sample1 = *sampleFromTimbre++;
+                    *cb3++ += (int32_t) ((sample0 + sample1) * .5f * sampleMultipler);
                     cb3++;
                 }
                 break;
