@@ -1,0 +1,11 @@
+# cppcheck suppressions — STARTING POINT for the static-analysis spike.
+# One suppression id per line (cppcheck --suppressions-list format).
+# Tighten after the first run; see _bmad-output/static-analysis/spike-findings.md.
+
+# STM32 HAL / CMSIS macros cppcheck can't model (__IO, __STATIC_INLINE,
+# section attributes, IRQn setters, ...). Broad but unavoidable on a HAL codebase.
+unknownMacro
+
+# Style: classes with single-arg non-explicit ctors. Noisy on legacy C++ and
+# low-value on embedded POD-style code. Revisit if we adopt modern C++ style.
+noExplicitConstructor
