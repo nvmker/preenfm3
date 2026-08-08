@@ -74,7 +74,8 @@ $(CMAKE_CACHE): CMakeLists.txt $(TOOLCHAIN_FILE) \
         flash flash-firmware flash-bootloader \
         flash-debug flash-firmware-debug flash-bootloader-debug \
         program program-firmware program-bootloader \
-        program-debug program-firmware-debug program-bootloader-debug test
+        program-debug program-firmware-debug program-bootloader-debug test \
+        analyze
 
 # Release: clean rebuild into build/release/ (default BUILD_DIR / BUILD_TYPE=Release).
 # Wipes only build/release/ (build/debug/ is left intact), then reconfigures and
@@ -120,6 +121,34 @@ test:
 	cmake -B $(TEST_DIR) -S tests
 	cmake --build $(TEST_DIR) -j
 	ctest --test-dir $(TEST_DIR) --output-on-failure
+
+# --- Static analysis (cppcheck + clang-tidy) --------------------------------
+# Runs over the firmware cross-build compile_commands.json. Requires the
+# cross-build to be configured — the `firmware` dep ensures build/release/
+# exists and its DB is fresh. Findings go to build/release/analyze-*.txt for
+# triage. NOT a CI gate yet — reporting only. See
+# _bmad-output/static-analysis/spike-findings.md.
+#
+# Tools resolved from PATH. cppcheck is PRIMARY (clean cross-compile story —
+# reads the arm-none-eabi-gcc DB natively). clang-tidy is SECONDARY and may emit
+# compile-error noise from arm flags it doesn't model (-mcpu/-mfpu/etc.) — that
+# is expected on the first spike run and noted in the triage report.
+ANALYZE_DIR ?= build/release
+ANALYZE_DB  ?= $(ANALYZE_DIR)/compile_commands.json
+CPPCHECK    ?= cppcheck
+CLANG_TIDY  ?= clang-tidy
+
+analyze: firmware
+	@[ -f $(ANALYZE_DB) ] || (echo "ERR: $(ANALYZE_DB) missing — run 'make firmware' first" && false)
+	@echo "=== cppcheck (primary) ==="
+	$(CPPCHECK) --quiet --enable=warning,style --inline-suppr \
+	    --suppressions-list=scripts/cppcheck-suppressions.txt \
+	    --platform=arm32-wchar_t2 \
+	    --project=$(ANALYZE_DB) \
+	    -ifirmware/Drivers -ifirmware/Middlewares \
+	    2>&1 | tee $(ANALYZE_DIR)/analyze-cppcheck.txt
+	@echo "=== clang-tidy (secondary — expect some cross-compile noise) ==="
+	./scripts/analyze-tidy.sh $(ANALYZE_DB) $(ANALYZE_DIR) $(ANALYZE_DIR)/analyze-clang-tidy.txt
 
 # --- Flashing ---------------------------------------------------------------
 # `flash` = DFU (dfu-util, USB DFU mode); `program` = OpenOCD (debug probe; the
