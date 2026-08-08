@@ -12,3 +12,12 @@ If:
   PathMatch: ^tests/.*\.(cpp|cc|cxx|hpp|h)$
 CompileFlags:
   CompilationDatabase: build/test
+
+# Firmware / bootloader / lib: built with the Arm cross-toolchain. Their
+# compile_commands.json lands in build/release/ once `make` (or `make firmware`)
+# has configured the cross-build. Without this block clangd / pi-lens can't
+# resolve the STM32 HAL / CMSIS includes on firmware files.
+If:
+  PathMatch: ^(firmware|lib|bootloader)/.*\.(cpp|c|cc|cxx|hpp|h|s|S)$
+CompileFlags:
+  CompilationDatabase: build/release

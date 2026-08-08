@@ -68,6 +68,12 @@ add_compile_options(-ffunction-sections -fdata-sections)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(stm32-post-build)
 
+# Export compile_commands.json for the Arm cross-build so clangd / cppcheck /
+# clang-tidy / pi-lens can resolve the firmware include set. The host test build
+# exports its own DB (tests/CMakeLists.txt); this one covers firmware +
+# bootloader + lib. `make analyze` consumes it (see Makefile).
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 add_subdirectory(lib)
 add_subdirectory(firmware)
 add_subdirectory(bootloader)
