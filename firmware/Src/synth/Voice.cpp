@@ -5835,7 +5835,7 @@ void Voice::fxAfterBlock() {
             float fxParamTmp = (currentTimbre->params_.effect1.param1 + matrixFilterFrequency);
             fxParamTmp *= fxParamTmp;
 
-            const uint_fast8_t random = (*(uint_fast8_t*) noise) & 0xff;
+            const uint8_t random = (*(uint8_t*) noise) & 0xff;
             if (random > 252) {
                 fxParam1 += ((random & 1) * 0.007874015748031f);
             }
@@ -5927,7 +5927,7 @@ void Voice::fxAfterBlock() {
             float fxParamTmp = (currentTimbre->params_.effect1.param1 + matrixFilterFrequency);
             fxParamTmp *= fxParamTmp;
 
-            const uint_fast8_t random = (*(uint_fast8_t*) noise) & 0xff;
+            const uint8_t random = (*(uint8_t*) noise) & 0xff;
             if (random > 252) {
                 fxParam1 += ((random & 1) * 0.007874015748031f);
             }
@@ -6033,7 +6033,7 @@ void Voice::fxAfterBlock() {
             float fxParamTmp = currentTimbre->params_.effect1.param1 + matrixFilterFrequency;
             fxParamTmp *= fxParamTmp;
 
-            const uint_fast8_t random = (*(uint_fast8_t*) noise) & 0xff;
+            const uint8_t random = (*(uint8_t*) noise) & 0xff;
             if (random > 252) {
                 fxParam1 += ((random & 1) * 0.007874015748031f);
             }
@@ -6575,7 +6575,7 @@ void Voice::fxAfterBlock() {
             break;
         case FILTER_AP4D: {
             float fxParamTmp = (currentTimbre->params_.effect1.param1 + matrixFilterFrequency);
-            const uint_fast8_t random = (*(uint_fast8_t*) noise) & 0xff;
+            const uint8_t random = (*(uint8_t*) noise) & 0xff;
             float randomF = (float) random * 0.00390625f;
             if (random < 76) {
                 fxParam1 += (randomF * 0.002f) - 0.001f;
@@ -7919,9 +7919,7 @@ void Voice::setNewEffectParam(int encoder) {
         default:
             switch (encoder) {
                 case ENCODER_EFFECT_TYPE:
-                    break;
                 case ENCODER_EFFECT_PARAM1:
-                    break;
                 case ENCODER_EFFECT_PARAM2:
                     break;
             }

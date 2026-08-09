@@ -175,8 +175,6 @@ void FMDisplay3::newSynthMode(FullState *fullState) {
 
     switch (fullState->synthMode) {
         case SYNTH_MODE_MIXER:
-            refreshStatus_ = 21;
-            break;
         case SYNTH_MODE_EDIT_PFM3:
             refreshStatus_ = 21;
             break;

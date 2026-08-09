@@ -76,6 +76,7 @@ public:
     using Hexter::getActualLevel;
     using Hexter::getActualOutputLevel;
     using Hexter::getChangeTime;
+    using Hexter::getRounded;
     using Hexter::limit;
     using Hexter::voiceCopyName;
 };
@@ -278,6 +279,49 @@ TEST(HexterPureHelpers, VoiceCopyNameRemapsDx7SpecialChars) {
 // Integration golden — representative packed patch through the full pipeline.
 // Characterizes CURRENT behavior; not derived from any spec.
 // ===========================================================================
+
+TEST(HexterPureHelpers, GetRoundedSnapsFrequencyMulToHalfSteps) {
+    // getRounded rounds `t = r*2` to the nearest integer and returns ti/2,
+    // snapping a DX7 frequency multiplier to the closest half-step when t is
+    // within 0.25 of an integer (or unconditionally when r > 3). voiceSetData
+    // applies it to osc1..osc6.frequencyMul (always positive). The rounding of
+    // ti was `(int)(t + .5)` -- which bugprone-incorrect-roundings flags because
+    // it mis-rounds negatives -- and is now `(int) lround(t)`, bit-identical
+    // for the positive frequencyMul domain.
+    //
+    // Caveat (per Copilot review): `(int)(t + .5)` and `lround(t)` agree for
+    // all t >= 0, so the non-negative cases below would ALSO pass against the
+    // old buggy code -- they pin production behavior, not the fix. The single
+    // negative case is the white-box reversion guard: it is NOT a production
+    // input (frequencyMul >= 0), it is the only domain where the two idioms
+    // diverge, so it is what makes a revert of the lround change fail loudly.
+    // (`abs(t - ti)` resolves to the Hexter-member abs(float) -- header L60-61
+    // -- so the snap branch uses the float interpretation; out of scope here.)
+    TestHexter h;
+    struct Case { float r; float want; const char* note; };
+    const Case cases[] = {
+        {0.50f, 0.5f,  "clean half"},
+        {1.00f, 1.0f,  "clean integer"},
+        {1.46f, 1.5f,  "documented: 1.46 snaps to 1.5"},
+        {1.50f, 1.5f,  "clean half"},
+        {2.00f, 2.0f,  "clean integer"},
+        {2.02f, 2.0f,  "documented: 2.02 snaps to 2.0"},
+        {2.50f, 2.5f,  "clean half"},
+        {3.00f, 3.0f,  "r<=3 boundary, |t-ti|=0"},
+        {3.49f, 3.5f,  "r>3 short-circuit -> ti/2"},
+        {4.00f, 4.0f,  "r>3"},
+        {10.0f, 10.0f, "r>3, large multiplier"},
+        // WHITE-BOX reversion guard (NOT a production input: frequencyMul >= 0).
+        // t = -1.8: lround -> ti = -2, |t-ti| = 0.2 < 0.25 -> snap -> ti/2 = -1.0.
+        // The reverted `(int)(t + .5)` gives ti = -1, |t-ti| = 0.8 >= 0.25 ->
+        // fallthrough -> returns r = -0.9, which would FAIL this assertion.
+        {-0.90f, -1.0f, "negative reversion guard (lround vs (int)(t+.5))"},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(std::string(c.note) + " (r=" + ::testing::PrintToString(c.r) + ")");
+        EXPECT_FLOAT_EQ(h.getRounded(c.r), c.want);
+    }
+}
 
 TEST(HexterPipeline, RepresentativePatchProducesLockedGolden) {
     TestHexter h;
