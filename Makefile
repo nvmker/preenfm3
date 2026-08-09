@@ -74,7 +74,8 @@ $(CMAKE_CACHE): CMakeLists.txt $(TOOLCHAIN_FILE) \
         flash flash-firmware flash-bootloader \
         flash-debug flash-firmware-debug flash-bootloader-debug \
         program program-firmware program-bootloader \
-        program-debug program-firmware-debug program-bootloader-debug test
+        program-debug program-firmware-debug program-bootloader-debug test \
+        analyze
 
 # Release: clean rebuild into build/release/ (default BUILD_DIR / BUILD_TYPE=Release).
 # Wipes only build/release/ (build/debug/ is left intact), then reconfigures and
@@ -120,6 +121,44 @@ test:
 	cmake -B $(TEST_DIR) -S tests
 	cmake --build $(TEST_DIR) -j
 	ctest --test-dir $(TEST_DIR) --output-on-failure
+
+# --- Static analysis (cppcheck + clang-tidy) --------------------------------
+# Runs over the firmware cross-build compile_commands.json. Requires the
+# cross-build to be configured — the `firmware` dep ensures $(BUILD_DIR)
+# exists and its DB is fresh, and ANALYZE_DIR tracks BUILD_DIR by default so
+# `make BUILD_DIR=build/o2 analyze` analyzes the DB that was just built there.
+# Findings go to $(ANALYZE_DIR)/analyze-*.txt for triage. NOT a CI gate yet —
+# reporting only. See _bmad-output/static-analysis/spike-findings.md.
+#
+# Tools resolved from PATH (override CPPCHECK / CLANG_TIDY). cppcheck is PRIMARY
+# (clean cross-compile story — reads the arm-none-eabi-gcc DB natively).
+# clang-tidy is SECONDARY and may emit compile-error noise from arm flags it
+# doesn't model (-mcpu/-mfpu/etc.); that is expected on the first spike run and
+# noted in the triage report. Both tools must be runnable — a missing binary or
+# unreadable DB fails `make analyze` rather than silently skipping (see the
+# cppcheck `bash -o pipefail -c` wrapper in the recipe, and the clang-tidy
+# setup guards in scripts/analyze-tidy.sh). pipefail is invoked inline there
+# rather than via a global .SHELLFLAGS because macOS ships GNU make 3.81,
+# which predates .SHELLFLAGS support (added in make 4.0).
+ANALYZE_DIR ?= $(BUILD_DIR)
+ANALYZE_DB  ?= $(ANALYZE_DIR)/compile_commands.json
+CPPCHECK    ?= cppcheck
+CLANG_TIDY  ?= clang-tidy
+
+analyze: firmware
+	@[ -f $(ANALYZE_DB) ] || (echo "ERR: $(ANALYZE_DB) missing — run 'make firmware' first" && false)
+	@echo "=== cppcheck (primary) ==="
+	# `bash -o pipefail -c` so cppcheck's exit propagates through the `| tee`
+	# pipeline (otherwise tee's exit 0 masks a missing/crashed cppcheck and
+	# `make analyze` silently skips the primary analyzer).
+	bash -o pipefail -c '$(CPPCHECK) --quiet --enable=warning,style --inline-suppr \
+	    --suppressions-list=scripts/cppcheck-suppressions.txt \
+	    --platform=arm32-wchar_t2 \
+	    --project=$(ANALYZE_DB) \
+	    -ifirmware/Drivers -ifirmware/Middlewares \
+	    2>&1 | tee $(ANALYZE_DIR)/analyze-cppcheck.txt'
+	@echo "=== clang-tidy (secondary — expect some cross-compile noise) ==="
+	./scripts/analyze-tidy.sh $(ANALYZE_DB) $(ANALYZE_DIR) $(ANALYZE_DIR)/analyze-clang-tidy.txt $(CLANG_TIDY)
 
 # --- Flashing ---------------------------------------------------------------
 # `flash` = DFU (dfu-util, USB DFU mode); `program` = OpenOCD (debug probe; the

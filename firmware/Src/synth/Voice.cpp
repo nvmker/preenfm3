@@ -379,7 +379,7 @@ Voice::Voice(void) {
     index = 0;
 
     // Init FX variables
-    v0L = v1L = v2L = v3L = v4L = v5L = v6L = v7L = v8L = v0R = v1R = v2R = v3R = v4R = v5R = v6R = v7R = v8R = v8R = 0.0f;
+    v0L = v1L = v2L = v3L = v4L = v5L = v6L = v7L = v8L = v0R = v1R = v2R = v3R = v4R = v5R = v6R = v7R = v8R = 0.0f;
     fxParam1PlusMatrix = -1.0;
 
 }
@@ -4580,7 +4580,8 @@ void Voice::fxAfterBlock() {
                 localv0L = pattern * localv0L + f * (-localv1L + *sp);
                 localv1L = pattern * localv1L + f * localv0L;
 
-                *sp++ = clamp((*sp - localv1L) * mixerGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((*sp - localv1L) * mixerGain, -ratioTimbres, ratioTimbres);
+                sp++;
 
                 // Right voice
                 localv0R = pattern * localv0R + f * sat33(-localv1R + *sp);
@@ -4589,7 +4590,8 @@ void Voice::fxAfterBlock() {
                 localv0R = pattern * localv0R + f * (-localv1R + *sp);
                 localv1R = pattern * localv1R + f * localv0R;
 
-                *sp++ = clamp((*sp - localv1R) * mixerGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((*sp - localv1R) * mixerGain, -ratioTimbres, ratioTimbres);
+                sp++;
             }
             v0L = localv0L;
             v1L = localv1L;
@@ -5372,7 +5374,8 @@ void Voice::fxAfterBlock() {
                 _ly1L = coef1 * (_ly1L + localv0L) - _lx1L; // allpass
                 _lx1L = localv0L;
 
-                *sp++ = clamp((sigmoid(sat25(_ly1L * 2.0f)) * mixA + (mixB * (*sp))), -ratioTimbres, ratioTimbres);
+                *sp = clamp((sigmoid(sat25(_ly1L * 2.0f)) * mixA + (mixB * (*sp))), -ratioTimbres, ratioTimbres);
+                sp++;
 
                 // Right voice
                 localv0R = (*sp * b) + (localv0R * a);
@@ -5380,7 +5383,8 @@ void Voice::fxAfterBlock() {
                 _ly1R = coef1 * (_ly1R + localv0R) - _lx1R; // allpass
                 _lx1R = localv0R;
 
-                *sp++ = clamp((sigmoid(sat25(_ly1R * 2.0f)) * mixA + (mixB * (*sp))), -ratioTimbres, ratioTimbres);
+                *sp = clamp((sigmoid(sat25(_ly1R * 2.0f)) * mixA + (mixB * (*sp))), -ratioTimbres, ratioTimbres);
+                sp++;
             }
             v0L = localv0L;
             v0R = localv0R;
@@ -5567,7 +5571,8 @@ void Voice::fxAfterBlock() {
                     localv0L = localv0L > 1 ? thresTop : localv0L * invT;
                 }
                 localv0L = (*sp * b) + (localv0L * a);
-                *sp++ = clamp((*sp - localv0L) * mixerGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((*sp - localv0L) * mixerGain, -ratioTimbres, ratioTimbres);
+                sp++;
 
                 //RIGHT
                 localv0R = sigmoid(*sp);
@@ -5575,7 +5580,8 @@ void Voice::fxAfterBlock() {
                     localv0R = localv0R > 1 ? thresTop : localv0R * invT;
                 }
                 localv0R = (*sp * b) + (localv0R * a);
-                *sp++ = clamp((*sp - localv0R) * mixerGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((*sp - localv0R) * mixerGain, -ratioTimbres, ratioTimbres);
+                sp++;
             }
             v0L = localv0L;
             v0R = localv0R;
@@ -5610,14 +5616,16 @@ void Voice::fxAfterBlock() {
                 localv0L = pattern * localv0L + f * (*sp - localv1L);
                 localv1L = pattern * localv1L + f * localv0L;
 
-                *sp++ = clamp((*sp - localv1L) * mixerGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((*sp - localv1L) * mixerGain, -ratioTimbres, ratioTimbres);
+                sp++;
 
                 // Right voice
                 localv0R = tanh3(sat33(*sp) * gain) * gainCorrection;
                 localv0R = pattern * localv0R + f * (*sp - localv1R);
                 localv1R = pattern * localv1R + f * localv0R;
 
-                *sp++ = clamp((*sp - localv1R) * mixerGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((*sp - localv1R) * mixerGain, -ratioTimbres, ratioTimbres);
+                sp++;
             }
 
             v0L = localv0L;
@@ -6428,7 +6436,8 @@ void Voice::fxAfterBlock() {
                 _ly4L = coef4L * (_ly4L + _ly3L) - _lx4L; // do 4th filter
                 _lx4L = _ly3L;
 
-                *sp++ = clamp((*sp + _ly4L) * finalGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((*sp + _ly4L) * finalGain, -ratioTimbres, ratioTimbres);
+                sp++;
 
                 // Right voice
                 inmix = (*sp) + _ly3R * _feedback - _ly2L * _crossFeedback;
@@ -6442,7 +6451,8 @@ void Voice::fxAfterBlock() {
                 _ly4R = coef4R * (_ly4R + _ly3R) - _lx4R; // do 4th filter
                 _lx4R = _ly3R;
 
-                *sp++ = clamp((*sp + _ly4R) * finalGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((*sp + _ly4R) * finalGain, -ratioTimbres, ratioTimbres);
+                sp++;
             }
 
             v0L = _ly1L;
@@ -6526,7 +6536,8 @@ void Voice::fxAfterBlock() {
                 _ly4L = coef4L * (_ly4L + _ly3L) - _lx4L; // do 4nth filter
                 _lx4L = _ly3L;
 
-                *sp++ = clamp((*sp + _ly4L) * finalGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((*sp + _ly4L) * finalGain, -ratioTimbres, ratioTimbres);
+                sp++;
 
                 // Right voice
                 inmix = (*sp) - _feedback * _ly3R + _crossFeedback * _ly3L;
@@ -6540,7 +6551,8 @@ void Voice::fxAfterBlock() {
                 _ly4R = coef4R * (_ly4R + _ly3R) - _lx4R; // do 4nth filter
                 _lx4R = _ly3R;
 
-                *sp++ = clamp((*sp + _ly4R) * finalGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((*sp + _ly4R) * finalGain, -ratioTimbres, ratioTimbres);
+                sp++;
             }
 
             v0L = _ly1L;
@@ -6626,7 +6638,8 @@ void Voice::fxAfterBlock() {
 
                 _ly4L = (_ly3L * b) + (_ly4L * a); // lowpass
 
-                *sp++ = clamp((_ly1L + _ly2L - *sp) * finalGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((_ly1L + _ly2L - *sp) * finalGain, -ratioTimbres, ratioTimbres);
+                sp++;
 
                 // Right voice
                 inmix = (*sp) + _feedback * _ly4R;
@@ -6641,7 +6654,8 @@ void Voice::fxAfterBlock() {
 
                 _ly4R = (_ly3R * b) + (_ly4R * a); // lowpass
 
-                *sp++ = clamp((_ly1R + _ly2R - *sp) * finalGain, -ratioTimbres, ratioTimbres);
+                *sp = clamp((_ly1R + _ly2R - *sp) * finalGain, -ratioTimbres, ratioTimbres);
+                sp++;
             }
 
             v0L = _ly1L;
@@ -7818,8 +7832,10 @@ void Voice::fxAfterBlock() {
             // Filter off has gain...
             float *sp = this->sampleBlock;
             for (int k = 0; k < BLOCK_SIZE; k++) {
-                *sp++ = (*sp) * mixerGain;
-                *sp++ = (*sp) * mixerGain;
+                *sp = (*sp) * mixerGain;
+                sp++;
+                *sp = (*sp) * mixerGain;
+                sp++;
             }
         }
             break;

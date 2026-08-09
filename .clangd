@@ -1,14 +1,30 @@
-# clangd configuration. Scoped: only affects files under tests/.
+# clangd configuration. Routes each file to the compile database of the build
+# that actually compiles it, by path, so clangd / pi-lens resolve the right
+# includes per file type:
 #
+#   tests/                                  -> build/test/     (host compiler)
+#   firmware/ lib/ bootloader/              -> build/release/  (Arm cross-build)
+#
+# Generate the DBs once: `make test` for tests/, `make firmware` for the cross-
+# build. A file whose DB hasn't been generated yet falls through to clangd's
+# defaults (no compile flags) — that's expected on a fresh clone.
+#
+# --- tests/ (host compiler + GoogleTest) -----------------------------------
 # tests/ is a standalone CMake project built with the HOST compiler and linked
 # against GoogleTest, which is fetched via FetchContent at configure time. Its
 # include paths (gtest/gtest.h, etc.) only exist in build/test/compile_commands.json
 # AFTER `cmake -B build/test -S tests` has run. Without this block, clangd/pur-lens
 # can't resolve those headers and reports a spurious "file not found".
-#
-# Firmware/bootloader/lib files are untouched (they fall through to defaults).
-# Run `cmake -B build/test -S tests` (or `make test`) once to generate the DB.
 If:
   PathMatch: ^tests/.*\.(cpp|cc|cxx|hpp|h)$
 CompileFlags:
   CompilationDatabase: build/test
+
+# Firmware / bootloader / lib: built with the Arm cross-toolchain. Their
+# compile_commands.json lands in build/release/ once `make` (or `make firmware`)
+# has configured the cross-build. Without this block clangd / pi-lens can't
+# resolve the STM32 HAL / CMSIS includes on firmware files.
+If:
+  PathMatch: ^(firmware|lib|bootloader)/.*\.(cpp|c|cc|cxx|hpp|h|s|S)$
+CompileFlags:
+  CompilationDatabase: build/release
