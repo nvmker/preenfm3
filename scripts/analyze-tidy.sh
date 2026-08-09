@@ -21,8 +21,14 @@ tidy=${4:?missing clang-tidy executable}
 # compile-errors) is tolerated below — that's the spike's "full output
 # regardless" contract. A missing binary, an unreadable DB, or an empty TU list
 # are all setup failures that must abort, not be masked by the trailing || true.
-command -v "$tidy" >/dev/null 2>&1 || { echo "ERR: clang-tidy '$tidy' not found on PATH" >&2; exit 1; }
-[ -f "$db" ] || { echo "ERR: compile_commands '$db' not found — run 'make firmware' first" >&2; exit 1; }
+command -v "$tidy" >/dev/null 2>&1 || {
+	echo "ERR: clang-tidy '$tidy' not found on PATH" >&2
+	exit 1
+}
+[ -f "$db" ] || {
+	echo "ERR: compile_commands '$db' not found — run 'make firmware' first" >&2
+	exit 1
+}
 
 # TU "file" entries from the DB, ours only (firmware/Src + lib/Src), deduped.
 tus=$(grep -o '"file": "[^"]*"' "$db" |
@@ -30,7 +36,10 @@ tus=$(grep -o '"file": "[^"]*"' "$db" |
 	grep -E '/(firmware/Src|lib/Src)/' |
 	sort -u)
 
-[ -n "$tus" ] || { echo "ERR: no firmware/lib TUs extracted from '$db' — aborting (clang-tidy would run on nothing)" >&2; exit 1; }
+[ -n "$tus" ] || {
+	echo "ERR: no firmware/lib TUs extracted from '$db' — aborting (clang-tidy would run on nothing)" >&2
+	exit 1
+}
 
 # clang-tidy returns nonzero on findings / compile-errors; for a spike we want
 # the full output regardless, so don't let that abort the run. Setup errors are
