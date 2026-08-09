@@ -124,6 +124,29 @@ ctest --test-dir build/test --output-on-failure
 See [`tests/README.md`](../tests/README.md) for the scope (currently
 scaffolding + a smoke test), conventions, and the coverage roadmap.
 
+## Static analysis (cppcheck + clang-tidy)
+
+`make analyze` runs **cppcheck** (primary) and **clang-tidy** (secondary) over
+the firmware cross-build `compile_commands.json`, writing
+`build/release/analyze-{cppcheck,clang-tidy}.txt`. It builds the firmware first
+(depends on the `firmware` target), so it works on a fresh clone.
+
+```sh
+make analyze                                # build firmware, then run both analyzers
+make analyze CPPCHECK=/opt/homebrew/bin/cppcheck CLANG_TIDY=/opt/homebrew/opt/llvm/bin/clang-tidy
+make BUILD_DIR=build/o2 analyze             # analyze a different build's DB
+```
+
+| Tool | Role | Config |
+| --- | --- | --- |
+| **cppcheck** (primary) | reads the arm-none-eabi-gcc DB natively; cleanest cross-compile story | [`scripts/cppcheck-suppressions.txt`](../scripts/cppcheck-suppressions.txt) |
+| **clang-tidy** (secondary) | `bugprone-*` / `cert-*` checks; cross-compile include resolution is handled by the wrapper | [`.clang-tidy`](../.clang-tidy), [`scripts/analyze-tidy.sh`](../scripts/analyze-tidy.sh) |
+
+Scope: `firmware/Src` + `lib/Src` (excludes `firmware/Drivers`,
+`firmware/Middlewares`, `bootloader`, and `tests/`). Findings are **advisory —
+not a CI gate**; `make analyze` never fails the build on findings, only on
+setup errors (missing binary, unreadable DB).
+
 ## Project structure
 
 ```
