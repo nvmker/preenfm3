@@ -59,10 +59,14 @@ cmake -B build -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake -DCMAKE_BUIL
 cmake --build build -j
 
 # Or use the Makefile wrapper (clean Release rebuild of firmware + bootloader):
-make
+make            # clean Release rebuild of firmware + bootloader
 make debug      # clean Debug rebuild (-Og -g3 -DDEBUG)
 make firmware   # just the firmware
 make bootloader # just the bootloader
+make lib        # just the static archive (build/release/lib/libpreenfm3lib.a)
+make test       # host-side GoogleTest unit tests (host compiler) -> build/test/
+make analyze    # cppcheck + clang-tidy over the firmware DB -> build/release/analyze-*.txt
+make clean      # wipe the entire build/ tree
 ```
 
 Artifacts land in `build/release/`:
@@ -80,6 +84,26 @@ make flash-bootloader  # DFU the bootloader
 
 See [`doc/BUILDING.md`](doc/BUILDING.md) for memory layout, DFU entry, and
 probe wiring.
+
+### Tests & static analysis
+
+```sh
+make test       # host-side GoogleTest unit tests (host compiler, not arm-none-eabi)
+make analyze    # cppcheck + clang-tidy over the firmware cross-build DB
+```
+
+`make analyze` runs **cppcheck** (primary) and **clang-tidy** (secondary) over
+`build/release/compile_commands.json`, writing
+`build/release/analyze-{cppcheck,clang-tidy}.txt`. Findings are advisory —
+**not a CI gate**. Config lives in [`.clang-tidy`](.clang-tidy) and
+[`scripts/cppcheck-suppressions.txt`](scripts/cppcheck-suppressions.txt);
+clang-tidy's cross-compile include resolution is in
+[`scripts/analyze-tidy.sh`](scripts/analyze-tidy.sh). Override the binaries with
+`make analyze CPPCHECK=... CLANG_TIDY=...`, or analyze a different build with
+`make BUILD_DIR=build/o2 analyze`.
+
+See [`doc/BUILDING.md`](doc/BUILDING.md) → *Static analysis* for the full
+target reference.
 
 ---
 

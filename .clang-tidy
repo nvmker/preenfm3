@@ -6,20 +6,26 @@
 # Checks enabled:
 #   bugprone-*                                    — correctness (narrowing, UB)
 #   cert-*                                        — CERT C/C++ secure-coding subset
-#   cppcoreguidelines-pro-bounds-constant-array-index — array[literal] OOB
-#                                                        (the Hexter:932 class)
 # Deliberately suppressed:
 #   -bugprone-easily-swappable-parameters   — flags every fn with 2 same-type
 #                                              params; drowns signal on DSP code
 #   -bugprone-narrowing-conversions         — fires on every int<->float in DSP
 #                                              under -Ofast; cppcheck covers this
+#   -cppcoreguidelines-pro-bounds-constant-array-index
+#                                         — blanket anti-C-array (flags every
+#                                           arr[literal]); NOT OOB-specific, and
+#                                           ~1669 hits drown the real signal.
+#                                           The OOB class it nominally guards is
+#                                           better served by cppcheck + a Tier-3
+#                                           ast-grep "table index not wrapped in
+#                                           limit()" rule (see spike-findings.md).
 Checks: >
   -*,
   bugprone-*,
   cert-*,
-  cppcoreguidelines-pro-bounds-constant-array-index,
   -bugprone-easily-swappable-parameters,
-  -bugprone-narrowing-conversions
+  -bugprone-narrowing-conversions,
+  -cppcoreguidelines-pro-bounds-constant-array-index
 # Findings are advisory (spike), not errors:
 WarningsAsErrors: ''
 # Only diagnose OUR headers, not vendor HAL / CMSIS / FatFs:
