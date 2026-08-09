@@ -287,13 +287,16 @@ TEST(HexterPureHelpers, GetRoundedSnapsFrequencyMulToHalfSteps) {
     // applies it to osc1..osc6.frequencyMul (always positive). The rounding of
     // ti was `(int)(t + .5)` -- which bugprone-incorrect-roundings flags because
     // it mis-rounds negatives -- and is now `(int) lround(t)`, bit-identical
-    // for the positive frequencyMul domain. This suite locks the rounding so a
-    // future revert or a broken lround call fails loudly.
+    // for the positive frequencyMul domain.
     //
-    // Every case below lands in the `return ti/2` branch (|t-ti| < 0.25, or
-    // r > 3 short-circuits), so the golden is `lround(r*2)/2` regardless of
-    // how the pre-existing abs(t-ti) smell resolves -- the assertion under
-    // test is the ROUNDING of ti, not the abs flavor (out of scope here).
+    // Caveat (per Copilot review): `(int)(t + .5)` and `lround(t)` agree for
+    // all t >= 0, so the non-negative cases below would ALSO pass against the
+    // old buggy code -- they pin production behavior, not the fix. The single
+    // negative case is the white-box reversion guard: it is NOT a production
+    // input (frequencyMul >= 0), it is the only domain where the two idioms
+    // diverge, so it is what makes a revert of the lround change fail loudly.
+    // (`abs(t - ti)` resolves to the Hexter-member abs(float) -- header L60-61
+    // -- so the snap branch uses the float interpretation; out of scope here.)
     TestHexter h;
     struct Case { float r; float want; const char* note; };
     const Case cases[] = {
@@ -308,6 +311,11 @@ TEST(HexterPureHelpers, GetRoundedSnapsFrequencyMulToHalfSteps) {
         {3.49f, 3.5f,  "r>3 short-circuit -> ti/2"},
         {4.00f, 4.0f,  "r>3"},
         {10.0f, 10.0f, "r>3, large multiplier"},
+        // WHITE-BOX reversion guard (NOT a production input: frequencyMul >= 0).
+        // t = -1.8: lround -> ti = -2, |t-ti| = 0.2 < 0.25 -> snap -> ti/2 = -1.0.
+        // The reverted `(int)(t + .5)` gives ti = -1, |t-ti| = 0.8 >= 0.25 ->
+        // fallthrough -> returns r = -0.9, which would FAIL this assertion.
+        {-0.90f, -1.0f, "negative reversion guard (lround vs (int)(t+.5))"},
     };
     for (const Case& c : cases) {
         SCOPED_TRACE(std::string(c.note) + " (r=" + ::testing::PrintToString(c.r) + ")");
