@@ -808,8 +808,9 @@ char* Sequencer::getSequenceNameInBuffer(char* buffer) {
     SEQ_VERSION version = (SEQ_VERSION)buffer[0];
     switch (version) {
     case SEQ_VERSION1:
-        return buffer + 1;
     case SEQ_VERSION2:
+        // Both on-disk sequence formats store the name at offset 1; collapse
+        // the identical branches (bugprone-branch-clone).
         return buffer + 1;
     }
     return "##";
