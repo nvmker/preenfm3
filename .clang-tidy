@@ -1,0 +1,26 @@
+# clang-tidy config — STARTING POINT for the static-analysis spike.
+# Selective, NOT the full cppcoreguidelines-* suite (too noisy on C-style
+# embedded DSP code). Tighten after the first run; the triage report at
+# _bmad-output/static-analysis/spike-findings.md records what got suppressed.
+#
+# Checks enabled:
+#   bugprone-*                                    — correctness (narrowing, UB)
+#   cert-*                                        — CERT C/C++ secure-coding subset
+#   cppcoreguidelines-pro-bounds-constant-array-index — array[literal] OOB
+#                                                        (the Hexter:932 class)
+# Deliberately suppressed:
+#   -bugprone-easily-swappable-parameters   — flags every fn with 2 same-type
+#                                              params; drowns signal on DSP code
+#   -bugprone-narrowing-conversions         — fires on every int<->float in DSP
+#                                              under -Ofast; cppcheck covers this
+Checks: >
+  -*,
+  bugprone-*,
+  cert-*,
+  cppcoreguidelines-pro-bounds-constant-array-index,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions
+# Findings are advisory (spike), not errors:
+WarningsAsErrors: ''
+# Only diagnose OUR headers, not vendor HAL / CMSIS / FatFs:
+HeaderFilterRegex: '/(firmware/Src|lib/Src)/'
