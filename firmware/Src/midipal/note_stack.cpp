@@ -29,21 +29,34 @@ void NoteStack::NoteOn(uint8_t note, uint8_t velocity) {
     // In case of saturation, remove the least recently played note from the
     // stack.
     if (size_ == kNoteStackSize) {
-        uint8_t least_recent_note;
+        // The tail of the played list is the sole occupied slot whose next_ptr
+        // is 0. Guard the (should-not-happen) case where the invariant is
+        // broken so an uninitialized note number is never fed into NoteOff().
+        uint8_t least_recent_note = 0;
+        bool found_least_recent = false;
         for (uint8_t i = 1; i <= kNoteStackSize; ++i) {
             if (pool_[i].next_ptr == 0) {
                 least_recent_note = pool_[i].note;
+                found_least_recent = true;
                 break;
             }
         }
-        NoteOff(least_recent_note);
+        if (found_least_recent) {
+            NoteOff(least_recent_note);
+        }
     }
     // Now we are ready to insert the new note. Find a free slot to insert it.
-    uint8_t free_slot;
+    // 0 is the dummy slot and the scan starts at 1, so 0 uniquely means
+    // "not found"; bail out rather than index pool_ with a bogus slot (which
+    // could write out of bounds and corrupt the stack).
+    uint8_t free_slot = 0;
     for (uint8_t i = 1; i <= kNoteStackSize; ++i) {
         if (pool_[i].note == kFreeSlot) {
             free_slot = i;
         }
+    }
+    if (free_slot == 0) {
+        return;
     }
     pool_[free_slot].next_ptr = root_ptr_;
     pool_[free_slot].note = note;
