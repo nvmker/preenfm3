@@ -32,6 +32,8 @@ extern struct WaveTable waveTables[];
 
 #include "UserWaveform.h"
 
+#include <math.h>   // lround (was (int)(x + .5f) -- bugprone-incorrect-roundings)
+
 UserWaveform::UserWaveform() {
     for (int k=0; k<6; k++) {
         userWaveFormNames[k][4] = 0;
@@ -145,7 +147,7 @@ int UserWaveform::fillUserWaveFormFromTxt(int f, char* buffer, int filled, bool 
             while (fsu_->isSeparator(buffer[index])) {
                 index++;
             }
-            numberOfSample = (int)(fsu_->stof(&buffer[index], floatSize) + .5f);
+            numberOfSample = (int) lround(fsu_->stof(&buffer[index], floatSize));
 
             if (numberOfSample < 32 || numberOfSample > 1024) {
                 return numberOfSampleError(f);
