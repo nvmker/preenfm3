@@ -97,7 +97,7 @@ sys_includes=$(printf '%s\n' "$probe_err" |
 		# (and silently skips any non-dir entry, which shouldn't occur here).
 		cd -- "$p" 2>/dev/null && pwd -P
 	done |
-	grep -v '/lib/gcc/')   # drop GCC fixed includes; clang ships its own
+	grep -v '/lib/gcc/') # drop GCC fixed includes; clang ships its own
 [ -n "$sys_includes" ] || {
 	echo "ERR: could not enumerate cross-toolchain include dirs from '$gcc_bin'" >&2
 	echo "     (probe: '$gcc_bin' $mcu_flags -E -x c++ -v). Check the toolchain install." >&2
