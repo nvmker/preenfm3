@@ -492,11 +492,9 @@ void Hexter::voiceSetData(struct OneSynthParams *params, uint8_t *patch)
 		setMix(params, 2, patch, 3);
 		setMix(params, 3, patch, 5);
 		if (fb > 4) {
-			if (algo == 5) {
-				params->osc6.shape = OSC_SHAPE_SAW;;
-			} else {
-				params->osc6.shape = OSC_SHAPE_SAW;;
-			}
+			// algo == 5 vs else arms were identical (both set osc6.shape = SAW);
+			// collapse the tautology (bugprone-branch-clone). Behavior unchanged.
+			params->osc6.shape = OSC_SHAPE_SAW;;
 		}
 		break;
 	case 7:
