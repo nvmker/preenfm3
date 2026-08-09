@@ -37,6 +37,19 @@ target_include_directories(preenfm3 PRIVATE
 target_compile_definitions(preenfm3 PRIVATE USE_HAL_DRIVER STM32H753xx LQFP144)
 target_compile_options(preenfm3 PRIVATE -mslow-flash-data)
 
+# Static-analysis baseline warnings on the firmware's own code. -Wall -Wextra
+# covers -Wsequence-point (gcc) / -Wunsequenced (clang), -Wimplicit-fallthrough,
+# -Wswitch, -Wunused-*, etc. on BOTH compilers — no need to name the
+# compiler-specific flags. No -Werror (noise floor unknown). -Wshadow deferred
+# (noisy on legacy C++); -Wconversion excluded (implicit-int-promotion noise on
+# every byte op — a known embedded trap).
+#
+# CAVEAT: vendor C (firmware/Drivers/STM32H7xx_HAL_Driver, firmware/Middlewares)
+# is compiled into this same target and will emit non-fatal warnings under
+# -Wall -Wextra. A follow-up could split vendor TUs into a no-warning OBJECT
+# library if the noise dominates. See _bmad-output/static-analysis/spike-findings.md.
+target_compile_options(preenfm3 PRIVATE -Wall -Wextra)
+
 target_link_libraries(preenfm3 PRIVATE preenfm3lib)
 
 set_target_properties(preenfm3 PROPERTIES OUTPUT_NAME preenfm3 SUFFIX ".elf")
