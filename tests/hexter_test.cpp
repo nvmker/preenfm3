@@ -76,6 +76,7 @@ public:
     using Hexter::getActualLevel;
     using Hexter::getActualOutputLevel;
     using Hexter::getChangeTime;
+    using Hexter::getRounded;
     using Hexter::limit;
     using Hexter::voiceCopyName;
 };
@@ -278,6 +279,41 @@ TEST(HexterPureHelpers, VoiceCopyNameRemapsDx7SpecialChars) {
 // Integration golden — representative packed patch through the full pipeline.
 // Characterizes CURRENT behavior; not derived from any spec.
 // ===========================================================================
+
+TEST(HexterPureHelpers, GetRoundedSnapsFrequencyMulToHalfSteps) {
+    // getRounded rounds `t = r*2` to the nearest integer and returns ti/2,
+    // snapping a DX7 frequency multiplier to the closest half-step when t is
+    // within 0.25 of an integer (or unconditionally when r > 3). voiceSetData
+    // applies it to osc1..osc6.frequencyMul (always positive). The rounding of
+    // ti was `(int)(t + .5)` -- which bugprone-incorrect-roundings flags because
+    // it mis-rounds negatives -- and is now `(int) lround(t)`, bit-identical
+    // for the positive frequencyMul domain. This suite locks the rounding so a
+    // future revert or a broken lround call fails loudly.
+    //
+    // Every case below lands in the `return ti/2` branch (|t-ti| < 0.25, or
+    // r > 3 short-circuits), so the golden is `lround(r*2)/2` regardless of
+    // how the pre-existing abs(t-ti) smell resolves -- the assertion under
+    // test is the ROUNDING of ti, not the abs flavor (out of scope here).
+    TestHexter h;
+    struct Case { float r; float want; const char* note; };
+    const Case cases[] = {
+        {0.50f, 0.5f,  "clean half"},
+        {1.00f, 1.0f,  "clean integer"},
+        {1.46f, 1.5f,  "documented: 1.46 snaps to 1.5"},
+        {1.50f, 1.5f,  "clean half"},
+        {2.00f, 2.0f,  "clean integer"},
+        {2.02f, 2.0f,  "documented: 2.02 snaps to 2.0"},
+        {2.50f, 2.5f,  "clean half"},
+        {3.00f, 3.0f,  "r<=3 boundary, |t-ti|=0"},
+        {3.49f, 3.5f,  "r>3 short-circuit -> ti/2"},
+        {4.00f, 4.0f,  "r>3"},
+        {10.0f, 10.0f, "r>3, large multiplier"},
+    };
+    for (const Case& c : cases) {
+        SCOPED_TRACE(std::string(c.note) + " (r=" + ::testing::PrintToString(c.r) + ")");
+        EXPECT_FLOAT_EQ(h.getRounded(c.r), c.want);
+    }
+}
 
 TEST(HexterPipeline, RepresentativePatchProducesLockedGolden) {
     TestHexter h;

@@ -294,7 +294,10 @@ float Hexter::abs(float value) {
 float Hexter::getRounded(float r) {
 	float t = r*2;
 
-	int ti = t + .5;
+	// lround (half away from zero) instead of (int)(t + .5): identical for
+	// t >= 0 (frequencyMul is a positive DX7 ratio) but correct for any sign,
+	// and silences bugprone-incorrect-roundings.
+	int ti = (int) lround(t);
 	// Round 1.46, 2.02 to close half decimal number
 	if (abs(t -ti ) < 0.25f || r > 3) {
 		return ((float)ti) / 2.0f;
