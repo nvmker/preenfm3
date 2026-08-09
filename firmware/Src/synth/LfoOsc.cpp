@@ -132,7 +132,13 @@ void LfoOsc::midiClock(int songPosition, bool computeStep) {
 
 
 void LfoOsc::nextValueInMatrix() {
-    float lfoValue;
+    // Initialize defensively: the switch below has no default, so an
+    // out-of-range lfo->shape (corrupted param or a future enum value) would
+    // leave lfoValue unset and feed a garbage float into the matrix -- the
+    // same UB class as the -Ofast audio-path faults. Every valid shape assigns
+    // before use, so 0.0f only ever ships for the impossible-but-not-
+    // provable case.
+    float lfoValue = 0.0f;
 
     ticks ++;
 
