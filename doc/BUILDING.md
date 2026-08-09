@@ -142,10 +142,14 @@ make BUILD_DIR=build/o2 analyze             # analyze a different build's DB
 | **cppcheck** (primary) | reads the arm-none-eabi-gcc DB natively; cleanest cross-compile story | [`scripts/cppcheck-suppressions.txt`](../scripts/cppcheck-suppressions.txt) |
 | **clang-tidy** (secondary) | `bugprone-*` / `cert-*` checks; cross-compile include resolution is handled by the wrapper | [`.clang-tidy`](../.clang-tidy), [`scripts/analyze-tidy.sh`](../scripts/analyze-tidy.sh) |
 
-Scope: `firmware/Src` + `lib/Src` (excludes `firmware/Drivers`,
-`firmware/Middlewares`, `bootloader`, and `tests/`). Findings are **advisory —
-not a CI gate**; `make analyze` never fails the build on findings, only on
-setup errors (missing binary, unreadable DB).
+The two tools cover **different** scopes:
+
+- **cppcheck** — the full cross-build `compile_commands.json` (161 TUs: firmware + lib + bootloader) **minus** `firmware/Drivers` and `firmware/Middlewares` (vendor HAL/Middleware), excluded via the Makefile's `-i` flags. So cppcheck *does* analyze `bootloader/` (Src + Drivers) — that's why the (now-suppressed) CMSIS finding included the bootloader copy.
+- **clang-tidy** — `firmware/Src` + `lib/Src` only, filtered by `scripts/analyze-tidy.sh` (vendor + bootloader excluded).
+
+`tests/` is a separate host-built CMake project and isn't in the cross-build DB.
+Findings are **advisory — not a CI gate**; `make analyze` never fails the build
+on findings, only on setup errors (missing binary, unreadable DB).
 
 ## Project structure
 
