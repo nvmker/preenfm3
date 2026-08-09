@@ -7919,9 +7919,7 @@ void Voice::setNewEffectParam(int encoder) {
         default:
             switch (encoder) {
                 case ENCODER_EFFECT_TYPE:
-                    break;
                 case ENCODER_EFFECT_PARAM1:
-                    break;
                 case ENCODER_EFFECT_PARAM2:
                     break;
             }
