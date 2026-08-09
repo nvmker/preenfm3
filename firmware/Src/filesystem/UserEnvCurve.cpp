@@ -25,6 +25,8 @@ extern char *envCurveNames[];
 
 #include "UserEnvCurve.h"
 
+#include <math.h>   // lround (was (int)(x + .5f) -- bugprone-incorrect-roundings)
+
 UserEnvCurve::UserEnvCurve() {
     for (int k=0; k<4; k++) {
         userEnvCurveNames[k][4] = 0;
@@ -144,7 +146,7 @@ int UserEnvCurve::fillUserEnvCurveFromTxt(int f, char* buffer, int filled, bool 
             while (fsu_->isSeparator(buffer[index])) {
                 index++;
             }
-            numberOfSample = (int)(fsu_->stof(&buffer[index], floatSize) + .5f);
+            numberOfSample = (int) lround(fsu_->stof(&buffer[index], floatSize));
 
             if (numberOfSample != 64) {
                 return numberOfSampleError(f);
