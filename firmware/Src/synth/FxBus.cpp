@@ -53,14 +53,22 @@ float sqrt3(const float x)
     u.i = (1 << 29) + (u.i >> 1) - (1 << 22);
     return u.x;
 }
+// Type-puns the float's IEEE-754 bit pattern through a union (same idiom as
+// sqrt3 above) instead of a float*->long* cast. The pointer cast was both a
+// strict-aliasing violation (cppcheck invalidPointerCast) and a portability
+// hazard: `long` is 8 bytes on LP64 hosts (macOS/Linux x86-64), so the old
+// code read/wrote 8 bytes on a 4-byte float, smearing the 4 adjacent bytes.
+// int32_t matches the 32-bit IEEE-754 exponent arithmetic the magic constants
+// implement, and the union read/write is well-defined under GCC/Clang.
 inline
 float fastroot(float f,int n)
 {
-    long *lp,l;
-    lp=(long*)(&f);
-    l=*lp;l-=0x3F800000l;l>>=(n-1);l+=0x3F800000l;
-    *lp=l;
-    return f;
+    union { int32_t i; float x; } u;
+    u.x = f;
+    u.i -= 0x3F800000l;
+    u.i >>= (n - 1);
+    u.i += 0x3F800000l;
+    return u.x;
 }
 inline
 float sigmoid(float x)
