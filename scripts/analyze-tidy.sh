@@ -114,6 +114,21 @@ rm -rf "$work"
 mkdir -p "$work"
 sed 's/ -mslow-flash-data//g' "$db" >"$work/compile_commands.json"
 
+# Setup-failures-must-abort: validate the two artifacts clang-tidy depends on,
+# so a silent rm/mkdir/sed failure (permissions, full disk) or an unwritable
+# report path fails loudly here instead of being masked by the trailing || true
+# on the clang-tidy run (which would otherwise yield a green `make analyze` with
+# no analysis and/or no report).
+[ -s "$work/compile_commands.json" ] || {
+	echo "ERR: sanitized DB '$work/compile_commands.json' missing or empty" >&2
+	exit 1
+}
+out_dir=$(dirname "$out")
+[ -d "$out_dir" ] && [ -w "$out_dir" ] || {
+	echo "ERR: output dir '$out_dir' missing or not writable" >&2
+	exit 1
+}
+
 # Build the clang-tidy extra-args via positional params so the space inside the
 # -D override values survives as a single argv element (--extra-arg=-DNAME=a b c
 # must reach clang as ONE arg).
@@ -134,8 +149,10 @@ set -- "$@" --extra-arg=-U__INT32_TYPE__ --extra-arg=-D__INT32_TYPE__=long\ int
 set -- "$@" --extra-arg=-Wno-error=narrowing
 
 # clang-tidy returns nonzero on findings / compile-errors; for a spike we want
-# the full output regardless, so don't let that abort the run. Setup errors are
-# already caught above and DO fail. $tus (see above) is a newline-separated
-# list of TU paths that must word-split into one argv entry per TU.
+# the full output regardless, so don't let that abort the run. The sanitized DB
+# and the output path are validated above, so the only thing this || true masks
+# is clang-tidy's own findings/compile-errors exit — exactly the "full output
+# regardless" contract. $tus (see above) is a newline-separated list of TU paths
+# that must word-split into one argv entry per TU.
 # shellcheck disable=SC2086
 "$tidy" -p "$work" --quiet "$@" $tus 2>&1 | tee "$out" || true
