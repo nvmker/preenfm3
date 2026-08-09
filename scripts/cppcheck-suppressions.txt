@@ -6,6 +6,12 @@
 # section attributes, IRQn setters, ...). Broad but unavoidable on a HAL codebase.
 unknownMacro
 
+# CMSIS cmsis_compiler.h hits `#error Unknown compiler.` because cppcheck doesn't
+# advertise __GNUC__/__clang__ (it defines its own __CPPCHECK__ instead), so the
+# #if-defined(__CC_ARM)/__GNUC__/__clang__ ladder falls through to the #error.
+# 3 false-positive errors (firmware + lib + bootloader copies of the header).
+preprocessorErrorDirective
+
 # Style: classes with single-arg non-explicit ctors. Noisy on legacy C++ and
 # low-value on embedded POD-style code. Revisit if we adopt modern C++ style.
 noExplicitConstructor
