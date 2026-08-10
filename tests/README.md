@@ -44,15 +44,45 @@ ctest --test-dir build/test --output-on-failure
 ctest --test-dir build/test -R 'Smoke.BasicAssertionWorks' --output-on-failure
 ```
 
-### Sanitizer run
+### Sanitizer run (ASAN + UBSAN)
 
 ```sh
-cmake -B build/test-asan -S tests -DCMAKE_BUILD_TYPE=Debug \
-      -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-      -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
-cmake --build build/test-asan -j
-ctest --test-dir build/test-asan --output-on-failure
+make test-asan
 ```
+
+Builds the suite under `-fsanitize=address,undefined` and runs ctest. This is a
+**reporting** target (not a CI gate) — it matches the `make analyze`
+tolerant-triage philosophy. The Hexter coverage session surfaced a real
+global-buffer-overflow via this flow under fuzzed input; later coverage phases
+repeat that deliberately.
+
+### Coverage run (LLVM source-based)
+
+```sh
+make test-cov
+```
+
+Builds the suite with clang + `-fprofile-instr-generate -fcoverage-mapping`,
+runs ctest, merges the per-test `.profraw`, and prints an `llvm-cov report`
+scoped to `firmware/Src` (headers excluded, matching the 12.45% baseline in
+`_bmad-output/planning-artifacts/test-coverage-plan.md`). Artifacts land in
+`build/test-cov/` (`pfm3_tests.profdata`, `coverage-report.txt`).
+
+The target **forces clang and pins the LLVM tool pair** because LLVM
+source-based coverage requires the compiler and `llvm-cov`/`llvm-profdata` to
+come from one LLVM distribution: on macOS it pins to Apple's CommandLineTools
+pair (`/usr/bin/clang++` +
+`/Library/Developer/CommandLineTools/usr/bin/{llvm-cov,llvm-profdata}`); on
+Linux it uses the system `clang++` + `llvm-cov`/`llvm-profdata`. On a dev Mac
+with Homebrew LLVM alongside Apple's CLT, a naive build silently picks a
+mismatched pair and fails at `llvm-profdata merge` ("unsupported
+instrumentation level"). The target also wipes `build/test-cov/` before each
+configure so a stale cache can't silently produce an uninstrumented build
+(CMake won't override a cached `CMAKE_CXX_FLAGS` on reconfigure).
+
+The CI floor gate (`.github/workflows/coverage.yml` +
+`scripts/ci/coverage-gate.sh`) consumes the same report and fails on
+regression below `scripts/coverage-floor.txt`.
 
 ## How GoogleTest is fetched
 
