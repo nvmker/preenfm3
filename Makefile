@@ -148,16 +148,19 @@ TEST_COV_DIR ?= build/test-cov
 COV_FLAGS    ?= -fprofile-instr-generate -fcoverage-mapping -fno-omit-frame-pointer
 
 ifeq ($(shell uname -s),Darwin)
+    CLANG_C       ?= /usr/bin/clang
     CLANG_CXX     ?= /usr/bin/clang++
     LLVM_COV      ?= /Library/Developer/CommandLineTools/usr/bin/llvm-cov
     LLVM_PROFDATA ?= /Library/Developer/CommandLineTools/usr/bin/llvm-profdata
 else
+    CLANG_C       ?= clang
     CLANG_CXX     ?= clang++
     LLVM_COV      ?= llvm-cov
     LLVM_PROFDATA ?= llvm-profdata
 endif
 
 test-cov:
+	@[ -x "$(CLANG_C)" ]       || (echo "ERR: $(CLANG_C) not found" && false)
 	@[ -x "$(CLANG_CXX)" ]     || (echo "ERR: $(CLANG_CXX) not found" && false)
 	@[ -x "$(LLVM_COV)" ]      || (echo "ERR: $(LLVM_COV) not found" && false)
 	@[ -x "$(LLVM_PROFDATA)" ] || (echo "ERR: $(LLVM_PROFDATA) not found" && false)
@@ -167,9 +170,16 @@ test-cov:
 	# report. Mirrors the `all`/`debug` clean-rebuild contract. Coverage is a
 	# deliberate measurement, not a hot loop, so the rebuild cost is acceptable.
 	rm -rf $(TEST_COV_DIR)
+	# Force clang for BOTH C and C++ and put COV_FLAGS on BOTH: tests/ enables
+	# LANGUAGES C CXX (waves.c is plain-C), and LLVM source-based coverage needs
+	# clang (gcc rejects -fprofile-instr-generate). On Linux the default
+	# /usr/bin/cc is gcc — without these, CMake's C-compiler test links with the
+	# coverage flags and gcc aborts "unrecognized command-line option".
 	cmake -B $(TEST_COV_DIR) -S tests \
 	    -DCMAKE_BUILD_TYPE=Debug \
+	    -DCMAKE_C_COMPILER=$(CLANG_C) \
 	    -DCMAKE_CXX_COMPILER=$(CLANG_CXX) \
+	    -DCMAKE_C_FLAGS="$(COV_FLAGS)" \
 	    -DCMAKE_CXX_FLAGS="$(COV_FLAGS)" \
 	    -DCMAKE_EXE_LINKER_FLAGS="$(COV_FLAGS)"
 	cmake --build $(TEST_COV_DIR) -j
