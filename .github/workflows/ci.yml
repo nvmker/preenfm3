@@ -38,3 +38,12 @@ jobs:
   static-analysis:
     name: Static analysis (cppcheck)
     uses: ./.github/workflows/static-analysis.yml
+
+  # Host unit-test coverage floor gate — runs in PARALLEL with build + test +
+  # static-analysis (no `needs:`) for the same reason: a green build / test /
+  # cppcheck run must not mask a coverage regression, and vice-versa. Fails ONLY
+  # if total firmware/Src line coverage drops below scripts/coverage-floor.txt.
+  # See coverage.yml + the floor file for the contract.
+  coverage:
+    name: Coverage (floor gate)
+    uses: ./.github/workflows/coverage.yml
