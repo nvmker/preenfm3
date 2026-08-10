@@ -75,7 +75,7 @@ $(CMAKE_CACHE): CMakeLists.txt $(TOOLCHAIN_FILE) \
         flash-debug flash-firmware-debug flash-bootloader-debug \
         program program-firmware program-bootloader \
         program-debug program-firmware-debug program-bootloader-debug test \
-        analyze
+        test-cov test-asan analyze
 
 # Release: clean rebuild into build/release/ (default BUILD_DIR / BUILD_TYPE=Release).
 # Wipes only build/release/ (build/debug/ is left intact), then reconfigures and
@@ -121,6 +121,104 @@ test:
 	cmake -B $(TEST_DIR) -S tests
 	cmake --build $(TEST_DIR) -j
 	ctest --test-dir $(TEST_DIR) --output-on-failure
+
+# --- Coverage (LLVM source-based) ------------------------------------------
+# Builds tests/ with clang + -fprofile-instr-generate -fcoverage-mapping, runs
+# ctest, merges the per-test .profraw, and prints llvm-cov report scoped to
+# firmware/Src. Result: build/test-cov/{pfm3_tests.profdata,coverage-report.txt}.
+#
+# WHY CLANG IS FORCED: LLVM source-based coverage requires the compiler AND
+# llvm-cov/llvm-profdata to come from ONE LLVM distribution. On a dev Mac with
+# Homebrew LLVM (v22) alongside Apple's CommandLineTools (v21), the default
+# `clang++` on PATH (Homebrew) does NOT match the `llvm-cov`/`llvm-profdata` a
+# naive build picks up — a version skew that fails at `llvm-profdata merge`
+# ("unsupported instrumentation level"). So: on macOS we pin to Apple's CLT
+# pair; on Linux we use the system clang + llvm pair (CI apt-installs both
+# together). See tests/README.md -> Coverage run.
+#
+# The report is scoped to $(CURDIR)/firmware/Src (absolute, so llvm-cov matches
+# the coverage mapping) so the TOTAL matches the test-coverage-plan.md 12.45%
+# baseline — gtest / *_test.cpp / stub rows are excluded. The CI floor gate
+# (scripts/ci/coverage-gate.sh) consumes this same report.
+#
+# LLVM_PROFILE_FILE uses %p (PID) because ctest invokes each TEST() as its own
+# process; without %p the files overwrite. The absolute path keeps every run's
+# profraw in one dir regardless of ctest's per-test cwd.
+TEST_COV_DIR ?= build/test-cov
+COV_FLAGS    ?= -fprofile-instr-generate -fcoverage-mapping -fno-omit-frame-pointer
+
+ifeq ($(shell uname -s),Darwin)
+    CLANG_C       ?= /usr/bin/clang
+    CLANG_CXX     ?= /usr/bin/clang++
+    LLVM_COV      ?= /Library/Developer/CommandLineTools/usr/bin/llvm-cov
+    LLVM_PROFDATA ?= /Library/Developer/CommandLineTools/usr/bin/llvm-profdata
+else
+    CLANG_C       ?= clang
+    CLANG_CXX     ?= clang++
+    LLVM_COV      ?= llvm-cov
+    LLVM_PROFDATA ?= llvm-profdata
+endif
+
+test-cov:
+	# PATH-aware existence check: `test -x` does NOT search PATH, so a bare name
+	# like `clang` (the Linux default) would spuriously fail even when installed.
+	# `command -v` resolves both bare names (via PATH) and absolute paths.
+	@for t in "$(CLANG_C)" "$(CLANG_CXX)" "$(LLVM_COV)" "$(LLVM_PROFDATA)"; do \
+	    command -v "$$t" >/dev/null || { echo "ERR: $$t not found" >&2; exit 1; }; \
+	done
+	# Wipe before configure: CMake will NOT override a cached CMAKE_CXX_FLAGS on
+	# reconfigure, so a stale build/test-cov/ from a previous (or differently-
+	# flagged) run silently builds WITHOUT instrumentation and produces an empty
+	# report. Mirrors the `all`/`debug` clean-rebuild contract. Coverage is a
+	# deliberate measurement, not a hot loop, so the rebuild cost is acceptable.
+	rm -rf $(TEST_COV_DIR)
+	# Force clang for BOTH C and C++ and put COV_FLAGS on BOTH: tests/ enables
+	# LANGUAGES C CXX (waves.c is plain-C), and LLVM source-based coverage needs
+	# clang (gcc rejects -fprofile-instr-generate). On Linux the default
+	# /usr/bin/cc is gcc — without these, CMake's C-compiler test links with the
+	# coverage flags and gcc aborts "unrecognized command-line option".
+	cmake -B $(TEST_COV_DIR) -S tests \
+	    -DCMAKE_BUILD_TYPE=Debug \
+	    -DCMAKE_C_COMPILER=$(CLANG_C) \
+	    -DCMAKE_CXX_COMPILER=$(CLANG_CXX) \
+	    -DCMAKE_C_FLAGS="$(COV_FLAGS)" \
+	    -DCMAKE_CXX_FLAGS="$(COV_FLAGS)" \
+	    -DCMAKE_EXE_LINKER_FLAGS="$(COV_FLAGS)"
+	cmake --build $(TEST_COV_DIR) -j
+	LLVM_PROFILE_FILE="$(abspath $(TEST_COV_DIR))/pfm3_tests-%p.profraw" \
+	    ctest --test-dir $(TEST_COV_DIR) --output-on-failure
+	# Fail loudly if ctest produced no profraw (LLVM_PROFILE_FILE not honored, or
+	# every test GTEST_SKIP'd): otherwise the glob below passes a literal path to
+	# llvm-profdata and fails with a confusing "No such file".
+	@set -- $(TEST_COV_DIR)/pfm3_tests-*.profraw; [ -e "$$1" ] || \
+	    { echo "ERR: no profraw in $(TEST_COV_DIR); ctest wrote no coverage data" >&2; false; }
+	$(LLVM_PROFDATA) merge -sparse $(TEST_COV_DIR)/pfm3_tests-*.profraw \
+	    -o $(TEST_COV_DIR)/pfm3_tests.profdata
+	# -ignore-filename-regex excludes headers (.h) so the TOTAL matches the
+	# test-coverage-plan.md baseline methodology (12.45% / 12498 lines): inline
+	# header code IS instrumented when #included, but the plan scopes to firmware
+	# TUs (.cpp/.c). Both the local report and the CI floor gate use this scope.
+	$(LLVM_COV) report $(TEST_COV_DIR)/pfm3_tests \
+	    -instr-profile=$(TEST_COV_DIR)/pfm3_tests.profdata \
+	    -ignore-filename-regex='\.h$$' \
+	    -use-color=false $(CURDIR)/firmware/Src \
+	    | tee $(TEST_COV_DIR)/coverage-report.txt
+
+# --- ASAN + UBSAN (Debug, reporting only) -----------------------------------
+# Builds tests/ under -fsanitize=address,undefined and runs ctest. REPORTING
+# target (not a CI gate) — matches the `make analyze` tolerant-triage
+# philosophy. The Hexter session found a real global-buffer-overflow via this
+# flow under fuzzed input; later coverage phases repeat that deliberately.
+# Uses the host default compiler (gcc or clang); both support this flag set.
+TEST_ASAN_DIR ?= build/test-asan
+
+test-asan:
+	cmake -B $(TEST_ASAN_DIR) -S tests -DCMAKE_BUILD_TYPE=Debug \
+	    -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+	    -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+	    -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+	cmake --build $(TEST_ASAN_DIR) -j
+	ctest --test-dir $(TEST_ASAN_DIR) --output-on-failure
 
 # --- Static analysis (cppcheck + clang-tidy) --------------------------------
 # Runs over the firmware cross-build compile_commands.json. Requires the
