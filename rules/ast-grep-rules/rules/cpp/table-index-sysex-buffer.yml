@@ -1,0 +1,29 @@
+id: table-index-sysex-buffer
+language: Cpp
+severity: warning
+message: "Raw sysex/patch byte used as a table index — wrap in limit()"
+note: |
+  Indexing anything with an unbounded byte from a sysex/patch buffer
+  (patch[N] / eb_op[N] / packed[N] / sysex[N]) is the DX7-sysex OOB class:
+  a malformed byte >= table size reads past the global. The original
+  crash-class bug (fixed in 63650f4) was:
+
+      params->matrixRowState2.mul =
+          dx7_voice_amd_to_ol_adjustment[(patch[140])] / 100.0f;
+
+  — patch[140] (unpacked LFO AMD, copied raw from the sysex byte packed[115])
+  indexed a const float[100] with no clamp. Under ASAN, packed[115]==125
+  aborted (global-buffer-overflow). Every other table access in voiceSetData
+  was already wrapped in limit(...,0,99); this one alone was not.
+
+  Fix idiom: limit(BUF[N], 0, BOUND) — see Hexter::limit (Hexter.cpp).
+  Scoped to the sysex/patch buffer names so trusted internal nested lookups
+  (e.g. voices_[voiceNumber_[k]], actions[nextActionIndex_[i]]) are NOT
+  flagged. Extends to new sysex buffers by adding their name to the regex.
+rule:
+  any:
+    - pattern: $TABLE[$BUF[$N]]
+    - pattern: $TABLE[($BUF[$N])]
+constraints:
+  BUF:
+    regex: "^(patch|eb_op|packed|sysex)$"
