@@ -31,6 +31,10 @@ public:
 
 	void loadConfig(uint8_t* midiConfigBytes);
 	void saveConfig(uint8_t* midiConfigBytes);
+	// saveConfig + current DX7 bank/preset cursor. Use this wherever the save
+	// is triggered from a context that holds the live cursor (menu actions),
+	// so Settings.txt never gets rewritten with stale staging values.
+	void saveConfigWithDx7(uint8_t* midiConfigBytes, uint16_t dx7Bank, uint8_t dx7Preset);
 
 	// Lets the config parser read/write the DX7 folder picker state.
 	void setDX7SysexFile(DX7SysexFile *dx7SysexFile) { dx7SysexFile_ = dx7SysexFile; }

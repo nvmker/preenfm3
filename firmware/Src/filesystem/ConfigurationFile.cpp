@@ -67,6 +67,10 @@ void ConfigurationFile::loadConfig(uint8_t* midiConfigBytes) {
     					dx7SysexFile_->setRoot(dx7Value);
     				} else if (fsu_->str_cmp(dx7Key, "dx7current") == 0) {
     					dx7SysexFile_->applySelectedSubDir(dx7Value);
+    				} else if (fsu_->str_cmp(dx7Key, "dx7bank") == 0) {
+    					dx7SysexFile_->setLastBank((uint16_t)fsu_->toInt(dx7Value));
+    				} else if (fsu_->str_cmp(dx7Key, "dx7preset") == 0) {
+    					dx7SysexFile_->setLastPreset((uint8_t)fsu_->toInt(dx7Value));
     				}
     			}
     		}
@@ -103,7 +107,7 @@ void ConfigurationFile::saveConfig(uint8_t* midiConfigBytes) {
 
     // DX7 folder picker state (round-trips so it survives the full rewrite).
     // Guard the block so it can never push wptr past the buffer even on a pathological file.
-    if (dx7SysexFile_ != 0 && wptr < PROPERTY_FILE_SIZE - 80) {
+    if (dx7SysexFile_ != 0 && wptr < PROPERTY_FILE_SIZE - 120) {
         wptr += fsu_->copy_string((char*)storageBuffer + wptr, "# DX7 folder picker");
         storageBuffer[wptr++] = '\n';
         wptr += fsu_->copy_string((char*)storageBuffer + wptr, "dx7bankdir=");
@@ -112,10 +116,27 @@ void ConfigurationFile::saveConfig(uint8_t* midiConfigBytes) {
         wptr += fsu_->copy_string((char*)storageBuffer + wptr, "dx7current=");
         wptr += fsu_->copy_string((char*)storageBuffer + wptr, dx7SysexFile_->getSelectedSubDir());
         storageBuffer[wptr++] = '\n';
+        wptr += fsu_->copy_string((char*)storageBuffer + wptr, "dx7bank=");
+        wptr += fsu_->printInt((char*)storageBuffer + wptr, (int)dx7SysexFile_->getLastBank());
+        storageBuffer[wptr++] = '\n';
+        wptr += fsu_->copy_string((char*)storageBuffer + wptr, "dx7preset=");
+        wptr += fsu_->printInt((char*)storageBuffer + wptr, (int)dx7SysexFile_->getLastPreset());
+        storageBuffer[wptr++] = '\n';
     }
     // delete it so that we're sure the new one has the right size...
     remove(PROPERTIES);
     save(PROPERTIES, 0,  storageBuffer, wptr);
+}
+
+void ConfigurationFile::saveConfigWithDx7(uint8_t* midiConfigBytes, uint16_t dx7Bank, uint8_t dx7Preset) {
+    // Refresh staging from the live cursor immediately before the full-file
+    // rewrite, otherwise saveConfig would persist whatever was loaded at boot
+    // (dx7bank/dx7preset only change through the menu, never through staging).
+    if (dx7SysexFile_ != 0) {
+        dx7SysexFile_->setLastBank(dx7Bank);
+        dx7SysexFile_->setLastPreset(dx7Preset);
+    }
+    saveConfig(midiConfigBytes);
 }
 
 
