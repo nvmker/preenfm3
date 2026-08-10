@@ -37,11 +37,23 @@ public:
 	const char* getRoot() { return root_; }
 	void applySelectedSubDir(const char* subDirName);
 	const char* getSelectedSubDir() { return selectedSubDir_; }
-	void selectRoot();
-	void selectSubDir(int index);
+	// selectRoot/selectSubDir return true when the active read folder
+	// (currentDir_) actually changed, so callers can keep derived cursor
+	// state (bank/preset) on a re-select of the same folder.
+	bool selectRoot();
+	bool selectSubDir(int index);
 	int initSubDirs();
 	int getSubDirCount() { return dx7SubDirCount_; }
 	const struct PFM3File* getSubDir(int index);
+
+	// Persisted DX7 cursor (round-tripped via Settings.txt keys dx7bank /
+	// dx7preset). Held here as load-side staging so ConfigurationFile can
+	// read/write it through its dx7SysexFile_ pointer without any FullState
+	// dependency; the menu copies staging<->fullState at boot and at save.
+	uint16_t getLastBank() { return lastBank_; }
+	uint8_t getLastPreset() { return lastPreset_; }
+	void setLastBank(uint16_t bank) { lastBank_ = bank; }
+	void setLastPreset(uint8_t preset) { lastPreset_ = preset; }
 
 protected:
 	const char* getFolderName();
@@ -55,6 +67,8 @@ private:
 	char selectedSubDir_[13];
 	struct PFM3File *dx7SubDirs;
 	int dx7SubDirCount_;
+	uint16_t lastBank_;
+	uint8_t lastPreset_;
 };
 
 #endif /* DX7SYSEXFILE_H_ */
