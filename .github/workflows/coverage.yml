@@ -1,0 +1,130 @@
+# Reusable coverage-floor-gated job. Called by ci.yml (push/PR) in PARALLEL
+# with build + test + static-analysis (no `needs:`) — a green build / unit test
+# / cppcheck run must not mask a coverage regression, and vice-versa. Fails ONLY
+# if total firmware/Src line coverage drops below scripts/coverage-floor.txt.
+#
+# Scope: the host unit-test suite (tests/, built with the HOST clang++). Mirrors
+# `make test-cov` locally: LLVM source-based coverage, scoped to firmware/Src
+# with headers excluded so the TOTAL matches test-coverage-plan.md's 12.45%
+# baseline. See scripts/ci/coverage-gate.sh for the gate contract.
+#
+# Why clang++ is forced here (tests.yml uses the host default g++): LLVM
+# source-based coverage (-fprofile-instr-generate -fcoverage-mapping) needs
+# clang; gcc would need the separate gcov toolchain. `clang` + `llvm` are
+# apt-installed as a matched pair so llvm-cov/llvm-profdata share the compiler's
+# LLVM version (the macOS Homebrew-vs-Apple-CLT skew documented in the Makefile
+# doesn't arise on a single-distro Linux runner).
+name: coverage
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# NOTE: no `concurrency:` block here — as a reusable workflow we inherit the
+# caller's (ci.yml) concurrency group. Declaring one that resolves to the same
+# group as the caller self-deadlocks and GitHub cancels the job before it runs
+# (see tests.yml / the run-#12 note on this repo).
+
+jobs:
+  coverage:
+    name: Host unit-test coverage (floor gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # Install clang + llvm as a matched pair (both resolve to ubuntu-latest's
+      # default LLVM version). `clang` gives clang++; `llvm` gives llvm-cov +
+      # llvm-profdata. If only versioned binaries land (some ubuntu images),
+      # add the llvm bin dir to PATH so the unversioned names resolve.
+      - name: Install clang + llvm
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang llvm
+          # If only versioned binaries landed, add the llvm bin dir(s) to PATH
+          # so the unversioned llvm-cov/llvm-profdata resolve. Glob avoids `ls`
+          # (SC2012) and handles any version dir under /usr/lib/llvm/.
+          if ! command -v llvm-cov >/dev/null 2>&1; then
+            for d in /usr/lib/llvm/*/bin; do
+              [ -d "$d" ] && echo "$d" >> "$GITHUB_PATH"
+            done
+          fi
+          clang++ --version | head -1
+          llvm-cov --version | head -1
+          llvm-profdata --version | head -1
+
+      # Same configure as `make test-cov`: Debug + clang++ + coverage flags on
+      # both compile and link (the link flag pulls in the profiler runtime).
+      # CI is a fresh checkout every run, so no stale-cache wipe is needed
+      # (unlike the local Makefile target).
+      - name: Configure tests (coverage, clang++)
+        run: |
+          set -eu
+          cov_flags="-fprofile-instr-generate -fcoverage-mapping"
+          cov_flags="$cov_flags -fno-omit-frame-pointer"
+          cmake -B build/test-cov -S tests \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_CXX_FLAGS="$cov_flags" \
+            -DCMAKE_EXE_LINKER_FLAGS="$cov_flags"
+
+      - name: Build tests
+        run: cmake --build build/test-cov -j
+
+      # LLVM_PROFILE_FILE with %p so each ctest-invoked test process writes a
+      # distinct .profraw (ctest runs each TEST() as its own process). Absolute
+      # path via $PWD (= the workspace root) keeps every run's profraw in one
+      # dir regardless of ctest's per-test cwd.
+      - name: Run tests
+        run: |
+          export LLVM_PROFILE_FILE="$PWD/build/test-cov/pfm3_tests-%p.profraw"
+          ctest --test-dir build/test-cov --output-on-failure
+
+      - name: Merge coverage
+        run: |
+          # Fail loudly if ctest produced no profraw — otherwise the glob passes
+          # a literal path and llvm-profdata errors confusingly.
+          profraw=(build/test-cov/pfm3_tests-*.profraw)
+          [ -e "${profraw[0]}" ] || {
+            echo "ERR: no profraw; ctest wrote no coverage data" >&2
+            exit 1
+          }
+          llvm-profdata merge -sparse build/test-cov/pfm3_tests-*.profraw \
+            -o build/test-cov/pfm3_tests.profdata
+
+      # Full (per-file) report -> artifact for offline triage. Same scope as the
+      # gate below: firmware/Src, headers excluded.
+      - name: Generate coverage report
+        run: |
+          llvm-cov report build/test-cov/pfm3_tests \
+            -instr-profile=build/test-cov/pfm3_tests.profdata \
+            -ignore-filename-regex='\.h$' \
+            -use-color=false "$PWD/firmware/Src" \
+            | tee build/test-cov/coverage-report.txt
+
+      # The gate. Fails on regression vs scripts/coverage-floor.txt. Resolves
+      # llvm-cov from PATH (installed above).
+      - name: Coverage floor gate
+        run: |
+          scripts/ci/coverage-gate.sh build/test-cov/pfm3_tests \
+            build/test-cov/pfm3_tests.profdata \
+            "$PWD/firmware/Src" \
+            scripts/coverage-floor.txt
+
+      # Always upload, even on a red gate, so a failing run carries the report +
+      # merged profdata for local `llvm-cov show` / HTML exploration.
+      - name: Upload coverage output
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: preenfm3-coverage-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/test-cov/coverage-report.txt
+            build/test-cov/pfm3_tests.profdata
+          if-no-files-found: warn
+          retention-days: 30
