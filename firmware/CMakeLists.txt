@@ -49,6 +49,14 @@ target_compile_options(preenfm3 PRIVATE -mslow-flash-data)
 # -Wall -Wextra. A follow-up could split vendor TUs into a no-warning OBJECT
 # library if the noise dominates. See _bmad-output/static-analysis/spike-findings.md.
 target_compile_options(preenfm3 PRIVATE -Wall -Wextra)
+# Silence two -Wextra style flags that carry no signal on legacy embedded C++:
+# -Wunused-parameter (callback/handler signatures fixed by HAL/MIDI contracts)
+# and -Wmissing-field-initializers ({0}-style partial struct init). These two
+# are ~521 of the firmware/Src warnings and ~80% of the -Wall -Wextra noise;
+# the bug-shaped -Wextra warnings (-Wswitch, -Wsign-compare, -Wstrict-aliasing,
+# -Wmaybe-uninitialized, ...) stay visible. Per the static-analysis spike.
+target_compile_options(preenfm3 PRIVATE
+    -Wno-unused-parameter -Wno-missing-field-initializers)
 
 target_link_libraries(preenfm3 PRIVATE preenfm3lib)
 
