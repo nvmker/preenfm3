@@ -466,6 +466,10 @@ void dependencyInjection() {
 
     // Load preferences
     sdCard.getConfigurationFile()->loadConfig(synthState.fullState.midiConfigValue);
+    // Restore the persisted DX7 bank/preset cursor (loadConfig staged it from
+    // the dx7bank/dx7preset keys; stays 0 on an old Settings.txt without them).
+    synthState.fullState.dx7BankNumber = sdCard.getDX7SysexFile()->getLastBank();
+    synthState.fullState.dx7PresetNumber = sdCard.getDX7SysexFile()->getLastPreset();
     sdCard.getMixerBank()->loadDefaultMixer();
     sdCard.getSequenceBank()->loadDefaultSequence();
     sdCard.getUserWaveform()->loadUserWaveforms();
