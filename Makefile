@@ -160,10 +160,12 @@ else
 endif
 
 test-cov:
-	@[ -x "$(CLANG_C)" ]       || (echo "ERR: $(CLANG_C) not found" && false)
-	@[ -x "$(CLANG_CXX)" ]     || (echo "ERR: $(CLANG_CXX) not found" && false)
-	@[ -x "$(LLVM_COV)" ]      || (echo "ERR: $(LLVM_COV) not found" && false)
-	@[ -x "$(LLVM_PROFDATA)" ] || (echo "ERR: $(LLVM_PROFDATA) not found" && false)
+	# PATH-aware existence check: `test -x` does NOT search PATH, so a bare name
+	# like `clang` (the Linux default) would spuriously fail even when installed.
+	# `command -v` resolves both bare names (via PATH) and absolute paths.
+	@for t in "$(CLANG_C)" "$(CLANG_CXX)" "$(LLVM_COV)" "$(LLVM_PROFDATA)"; do \
+	    command -v "$$t" >/dev/null || { echo "ERR: $$t not found" >&2; exit 1; }; \
+	done
 	# Wipe before configure: CMake will NOT override a cached CMAKE_CXX_FLAGS on
 	# reconfigure, so a stale build/test-cov/ from a previous (or differently-
 	# flagged) run silently builds WITHOUT instrumentation and produces an empty
@@ -212,6 +214,7 @@ TEST_ASAN_DIR ?= build/test-asan
 
 test-asan:
 	cmake -B $(TEST_ASAN_DIR) -S tests -DCMAKE_BUILD_TYPE=Debug \
+	    -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
 	    -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
 	    -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
 	cmake --build $(TEST_ASAN_DIR) -j
