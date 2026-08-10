@@ -29,3 +29,12 @@ jobs:
   test:
     name: Host unit tests
     uses: ./.github/workflows/tests.yml
+
+  # Baseline-gated cppcheck — runs in PARALLEL with build + test (no `needs:`)
+  # for the same reason: a green build/test must not mask a NEW static-analysis
+  # finding. Fails ONLY on findings new vs scripts/cppcheck-baseline.txt, so
+  # existing noise doesn't block. See static-analysis.yml + the baseline file
+  # for the contract.
+  static-analysis:
+    name: Static analysis (cppcheck)
+    uses: ./.github/workflows/static-analysis.yml
