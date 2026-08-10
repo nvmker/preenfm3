@@ -62,14 +62,21 @@ jobs:
       # both compile and link (the link flag pulls in the profiler runtime).
       # CI is a fresh checkout every run, so no stale-cache wipe is needed
       # (unlike the local Makefile target).
-      - name: Configure tests (coverage, clang++)
+      - name: Configure tests (coverage, clang)
         run: |
           set -eu
           cov_flags="-fprofile-instr-generate -fcoverage-mapping"
           cov_flags="$cov_flags -fno-omit-frame-pointer"
+          # Force clang for BOTH C and C++ and put COV_FLAGS on BOTH: tests/
+          # enables LANGUAGES C CXX (waves.c is plain-C), and LLVM source-based
+          # coverage needs clang (gcc rejects -fprofile-instr-generate). On
+          # Linux the default /usr/bin/cc is gcc, which aborts the CMake
+          # C-compiler test without these.
           cmake -B build/test-cov -S tests \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_FLAGS="$cov_flags" \
             -DCMAKE_CXX_FLAGS="$cov_flags" \
             -DCMAKE_EXE_LINKER_FLAGS="$cov_flags"
 
