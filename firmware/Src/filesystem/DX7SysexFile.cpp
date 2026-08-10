@@ -42,6 +42,11 @@ DX7SysexFile::DX7SysexFile() {
 	dx7SubDirs = dx7SubDirAlloc;
 	dx7SubDirCount_ = 0;
 
+	// Persisted cursor staging (overwritten by loadConfig if Settings.txt
+	// carries dx7bank/dx7preset; stays 0 on an old/missing file).
+	lastBank_ = 0;
+	lastPreset_ = 0;
+
 	// Default DX7 root + active folder = DX7_DIR (config can override later).
 	copyLiteral(root_, DX7_DIR, sizeof(root_));
 	copyLiteral(currentDir_, DX7_DIR, sizeof(currentDir_));
@@ -131,24 +136,46 @@ void DX7SysexFile::applySelectedSubDir(const char* subDirName) {
 }
 
 // Flat-root auto-skip: active folder = root itself.
-void DX7SysexFile::selectRoot() {
+// Returns true when the active folder changed (a subfolder was previously
+// selected), so the menu can keep the bank/preset cursor on re-entry.
+bool DX7SysexFile::selectRoot() {
+    bool changed = selectedSubDir_[0] != 0;
     selectedSubDir_[0] = 0;
     rebuildCurrent();
+    return changed;
 }
 
 // User picked subfolder `index` from the picker list.
-void DX7SysexFile::selectSubDir(int index) {
+// Returns true when the active folder changed. The comparison snapshots the
+// full selectedSubDir_ buffer (not just up to the new name's length) so a
+// re-select of the same folder is detected even with 12-char truncation.
+bool DX7SysexFile::selectSubDir(int index) {
     if (index < 0 || index >= dx7SubDirCount_) {
-        selectRoot();
-        return;
+        return selectRoot();
     }
+
+    char prev[sizeof(selectedSubDir_)];
+    for (int p = 0; p < (int)sizeof(prev); p++) {
+        prev[p] = selectedSubDir_[p];
+    }
+
     int k = 0;
     while (k < (int)sizeof(selectedSubDir_) - 1 && dx7SubDirs[index].name[k] != 0) {
         selectedSubDir_[k] = dx7SubDirs[index].name[k];
         k++;
     }
     selectedSubDir_[k] = 0;
+
+    bool changed = false;
+    for (int p = 0; p < (int)sizeof(prev); p++) {
+        if (prev[p] != selectedSubDir_[p]) {
+            changed = true;
+            break;
+        }
+    }
+
     rebuildCurrent();
+    return changed;
 }
 
 int DX7SysexFile::initSubDirs() {

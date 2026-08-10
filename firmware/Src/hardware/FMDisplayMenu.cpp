@@ -530,9 +530,19 @@ void FMDisplayMenu::buttonPressed(int currentTimbre, int button) {
             case MENU_SEQUENCER_LOAD_SELECT:
                 synthState_->getStorage()->getSequenceBank()->loadSequence(fullState->preenFMSequence, fullState->preenFMSeqSequencerNumber);
                 break;
+            case MENU_PRESET_LOAD_SELECT_DX7_BANK:
+                // DX7 load confirm (button-0 on a patch): the patch was already
+                // loaded live while browsing; persist the chosen bank/preset so
+                // they survive reboot. One SD write per deliberate load.
+                synthState_->getStorage()->getConfigurationFile()->saveConfigWithDx7(
+                    fullState->midiConfigValue, fullState->dx7BankNumber, fullState->dx7PresetNumber);
+                break;
             case MENU_CONFIG_SETTINGS:
-                // Let save the preset !
-                synthState_->getStorage()->getConfigurationFile()->saveConfig(fullState->midiConfigValue);
+                // Let save the preset ! saveConfigWithDx7 also captures the
+                // current DX7 cursor so the full-file rewrite doesn't clobber
+                // dx7bank/dx7preset with stale boot-time staging.
+                synthState_->getStorage()->getConfigurationFile()->saveConfigWithDx7(
+                    fullState->midiConfigValue, fullState->dx7BankNumber, fullState->dx7PresetNumber);
                 break;
             case MENU_SD_CREATE_MIXER_FILE:
                 // Must create the mixer here....
@@ -648,10 +658,15 @@ void FMDisplayMenu::buttonPressed(int currentTimbre, int button) {
         // Entering the picker: enumerate the root's subfolders now
         int dx7DirCount = synthState_->getStorage()->getDX7SysexFile()->initSubDirs();
         if (dx7DirCount == 0) {
-            // Flat root (no subfolders): read .syx directly from root, skip picker
-            synthState_->getStorage()->getDX7SysexFile()->selectRoot();
-            fullState->dx7BankNumber = 0;
-            fullState->dx7PresetNumber = 0;
+            // Flat root (no subfolders): read .syx directly from root, skip picker.
+            // Only reset the bank/preset cursor when the read folder actually
+            // changed; re-entering the same flat root keeps the cursor (matches
+            // the pre-folder-picker DX7 loader behaviour).
+            bool folderChanged = synthState_->getStorage()->getDX7SysexFile()->selectRoot();
+            if (folderChanged) {
+                fullState->dx7BankNumber = 0;
+                fullState->dx7PresetNumber = 0;
+            }
             nextMenu = MenuItemUtil::getMenuItem(MENU_PRESET_LOAD_SELECT_DX7_BANK);
         } else {
             // Restore cursor to the persisted folder; if it no longer exists (stale dx7current),
@@ -674,14 +689,21 @@ void FMDisplayMenu::buttonPressed(int currentTimbre, int button) {
             }
         }
     } else if (oldMenu == MENU_PRESET_LOAD_SELECT_DX7_FOLDER && nextMenu->menuState == MENU_PRESET_LOAD_SELECT_DX7_BANK) {
-        // User confirmed a folder: apply selection and persist it.
-        // saveConfig rewrites Settings.txt with the new dx7current (and dx7bankdir);
-        // the SD-write hard fault that kept this dormant was fixed in 6d75445
-        // (missing return in PreenFMFileType::remove()).
-        synthState_->getStorage()->getDX7SysexFile()->selectSubDir(fullState->dx7FolderNumber);
-        fullState->dx7BankNumber = 0;
-        fullState->dx7PresetNumber = 0;
-        synthState_->getStorage()->getConfigurationFile()->saveConfig(fullState->midiConfigValue);
+        // User confirmed a folder: apply selection. Reset the bank/preset
+        // cursor and persist to Settings.txt ONLY when the active folder
+        // actually changed — re-confirming the same folder preserves the
+        // cursor (pre-folder-picker behaviour) and skips a redundant SD
+        // write. saveConfig rewrites Settings.txt with the new dx7current
+        // (and dx7bankdir); the SD-write hard fault that kept this dormant
+        // was fixed in 6d75445 (missing return in PreenFMFileType::remove()).
+        bool folderChanged = synthState_->getStorage()->getDX7SysexFile()->selectSubDir(fullState->dx7FolderNumber);
+        if (folderChanged) {
+            fullState->dx7BankNumber = 0;
+            fullState->dx7PresetNumber = 0;
+            // Persist the new folder and the reset bank/preset cursor.
+            synthState_->getStorage()->getConfigurationFile()->saveConfigWithDx7(
+                fullState->midiConfigValue, fullState->dx7BankNumber, fullState->dx7PresetNumber);
+        }
     }
 
     // Action depending on Next menu
