@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp and one fixture triple (.bin/.xxh/.diff.txt) in this directory.",
+  "comparison": {
+    "artifactType": "int32_t DAC-format render (3 buffers x 64 stereo per block = 192 int32/block)",
+    "lsbTolerance": 1,
+    "hashAlgorithm": "FNV-1a 64-bit over tolerance-normalized buffer + splitmix64 finalizer (self-contained, no system xxhash)",
+    "bufferLayoutPerBlock": "[buffer1(64) buffer2(64) buffer3(64)] = out1/2, out3/4, out5/6"
+  },
+  "determinism": {
+    "rng": "HAL_RNG gated to seed 0 under PFM3_HOST (Synth.cpp:285); downstream noise[] fill loop shared host/firmware",
+    "selfCheck": "GoldenMaster.DeterminismSelfCheck renders twice in-process and asserts byte-exact equality"
+  },
+  "fixtures": [
+    {
+      "id": "a4_default_sustain",
+      "preset": "default preenMainPreset (copied by Synth::init into timbre 0)",
+      "noteSequence": "noteOn(timbre=0, note=69 [A4], velocity=100) before block 0; no note-off",
+      "nBlocks": 200,
+      "samplesPerBlock": 192,
+      "totalSamples": 38400,
+      "hash": "6271935aac784574",
+      "lsbTolerance": 1,
+      "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+      "files": ["a4_default_sustain.bin", "a4_default_sustain.xxh", "a4_default_sustain.diff.txt"],
+      "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain; end-to-end matrix routing, voice allocation, DAC-scale mix, smoother transients"
+    }
+  ]
+}
