@@ -106,6 +106,15 @@ target_include_directories(pfm3_tests BEFORE PRIVATE
 # Sequencer.cpp). Defined ONLY here — never in firmware/CMakeLists.txt.
 target_compile_definitions(pfm3_tests PRIVATE PFM3_HOST)
 
+# Golden-master full-render tier (Phase G0): tests/golden_master_test.cpp drives
+# the real Synth::buildNewSampleBlock and compares the int32 output against a
+# committed fixture under tests/golden/. PFM3_GOLDEN_DIR resolves the fixture
+# directory to an absolute source path so file I/O is cwd-independent under
+# ctest (which runs each TEST() from an arbitrary cwd). See
+# _bmad-output/planning-artifacts/golden-master-test-plan.md.
+target_compile_definitions(pfm3_tests PRIVATE
+    PFM3_GOLDEN_DIR="${CMAKE_CURRENT_SOURCE_DIR}/golden")
+
 # Firmware statics carry __attribute__((section(".ram_d3" / ...))) for the Arm
 # linker script; on the host these are either accepted-with-note (ELF) or a
 # hard error (Mach-O, where the section guard in Sequencer.cpp gates them out).
@@ -115,7 +124,13 @@ target_compile_definitions(pfm3_tests PRIVATE PFM3_HOST)
 # real firmware smell worth seeing.) Both flags are portable across gcc/clang.
 target_compile_options(pfm3_tests PRIVATE
     -Wno-attributes
-    -Wno-macro-redefined)
+    -Wno-macro-redefined
+    # Forbid FMA contraction (a*b+c fused into one FMA instruction) so clang and
+    # gcc compute float mul/add separately per IEEE. Without this the two
+    # compilers' default contraction policies differ and the golden-master full
+    # render (chaotic FM feedback) diverges across hosts within ~1 block. See
+    # tests/golden/README.md + golden-master-test-plan.md §2 (cross-host drift).
+    -ffp-contract=off)
 
 # Coverage sessions add their firmware TU + any collaborator stubs here.
 #
@@ -188,6 +203,12 @@ target_sources(pfm3_tests PRIVATE
     "${PFM3_FW_ROOT}/Src/midipal/event_scheduler.cpp"
     "${PFM3_FW_ROOT}/Src/SimpleEffect/SimpleComp.cpp"
     "${PFM3_FW_ROOT}/Src/SimpleEffect/SimpleEnvelope.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/stubs/midi_decoder_collaborators_stub.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/stubs/midi_decoder_collaborators_stub.cpp"
+    # Golden-master render harness. NOT a *_test.cpp, so the GLOB above does
+    # not pick it up — listed explicitly. The render reuses the midi_decoder
+    # fixture's memset+patched SynthState and the already-linked Synth graph;
+    # no new firmware TUs, shims, or stubs are required. See
+    # tests/golden_harness.{h,cpp} + tests/golden_master_test.cpp.
+    "${CMAKE_CURRENT_SOURCE_DIR}/golden_harness.cpp")
 
 gtest_discover_tests(pfm3_tests)
