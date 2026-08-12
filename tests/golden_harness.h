@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "golden/golden_compare.h"
 
@@ -48,6 +49,49 @@ struct SynthBacking {
     alignas(alignof(Synth)) unsigned char bytes[sizeof(Synth)];
 };
 
+// A single note event in a RenderScript, applied at a deterministic block
+// offset. isNoteOn=true  -> Synth::noteOn(timbre, note, velocity);
+// isNoteOn=false         -> Synth::noteOff(timbre, note)   (velocity ignored).
+// Velocity is kept on the noteOff event too only so a single aggregate-init
+// literal reads naturally; renderScript() does not forward it.
+struct RenderEvent {
+    std::size_t blockOffset;   // fires immediately before this block's render
+    bool        isNoteOn;
+    int         timbre;
+    char        note;
+    char        velocity;
+};
+
+// A scripted note sequence. renderScript() applies events in their LISTED ORDER
+// as each block offset is reached, so factories MUST emit events pre-sorted by
+// blockOffset (stable original order disambiguates same-offset events, e.g. the
+// two noteOns in multiTimbreMix() at block 0). The named factories below are the
+// SINGLE source of truth for the sequences the committed fixtures lock —
+// changing one invalidates its fixture (regenerate via
+// PFM3_REGENERATE_GOLDENS=1; see tests/golden/README.md). Phase G1 note: the two
+// FM-algo goldens (fm_algo2, fm_algo27_6carrier) reuse a4Sustain()'s events — the FM
+// algorithm is set out-of-band via setTimbreAlgo() (it is a per-timbre state
+// change, not a note event), so the script alone does not describe those
+// fixtures; the TEST pairs setTimbreAlgo + renderScript.
+struct RenderScript {
+    std::vector<RenderEvent> events;
+    static RenderScript a4Sustain();         // noteOn(0,69,100)@0; no note-off.
+    static RenderScript envelopeAdsrFull();  // noteOn(0,69,100)@0 + noteOff(0,69)@300.
+    static RenderScript multiTimbreMix();    // noteOn(0,69,100)@0 + noteOn(1,72,100)@0.
+};
+
+// Per-timbre voice allocation at Synth::init time. 0 silences a timbre
+// (numberOfVoices==0 short-circuits Synth::noteOn / Timbre::preenNoteOn). The
+// sum across timbres must be <= MAX_NUMBER_OF_VOICES (16); rebuidVoiceAllTimbre
+// (Synth.cpp:824) statically partitions the global pool in timbre order. Every
+// timbre's scaleFrequencies table is populated by the harness setup loop
+// regardless of voice count, so enabling timbre 1 only requires voices>0 here.
+struct TimbreSetup {
+    int voices[NUMBER_OF_TIMBRES];
+    static TimbreSetup g0Default();    // {6,0,0,0,0,0} — single-timbre (G0).
+    static TimbreSetup multiTimbre();  // {6,6,0,0,0,0} — timbres 0+1 (sum 12 <= 16).
+};
+
 class GoldenHarness {
 public:
     static constexpr std::size_t kBuffersPerBlock  = 3;
@@ -69,16 +113,35 @@ public:
 
     // fixtureDir: absolute or cwd-relative path to tests/golden/ (passed in so
     //             file I/O is cwd-independent under ctest).
-    explicit GoldenHarness(std::string fixtureDir);
+    // setup:      per-timbre voice counts (default = G0 single-timbre). Passing
+    //             TimbreSetup::multiTimbre() enables timbre 1 for the
+    //             multi_timbre_mix golden; everything else uses the default.
+    explicit GoldenHarness(std::string fixtureDir,
+                           TimbreSetup setup = TimbreSetup::g0Default());
     ~GoldenHarness();
 
     // Access the wired Synth (for noteOn/noteOff between render calls).
     Synth& synth() { return *synth_; }
 
-    // Render `nBlocks` blocks into `out`, which must hold
-    // nBlocks * kSamplesPerBlock int32_t. The canonical G0 script is applied:
-    // noteOn(0, 69, 100) before block 0; no note-off (sustain plateau). Output
-    // layout per block: [b1(64) b2(64) b3(64)].
+    // Override a timbre's FM algorithm AFTER construction (which ran Synth::init
+    // / preset copy) and BEFORE the first render. Writes params_.engine1.algo
+    // (a float; Common.h:282) — read LIVE every block by Voice/Env via the
+    // pointer wired in Timbre::init (Timbre.cpp:283-288), so the field change
+    // alone takes effect — then calls the production-faithful re-init
+    // synth_->afterNewParamsLoad(timbre) (Synth.h:95; idempotent; re-applies env
+    // curves/matrix/FX). Call BEFORE noteOn so voice-allocation arithmetic
+    // (Timbre.cpp:686) sees the new algo. The default preset is ALGO1, so the
+    // G0 + multi-timbre goldens never call this.
+    void setTimbreAlgo(int timbre, Algorithm algo);
+
+    // Generic render: apply `script`'s events by block offset, rendering
+    // `nBlocks` blocks into `out` (must hold nBlocks*kSamplesPerBlock int32_t).
+    // buildNewSampleBlock zeroes the 3 buffers itself (Synth.cpp:325-333).
+    // Output layout per block: [b1(64) b2(64) b3(64)].
+    void renderScript(const RenderScript& script, std::size_t nBlocks, int32_t* out);
+
+    // Thin delegator retained so G0's GoldenMaster.A4DefaultSustain200Blocks
+    // compiles unchanged. Equivalent to renderScript(RenderScript::a4Sustain(), …).
     void renderA4DefaultSustain(std::size_t nBlocks, int32_t* out);
 
     // Compare `actual` against the committed fixture `id`. Returns true on
@@ -98,6 +161,7 @@ private:
     void setUpSynthState();   // the memset + field-patch sequence
 
     std::string fixtureDir_;
+    TimbreSetup setup_;
     SynthStateBacking ssBacking_;
     ScaleFreqTables scaleFreqs_;
     SynthState* ss_;

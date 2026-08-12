@@ -80,6 +80,52 @@ const std::string& a4DefaultSustainId() {
     return id;
 }
 
+// Common render + (compare-or-regen) for the Phase G1 goldens. Each G1 TEST is
+// a one-line call to this; G0's A4DefaultSustain200Blocks above is intentionally
+// left inline — it is the byte-identical-refactor guard for the delegator
+// renderA4DefaultSustain, so it must exercise that exact path, not renderScript.
+//
+// idBase:      fixture id WITHOUT the platform suffix (e.g. "envelope_adsr_full");
+//              the _macos/_linux variant is appended here.
+// algoTimbre:  timbre whose FM algorithm to override before render, or -1 to
+//              leave the default ALGO1 (from preenMainPreset). `algo` is ignored
+//              when algoTimbre < 0.
+void runGolden(const char* idBase, std::size_t nBlocks,
+               const golden::RenderScript& script,
+               const golden::TimbreSetup& setup,
+               int algoTimbre, Algorithm algo) {
+    const std::string id = std::string(idBase) + "_" + PFM3_GOLDEN_VARIANT;
+    golden::GoldenHarness harness(kFixtureDir, setup);
+    if (algoTimbre >= 0) {
+        harness.setTimbreAlgo(algoTimbre, algo);
+    }
+    std::vector<int32_t> render(nBlocks * golden::GoldenHarness::kSamplesPerBlock);
+    harness.renderScript(script, nBlocks, render.data());
+
+    if (regenMode()) {
+        const uint64_t h = harness.writeFixture(id, render.data(), nBlocks);
+        ASSERT_NE(h, 0ull) << "fixture regeneration failed for " << id
+                           << " (see stderr)";
+        return;
+    }
+    golden::GoldenDiff diff{};
+    const bool ok =
+        harness.compareAgainstFixture(id, render.data(), nBlocks, &diff);
+    if (!ok) {
+        // goldenCompare is authoritative (the hash is diagnostic-only; see
+        // tests/golden/README.md).
+        FAIL() << "golden mismatch for " << id << " at flat index "
+               << diff.firstMismatchIndex << " (block " << diff.blockIndex
+               << "): expected=0x" << std::hex << diff.expectedSample
+               << " actual=0x" << diff.actualSample << std::dec
+               << " delta=" << diff.sampleDelta
+               << " (tolerance=±256 stored units = ±1 audio-LSB; the firmware "
+                  "clamps to 24-bit then left-shifts 8)\n"
+               << "If this is a deliberate render change, regenerate with"
+               << " PFM3_REGENERATE_GOLDENS=1 (see tests/golden/README.md).";
+    }
+}
+
 }  // namespace
 
 // ===========================================================================
@@ -148,4 +194,55 @@ TEST(GoldenMaster, DeterminismSelfCheck) {
                              r1.size() * sizeof(int32_t)))
         << "two renders of a4_default_sustain differ — the render path is not "
            "deterministic; the golden lock is untrustworthy until fixed";
+}
+
+// ===========================================================================
+// Phase G1 goldens. Each is a thin runGolden() call; the script/setup/algo
+// capture the exact render the committed fixture locks. See
+// _bmad-output/implementation-artifacts/spec-golden-master-phase-g1.md and the
+// fixture manifest tests/golden/schema.json.
+// ===========================================================================
+
+// Full ADSR: noteOn@0, noteOff@300, render 600. Guards Env stage transitions +
+// the release tail (G0's sustain-only golden never exercises noteOff/release).
+TEST(GoldenMaster, EnvelopeAdsrFull) {
+    runGolden("envelope_adsr_full", 600,
+              golden::RenderScript::envelopeAdsrFull(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/-1, ALGO1);
+}
+
+// ALGO2 = algoOpInformation {1,1,2,0,0,0} (2 carriers + 1 modulator) — the
+// smallest departure from the default ALGO1; exercises the multi-carrier output
+// summing path that ALGO1 (1 carrier) never touches. Algorithm set before
+// noteOn via setTimbreAlgo + afterNewParamsLoad (production-faithful re-init).
+TEST(GoldenMaster, FmAlgo2) {
+    runGolden("fm_algo2", 200,
+              golden::RenderScript::a4Sustain(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/0, ALGO2);
+}
+
+// ALG27 = algoOpInformation {1,1,1,1,1,1} — all 6 carriers, additive (no FM).
+// Chosen over the originally-planned ALG17 (1 car + 5 mods) because the default
+// preenMainPreset has all-zero modulation indices, so any single-carrier algo
+// renders byte-identical to G0 — only carrier COUNT changes the output. ALG27
+// is the maximal carrier-topology departure (6 carriers); it exercises the full
+// additive summing path. (True modulation-stack coverage needs a non-zero-IM
+// preset — deferred. See spec-golden-master-phase-g1.md Design Notes.)
+TEST(GoldenMaster, FmAlgo27_6carrier) {
+    runGolden("fm_algo27_6carrier", 200,
+              golden::RenderScript::a4Sustain(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/0, ALG27);
+}
+
+// Timbres 0 + 1 both noteOn@0 (6+6=12 <= MAX_NUMBER_OF_VOICES 16). Guards
+// voicesToTimbre mix + per-timbre smoothVolume_/smoothPan_ + fxBus->mixAdd —
+// the multi-timbre output summing path G0's single-timbre golden cannot reach.
+TEST(GoldenMaster, MultiTimbreMix) {
+    runGolden("multi_timbre_mix", 200,
+              golden::RenderScript::multiTimbreMix(),
+              golden::TimbreSetup::multiTimbre(),
+              /*algoTimbre=*/-1, ALGO1);
 }
