@@ -17,15 +17,18 @@
 // message for a regeneration must explain WHY the render output legitimately
 // changed.
 //
-// Determinism model: the render is fully reproducible PER COMPILER on host.
+// Determinism model: the render is fully reproducible PER (libm-class) on host.
 // The HAL RNG is gated to seed 0 under PFM3_HOST (Synth.cpp:285) and the
 // downstream noise[] fill loop is shared host/firmware (same LCG, same table).
 // The smoothVolume_/smoothPan_ one-pole transient (blocks ~0-10) is deterministic
 // and is part of the locked behavior — all 200 blocks are captured (no warm-
-// start skip). NOTE the render is NOT byte-stable ACROSS compilers: libm
-// differences (macOS libsystem vs glibc) in the Osc::init/Env::init precomputed
-// tables are amplified by FM feedback, so each compiler gets its OWN committed
-// fixture (see tests/golden/README.md + the fixture-id selection below).
+// start skip). NOTE the render is NOT byte-stable ACROSS libms: macOS libsystem
+// vs linux glibc differ in the Osc::init/Env::init precomputed tables
+// (sinf/expf/logf), and FM feedback amplifies the ~1-ULP table difference, so
+// each platform/libm gets its OWN committed fixture (see tests/golden/README.md
+// -> Cross-platform fixtures + the fixture-id selection below). Ubuntu gcc and
+// ubuntu clang both link glibc and produce byte-identical renders, so the
+// discriminator is the PLATFORM (__APPLE__), not the compiler.
 
 #include "golden_harness.h"
 
@@ -52,24 +55,24 @@ bool regenMode() {
     return std::getenv("PFM3_REGENERATE_GOLDENS") != nullptr;
 }
 
-// The full-render golden is compiler-specific: libm differences in the
+// The full-render golden is (libm-class)-specific: libm differences in the
 // Osc::init/Env::init precomputed tables (sinf/expf/logf) are amplified by FM
-// feedback, so clang and gcc produce renders that diverge by >1 LSB within ~1
-// block. Each compiler locks its own committed fixture; the test selects by
-// compiler. A new supported compiler must generate + commit its own fixture
-// (see tests/golden/README.md -> Cross-compiler fixtures).
-#if defined(__clang__)
-#define PFM3_GOLDEN_COMPILER "clang"
-#elif defined(__GNUC__)
-#define PFM3_GOLDEN_COMPILER "gcc"
+// feedback, so a libsystem render (macOS) and a glibc render (linux) diverge by
+// >1 LSB within ~1 block. Empirically ubuntu gcc and ubuntu clang BOTH link
+// glibc and produce byte-identical renders, so the discriminator is the
+// PLATFORM/libm, NOT the compiler. The test selects by __APPLE__; each platform
+// locks its own committed fixture. A new platform/libm must generate + commit
+// its own fixture (see tests/golden/README.md -> Cross-platform fixtures).
+#if defined(__APPLE__)
+#define PFM3_GOLDEN_VARIANT "macos"      // libsystem libm (macOS dev)
 #else
-#define PFM3_GOLDEN_COMPILER "unknown"
+#define PFM3_GOLDEN_VARIANT "linux"      // glibc libm (CI ubuntu gcc + ubuntu clang)
 #endif
 
-// Fixture id for the canonical G0 golden, compiler-suffixed.
+// Fixture id for the canonical G0 golden, platform-suffixed.
 const std::string& a4DefaultSustainId() {
     static const std::string id =
-        std::string("a4_default_sustain_") + PFM3_GOLDEN_COMPILER;
+        std::string("a4_default_sustain_") + PFM3_GOLDEN_VARIANT;
     return id;
 }
 
