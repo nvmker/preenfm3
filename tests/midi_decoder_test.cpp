@@ -72,6 +72,11 @@
 #include "MidiDecoder.h"
 #undef private
 
+// Null VisualInfo test double (no-op midiClock/noteOn callbacks). Shared with
+// tests/golden_harness.{h,cpp} (Phase G4: MidiDecoder-driven MIDI-clock
+// goldens). See host_shims/NullVisualInfo.h.
+#include "NullVisualInfo.h"
+
 #include <gtest/gtest.h>
 
 #include <cstdint>
@@ -86,15 +91,6 @@
 extern RingBuffer<AsyncAction, 16> asyncActions;
 
 namespace {
-
-// Null VisualInfo: MidiDecoder dispatches visualInfo->noteOn(timbre, true) on
-// NoteOn and visualInfo->midiClock(bool) on every 6th MIDI_CLOCK. The host
-// tests do not render UI; no-op these to keep the dispatch link-clean.
-class NullVisualInfo : public VisualInfo {
-public:
-    void midiClock(bool /*show*/) override {}
-    void noteOn(int /*timbre*/, bool /*show*/) override {}
-};
 
 // Backing storage for a memset+patched SynthState. SynthState's ctor + vtable
 // live in SynthState.cpp (deliberately NOT pulled — its closure drags the
