@@ -1,0 +1,66 @@
+# Manually-triggered regeneration of the _linux (glibc) golden-master fixtures.
+# Run from the Actions tab on the target branch (the branch you want the
+# committed fixtures to land on — typically a golden-master PR branch). Builds
+# the tests/ project on ubuntu-latest, regenerates every _linux fixture triple
+# (.bin/.xxh/.diff.txt) under PFM3_REGENERATE_GOLDENS=1, self-verifies with a
+# full ctest run (this green run IS the linux-gate evidence — see the CI
+# re-trigger note below), then commits + pushes the changed fixture files.
+#
+# Why manual (workflow_dispatch): an automatic regen would silently mask real
+# DSP regressions by overwriting the committed lock. Regen is a deliberate act.
+#
+# CI re-trigger note: the commit is pushed by the default GITHUB_TOKEN, whose
+# pushes do NOT re-trigger on:pull_request / on:push workflows (GitHub loop
+# prevention). The Self-verify step below is therefore the linux-green evidence
+# for the PR; the separate tests.yml check can be re-run manually if desired.
+#
+# schema.json: this workflow commits only the fixture FILES (the test reads
+# .bin/.xxh, not schema.json). After it runs, add the matching _linux entries
+# to tests/golden/schema.json by hand (copy the _macos entry, swap variant +
+# hash from this run's log).
+name: regenerate-linux-goldens
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  regen:
+    name: Regenerate _linux golden fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (the dispatch branch)
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: true # keep GITHUB_TOKEN for `git push`
+
+      - name: Configure + build tests
+        run: cmake -B build/test -S tests && cmake --build build/test -j
+
+      - name: Regenerate _linux golden fixtures
+        env:
+          PFM3_REGENERATE_GOLDENS: "1"
+        run: ctest --test-dir build/test -R 'Golden' --output-on-failure
+
+      - name: Self-verify (full suite must be green on this linux run)
+        run: ctest --test-dir build/test --output-on-failure
+
+      - name: Commit + push changed _linux fixtures
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -e
+          git add tests/golden/*_linux.bin tests/golden/*_linux.xxh \
+                  tests/golden/*_linux.diff.txt
+          if git diff --cached --quiet; then
+            echo "no _linux fixture changes — already match the render"
+          else
+            git commit -m "test(golden-master): regen _linux goldens [skip ci]"
+            git push
+            echo "::notice::committed _linux goldens to ${GITHUB_REF_NAME}"
+          fi
