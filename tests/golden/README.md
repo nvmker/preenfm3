@@ -33,9 +33,12 @@ lock; the regression guard catches any same-platform render change (the
 realistic regression class). Adding a new platform/libm requires generating +
 committing its fixture (see *Regenerating fixtures* below, run on that platform).
 
-Current fixtures: `a4_default_sustain_macos` (local dev, macOS Apple clang,
-libsystem) and `a4_default_sustain_linux` (CI ubuntu gcc + ubuntu clang
-coverage, glibc).
+Current fixtures: see the **Fixture catalog** below. G0 (`a4_default_sustain`)
+has both `_macos` and `_linux` committed. Phase G1's four goldens
+(`envelope_adsr_full`, `fm_algo2`, `fm_algo27_6carrier`, `multi_timbre_mix`)
+currently have **`_macos` only** — the `_linux` triples are a tracked task
+(`_bmad-output/implementation-artifacts/deferred-work.md`); on Linux/CI the
+missing fixtures fail the relevant tests loudly until generated + committed.
 
 ## Fixture layout (per golden id `X`)
 
@@ -48,6 +51,30 @@ coverage, glibc).
 
 Layout per block in `.bin`: `[b1(64) b2(64) b3(64)]` — buffer1 = out1/2,
 buffer2 = out3/4, buffer3 = out5/6 (the 6 hardware DAC outputs).
+
+## Fixture catalog
+
+Each row is one `TEST(GoldenMaster, …)`; the platform suffix (`_macos`/`_linux`)
+is appended by `tests/golden_master_test.cpp`. ✅ = fixture triple committed in
+this directory; ⏳ = pending (tracked in `deferred-work.md`; on Linux/CI the test
+fails loudly until generated + committed).
+
+| id | script | nBlocks | guards | macos | linux |
+| --- | --- | --- | --- | --- | --- |
+| `a4_default_sustain` | noteOn(0,69,100)@0, sustain | 200 | entire Synth→output chain (default ALGO1) | ✅ | ✅ |
+| `envelope_adsr_full` | noteOn(0,69,100)@0, noteOff(0,69)@300 | 600 | Env stage transitions + release tail | ✅ | ⏳ |
+| `fm_algo2` | setTimbreAlgo(0, ALGO2), noteOn(0,69,100)@0 | 200 | ALGO2 `{1,1,2,0,0,0}` — 2-carrier summing | ✅ | ⏳ |
+| `fm_algo27_6carrier` | setTimbreAlgo(0, ALG27), noteOn(0,69,100)@0 | 200 | ALG27 `{1,1,1,1,1,1}` — 6-carrier additive summing | ✅ | ⏳ |
+| `multi_timbre_mix` | noteOn(0,69,100) + noteOn(1,72,100)@0 | 200 | voicesToTimbre mix + per-timbre smoothVolume_ + fxBus->mixAdd | ✅ | ⏳ |
+
+**G1 algorithm note:** the default `preenMainPreset` has all-zero modulation
+indices, so only the **carrier count** distinguishes algorithms under it (an
+algorithm that keeps 1 carrier renders byte-identical to G0). The FM goldens
+therefore lock **carrier-topology diversity** (ALGO2 = 2 car, ALG27 = 6 car),
+not modulation stacks. True modulation-routing coverage needs a non-zero-IM
+preset and is deferred. See
+`_bmad-output/implementation-artifacts/spec-golden-master-phase-g1.md`
+Design Notes.
 
 ## Comparison model
 
@@ -97,10 +124,11 @@ a signal that something in the render path changed; investigate first.
 
 ## Warm-start decision
 
-All 200 blocks of each `a4_default_sustain_<variant>` fixture are captured
-**including** the `smoothVolume_`/`smoothPan_` one-pole transient (blocks ~0–10).
-The transient is deterministic (per-variant) and is part of the locked behavior
-— no warm-start skip.
+Every fixture captures **all** its blocks including the `smoothVolume_`/
+`smoothPan_` one-pole transient (blocks ~0–10) and, for `multi_timbre_mix`, the
+per-timbre smoother startup; for `envelope_adsr_full`, the Env release tail
+(blocks 300–599). The transient is deterministic (per-variant) and is part of
+the locked behavior — no warm-start skip.
 
 ## Schema versioning
 
