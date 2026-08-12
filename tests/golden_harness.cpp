@@ -216,7 +216,7 @@ void GoldenHarness::renderScript(const RenderScript& script,
                     // Timbre::setNewValue's clamp (NaN comparisons are false)
                     // and poison the field — reject non-finite values too.
                     if (ev.timbre < 0 || ev.timbre >= NUMBER_OF_TIMBRES ||
-                        ev.row < 0 || ev.row > NUMBER_OF_ROWS ||
+                        ev.row < 0 || ev.row >= NUMBER_OF_ROWS ||
                         ev.encoder < 0 ||
                         ev.encoder >= NUMBER_OF_ENCODERS_PFM2) {
                         std::cerr << "golden: PARAM_CHANGE at block "
@@ -225,7 +225,7 @@ void GoldenHarness::renderScript(const RenderScript& script,
                                   << " encoder=" << ev.encoder << "; valid "
                                   << "timbre[0," << NUMBER_OF_TIMBRES
                                   << ") row[0," << NUMBER_OF_ROWS
-                                  << "] encoder[0," << NUMBER_OF_ENCODERS_PFM2
+                                  << ") encoder[0," << NUMBER_OF_ENCODERS_PFM2
                                   << ")) — refusing to dispatch (would OOB "
                                   << "index params_/allParameterRows).\n";
                         std::abort();
@@ -297,10 +297,40 @@ void GoldenHarness::setMatrixRow(int timbre, int rowIdx, int source, float mul,
     // afterNewParamsLoad resets the runtime sources/destinations caches
     // (Voice::afterNewParamsLoad) so the new routing takes effect from block 0.
     // Same proven pattern as setTimbreAlgo. Must precede noteOn.
+    // Validate ALL inputs (step-04 review + Copilot PR review): an invalid
+    // timbre indexes timbres_[] OOB via getTimbre(); source/dest1/dest2 are
+    // later dereferenced as array indices by Matrix::computeAllDestinations
+    // (sources[(int)source], destinations[(int)dest1], destinations[(int)dest2]);
+    // a non-finite mul poisons the render. Same defensive philosophy as the
+    // PARAM_CHANGE dispatch + the blockOffset guard. MATRIX_SOURCE_MAX and
+    // DESTINATION_MAX are counts (Common.h), so half-open [0, MAX). DESTINATION_NONE
+    // (=0) is a valid dest ("no second destination").
+    if (timbre < 0 || timbre >= NUMBER_OF_TIMBRES) {
+        std::cerr << "golden: setMatrixRow timbre=" << timbre << " out of range "
+                  << "[0," << NUMBER_OF_TIMBRES << ") — would OOB timbres_[].\n";
+        std::abort();
+    }
     if (rowIdx < 0 || rowIdx >= MATRIX_SIZE) {
         std::cerr << "golden: setMatrixRow rowIdx=" << rowIdx
                   << " out of range [0," << MATRIX_SIZE
                   << ") — refusing to write OOB; fix the caller.\n";
+        std::abort();
+    }
+    if (source < 0 || source >= MATRIX_SOURCE_MAX ||
+        dest1 < 0 || dest1 >= DESTINATION_MAX ||
+        dest2 < 0 || dest2 >= DESTINATION_MAX) {
+        std::cerr << "golden: setMatrixRow(timbre=" << timbre
+                  << ",rowIdx=" << rowIdx << ") has out-of-range source/dest "
+                  << "(source=" << source << " dest1=" << dest1
+                  << " dest2=" << dest2 << "; valid source[0,"
+                  << MATRIX_SOURCE_MAX << ") dest[0," << DESTINATION_MAX
+                  << ")) — would OOB-index Matrix sources/destinations.\n";
+        std::abort();
+    }
+    if (!std::isfinite(mul)) {
+        std::cerr << "golden: setMatrixRow(timbre=" << timbre
+                  << ",rowIdx=" << rowIdx << ") mul is non-finite (" << mul
+                  << ") — would poison the render.\n";
         std::abort();
     }
     struct MatrixRowParams* row;
@@ -432,8 +462,9 @@ RenderScript RenderScript::liveLfoPitchModulation() {
     // routing is set out-of-band via setMatrixRow(0, row8, LFO1, 0.5, OSC1_FREQ)
     // in the TEST before render — it is a per-timbre state change, not an event.
     // The LFO auto-modulates osc1 pitch; no PARAM_CHANGE needed. Render window
-    // 400 captures multiple LFO cycles so a routing/amplitude regression moves
-    // many samples (not a 1-block edge effect).
+    // 400 captures ~1.2 LFO1 cycles (~267 ms of modulation); a routing/amplitude
+    // regression still moves many samples across 400 blocks (not a 1-block edge
+    // effect).
     return { { RenderEvent::noteOn(0, 0, (char)69, (char)100) } };
 }
 
