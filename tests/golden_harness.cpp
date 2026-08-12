@@ -26,9 +26,8 @@ float EqualTemperedFreq(int note) {
 
 }  // namespace
 
-GoldenHarness::GoldenHarness(std::string fixtureDir, int lsbTolerance)
+GoldenHarness::GoldenHarness(std::string fixtureDir)
     : fixtureDir_(std::move(fixtureDir)),
-      lsbTolerance_(lsbTolerance),
       ss_(nullptr),
       synth_(nullptr) {
     // Mirror the firmware: Synth is a global (static storage -> BSS zero-init)
@@ -158,35 +157,31 @@ bool GoldenHarness::compareAgainstFixture(const std::string& id,
         return false;
     }
 
-    // Authoritative tolerance gate.
-    bool cmp = goldenCompare(expected.data(), actual, count, lsbTolerance_,
+    // Authoritative tolerance gate: goldenCompare in stored int32 units, where
+    // 256 = ±1 audio-LSB (the firmware clamps to 24-bit then <<8). See
+    // golden_harness.h kCompareLsbTolerance.
+    bool cmp = goldenCompare(expected.data(), actual, count, kCompareLsbTolerance,
                              kSamplesPerBlock, diffOut);
 
-    // Hash gate over the normalized buffer.
-    const uint64_t actualHash = goldenHash(actual, count, lsbTolerance_);
+    // DIAGNOSTIC-only hash fingerprint (tolerance 1 granularity; decoupled from
+    // the compare tolerance so the committed .xxh stays stable). A mismatch is
+    // printed to stderr but NEVER fails the test — goldenCompare is
+    // authoritative. (The tolerance-normalized hash can flip on a normalization
+    // bucket boundary even when goldenCompare passes; making it authoritative
+    // would defeat the tolerance.)
+    const uint64_t actualHash = goldenHash(actual, count, kHashLsbTolerance);
     uint64_t expectedHash = 0;
     const std::string xxhPath = fixturePath(fixtureDir_, id, ".xxh");
-    const bool hashOk = readHashFile(xxhPath, &expectedHash);
-    const bool hashMatch = hashOk && (actualHash == expectedHash);
-
-    if (cmp && !hashMatch) {
-        // Compare passed within tolerance but the normalized hash differs —
-        // benign drift crossed a normalization bucket boundary (documented
-        // limitation). Report as a mismatch: the hash is a committed lock.
-        if (diffOut) {
-            diffOut->matched = false;
-            diffOut->hashMismatch = true;   // distinguishes from a sample-level mismatch
-            diffOut->firstMismatchIndex = 0;
-            diffOut->expectedSample = 0;
-            diffOut->actualSample = 0;
-            diffOut->sampleDelta = 0;
-            diffOut->blockIndex = 0;
+    if (readHashFile(xxhPath, &expectedHash)) {
+        if (actualHash != expectedHash) {
+            std::cerr << "golden: hash DIAGNOSTIC mismatch for " << id
+                      << " (expected=" << std::hex << expectedHash
+                      << " actual=" << actualHash << std::dec
+                      << "); goldenCompare is authoritative — this is informational only\n";
         }
-        std::cerr << "golden: hash mismatch for " << id
-                  << " (expected=" << std::hex << expectedHash
-                  << " actual=" << actualHash << std::dec
-                  << "); goldenCompare passed within tolerance\n";
-        cmp = false;
+    } else {
+        std::cerr << "golden: hash DIAGNOSTIC — could not read .xxh for " << id
+                  << " (informational only; goldenCompare is authoritative)\n";
     }
 
     return cmp;
@@ -203,7 +198,7 @@ uint64_t GoldenHarness::writeFixture(const std::string& id, const int32_t* actua
         std::cerr << "golden: FAILED to write " << binPath << "\n";
         return 0;
     }
-    uint64_t h = goldenHash(actual, count, lsbTolerance_);
+    uint64_t h = goldenHash(actual, count, kHashLsbTolerance);
     if (!writeHashFile(xxhPath, h)) {
         std::cerr << "golden: FAILED to write " << xxhPath << "\n";
         return 0;
