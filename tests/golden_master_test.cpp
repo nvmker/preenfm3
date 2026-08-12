@@ -301,12 +301,20 @@ TEST(GoldenMaster, ToleranceHeadroom) {
 
     // Record the observed max delta so it is visible in CI/ctest output. The
     // property survives in JUnit XML for trend tracking across builds.
+    // max_delta_audio_lsb is emitted as a DOUBLE — integer truncation would
+    // report 0 for any drift up to 255 stored units (step-04 review: the trend
+    // signal the test advertises must survive sub-LSB drift). max_delta_block
+    // is meaningful only when maxDelta > 0; when the render is byte-exact
+    // (maxDelta==0) maxIdx stays 0 by init artifact, so report -1 to flag
+    // "no mismatch location" rather than a misleading "block 0".
     testing::Test::RecordProperty("max_delta_stored_units",
                                   std::to_string(maxDelta));
     testing::Test::RecordProperty("max_delta_audio_lsb",
-                                  std::to_string(maxDelta / 256));
+                                  std::to_string(static_cast<double>(maxDelta) / 256.0));
     testing::Test::RecordProperty("max_delta_block",
-                                  std::to_string(maxIdx / golden::GoldenHarness::kSamplesPerBlock));
+                                  std::to_string(maxDelta > 0
+                                      ? static_cast<long long>(maxIdx / golden::GoldenHarness::kSamplesPerBlock)
+                                      : -1LL));
 
     // The headroom assertion: the render must stay within the compare tolerance.
     // Expected 0 on the exact commit that generated the fixture (within-process
@@ -333,7 +341,7 @@ TEST(GoldenMaster, ToleranceHeadroom) {
 // quirk. See spec-golden-master-phase-g2-g3.md Design Notes.
 // ===========================================================================
 
-// Steady LFO1 -> OSC1_FREQ (mul 0.5), 400 blocks (~several LFO1 cycles at the
+// Steady LFO1 -> OSC1_FREQ (mul 0.5), 400 blocks (~1.2 LFO1 cycles at the
 // default 4.5 Hz). The LFO auto-modulates osc1 pitch; no PARAM_CHANGE. Guards
 // the LFO1 -> matrix -> osc-freq -> Voice routing end-to-end.
 TEST(GoldenMaster, LiveLfoPitchModulation) {

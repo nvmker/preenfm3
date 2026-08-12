@@ -137,6 +137,23 @@ void GoldenHarness::setUpSynthState() {
     // totalNumberofCyclesInv_, is stubbed in midi_decoder_collaborators_stub).
     synth_->setSynthState(ss_);
     ss_->params = synth_->getTimbre(0)->getParamRaw();
+
+    // Register Synth as a SynthParamListener, mirroring firmware/preenfm3.cpp:449
+    // (`synthState.insertParamListener(&synth)`). WITHOUT this, SynthState's
+    // firstParamListener stays 0 (memset) and Synth::setNewValueFromMidi's
+    // `propagateNewParamValueFromExternal` loops over zero listeners, so
+    // Synth::newParamValue NEVER runs for the G3 PARAM_CHANGE path — the flat
+    // field write (Timbre::setNewValue) still lands and IS read live by
+    // Matrix/LfoOsc, so the goldens render correctly, but the newParamValue
+    // side-effects (verifyLfoUsed, resetMatrixDestination) would be a dead path.
+    // Registering the listener makes setNewValueFromMidi fully production-
+    // faithful. Render-neutral for the committed G3 goldens: the LFO case body
+    // in Synth::newParamValue is commented out, and the matrix case's
+    // verifyLfoUsed/resetMatrixDestination are no-ops for the goldens' mul/freq
+    // changes (verified by re-running the G3 goldens against the committed
+    // fixtures after this change — byte-identical). Found by step-04 review
+    // (Blind Hunter finding: param-listener registration gap).
+    ss_->insertParamListener(synth_);
 }
 
 void GoldenHarness::renderScript(const RenderScript& script,
@@ -178,7 +195,7 @@ void GoldenHarness::renderScript(const RenderScript& script,
                 case RenderEventKind::NOTE_OFF:
                     synth_->noteOff(ev.timbre, ev.note);
                     break;
-                case RenderEventKind::PARAM_CHANGE:
+                case RenderEventKind::PARAM_CHANGE: {
                     // Production-faithful CC-routing entry point (Synth.h:122).
                     // Only (row,encoder) pairs with a newParamValueFromExternal
                     // switch case take effect live on a sounding voice —
@@ -187,9 +204,55 @@ void GoldenHarness::renderScript(const RenderScript& script,
                     // (writes lfo->freq, read live) both qualify. See
                     // RenderEventKind doc + spec Design Notes for the
                     // ROW_OSC1..6 / ROW_ENGINE no-case constraint.
+                    //
+                    // Bounds validation (step-04 review, Edge Case Hunter):
+                    // setNewValueFromMidi indexes allParameterRows.row[row] and
+                    // params_[row*4+encoder] with NO internal check; a fat-
+                    // fingered row/encoder would OOB-heap-read/write. The
+                    // factory paramChange(...) is the only constructor, but the
+                    // fields are public ints, so validate here as the last line
+                    // of defense (consistent with the blockOffset/rowIdx aborts
+                    // elsewhere in the harness). NaN/Inf value would bypass
+                    // Timbre::setNewValue's clamp (NaN comparisons are false)
+                    // and poison the field — reject non-finite values too.
+                    if (ev.timbre < 0 || ev.timbre >= NUMBER_OF_TIMBRES ||
+                        ev.row < 0 || ev.row > NUMBER_OF_ROWS ||
+                        ev.encoder < 0 ||
+                        ev.encoder >= NUMBER_OF_ENCODERS_PFM2) {
+                        std::cerr << "golden: PARAM_CHANGE at block "
+                                  << ev.blockOffset << " has out-of-range "
+                                  << "(timbre=" << ev.timbre << " row=" << ev.row
+                                  << " encoder=" << ev.encoder << "; valid "
+                                  << "timbre[0," << NUMBER_OF_TIMBRES
+                                  << ") row[0," << NUMBER_OF_ROWS
+                                  << "] encoder[0," << NUMBER_OF_ENCODERS_PFM2
+                                  << ")) — refusing to dispatch (would OOB "
+                                  << "index params_/allParameterRows).\n";
+                        std::abort();
+                    }
+                    if (!std::isfinite(ev.value)) {
+                        std::cerr << "golden: PARAM_CHANGE at block "
+                                  << ev.blockOffset << " (row=" << ev.row
+                                  << " encoder=" << ev.encoder
+                                  << ") value is non-finite (" << ev.value
+                                  << ") — would bypass the clamp and poison the "
+                                  << "param field.\n";
+                        std::abort();
+                    }
                     synth_->setNewValueFromMidi(ev.timbre, ev.row, ev.encoder,
                                                 ev.value);
                     break;
+                }
+                default:
+                    // A non-factory RenderEventKind (memory corruption, or a
+                    // future kind without a dispatch arm). Aborting matches the
+                    // harness's blockOffset/rowIdx guard philosophy — never
+                    // silently render through an event we did not handle.
+                    std::cerr << "golden: renderScript event at block "
+                              << ev.blockOffset << " has unknown kind "
+                              << static_cast<int>(ev.kind) << " — refusing to "
+                              << "silently skip it.\n";
+                    std::abort();
             }
         }
         // buildNewSampleBlock zeroes the 3 buffers itself (Synth.cpp:325-333).
@@ -364,7 +427,7 @@ RenderScript RenderScript::multiTimbreMix() {
 }
 
 RenderScript RenderScript::liveLfoPitchModulation() {
-    // G3 golden 1 (steady LFO->pitch): noteOn@0, render 400 blocks (~several
+    // G3 golden 1 (steady LFO->pitch): noteOn@0, render 400 blocks (~1.2
     // LFO1 cycles; lfoOsc1 default = {LFO_SIN, 4.5, 0, 0}). The LFO1->OSC1_FREQ
     // routing is set out-of-band via setMatrixRow(0, row8, LFO1, 0.5, OSC1_FREQ)
     // in the TEST before render — it is a per-timbre state change, not an event.
