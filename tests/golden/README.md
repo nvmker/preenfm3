@@ -36,8 +36,12 @@ committing its fixture (see *Regenerating fixtures* below, run on that platform)
 Current fixtures: see the **Fixture catalog** below. G0 (`a4_default_sustain`)
 has both `_macos` and `_linux` committed, as do the four Phase G1 goldens
 (`envelope_adsr_full`, `fm_algo2`, `fm_algo27_6carrier`, `multi_timbre_mix`)
-— all 10 fixture triples (5 goldens × {macos, linux}) are committed. The
-`regenerate-linux-goldens` workflow (`workflow_dispatch`, usable once merged
+— all 10 of those fixture triples (5 goldens × {macos, linux}) are committed.
+The three Phase G3 goldens (`live_lfo_pitch_modulation`,
+`live_matrix_mul_change`, `live_lfo_freq_change`) have their `_macos` triples
+committed with the code; their `_linux` triples are generated via the
+`regenerate-linux-goldens` workflow dispatch (⏳ in the catalog until committed).
+The `regenerate-linux-goldens` workflow (`workflow_dispatch`, usable once merged
 to `master`) regenerates the `_linux` triples on demand when a render change
 legitimately alters them — see *Regenerating the `_linux` fixtures* below.
 
@@ -66,6 +70,52 @@ this directory.
 | `fm_algo2` | setTimbreAlgo(0, ALGO2), noteOn(0,69,100)@0 | 200 | ALGO2 `{1,1,2,0,0,0}` — 2-carrier summing | ✅ | ✅ |
 | `fm_algo27_6carrier` | setTimbreAlgo(0, ALG27), noteOn(0,69,100)@0 | 200 | ALG27 `{1,1,1,1,1,1}` — 6-carrier additive summing | ✅ | ✅ |
 | `multi_timbre_mix` | noteOn(0,69,100) + noteOn(1,72,100)@0 | 200 | voicesToTimbre mix + per-timbre smoothVolume_ + fxBus->mixAdd | ✅ | ✅ |
+| `live_lfo_pitch_modulation` | setMatrixRow(LFO1→OSC1_FREQ@0.5), noteOn(0,69,100)@0 | 400 | steady LFO1→matrix→osc-freq→Voice routing (several LFO cycles) | ✅ | ⏳ |
+| `live_matrix_mul_change` | setMatrixRow(LFO1→OSC1_FREQ@0.0), noteOn@0, setNewValueFromMidi(ROW_MATRIX8,ENCODER_MATRIX_MUL,0.6)@80 | 200 | live CC→matrix-mul→Voice: pitch wobble kicks in mid-note | ✅ | ⏳ |
+| `live_lfo_freq_change` | setMatrixRow(LFO1→MIX_OSC1@0.5), noteOn@0, setNewValueFromMidi(ROW_LFOOSC1,ENCODER_LFO_FREQ,9.0)@100 | 300 | live LFO-freq CC + non-pitch (amplitude/tremolo) destination | ✅ | ⏳ |
+
+**Phase G3 — live mid-render param changes (the "stuck/wrong CC routing" bug
+class):** G0/G1 lock the render under *static* params (noteOn/noteOff +
+algo/voice setup only). The G3 goldens drive `Synth::setNewValueFromMidi`
+mid-render on a SOUNDING voice — the path MIDI CCs take in production. The
+matrix routing is set out-of-band via `GoldenHarness::setMatrixRow` (a
+pre-render field patch + `afterNewParamsLoad`, same proven pattern as
+`setTimbreAlgo`); the mid-render `PARAM_CHANGE` events fire `setNewValueFromMidi`.
+
+**Critical constraint — why matrix routing, not direct osc-freq writes:**
+`Synth::newParamValueFromExternal` (the listener `setNewValueFromMidi` propagates
+to) has switch cases for matrix rows (`ENCODER_MATRIX_MUL` writes `rows[r].mul`,
+read live every block by `Matrix::computeAllDestinations`), LFO rows
+(`ENCODER_LFO_FREQ` writes `lfo->freq`), etc. — but **NO case for
+`ROW_OSC1..6` or `ROW_ENGINE`**. A direct osc-frequency / env-time param write
+via `setNewValueFromMidi` does NOT take effect on a sounding voice (the voice
+reads those at note allocation). So live pitch/env changes MUST route through
+the matrix (destination `OSC1_FREQ` / `ALL_ENV_DECAY` / `MIX_OSC1` / etc.), which
+is re-read every block. See
+`_bmad-output/implementation-artifacts/spec-golden-master-phase-g2-g3.md`
+Design Notes.
+
+**G3 golden 3 destination change (from `ALL_ENV_DECAY` to `MIX_OSC1`):** the
+spec originally specified `LFO1→ALL_ENV_DECAY` for golden 3. Implementation
+found `ALL_ENV_DECAY` modulation is **inaudible on a sustained note** — the env
+leaves its decay stage ~block 50, so decay-time modulation has no effect (the
+golden rendered byte-identical to G0, a zero-signal trap). Switched to
+`MIX_OSC1` (osc1 level → tremolo), which is audible on a sustained note and
+gives dest-diversity (amplitude, vs goldens 1/2's pitch). The live LFO-freq
+change at block 100 then doubles the tremolo rate — clearly audible. See the
+spec's Spec Change Log.
+
+**`allParameterRows` stub enhancement:** the host build links a *stub*
+`allParameterRows` (`tests/stubs/midi_decoder_collaborators_stub.cpp`), not the
+real one from FMDisplayEditor.cpp (4365 lines of non-host-compilable TFT code).
+The stub's zeroed `ParameterDisplay` (maxValue=0) made `Timbre::setNewValue`
+clamp every positive value to 0, silently defeating `setNewValueFromMidi` for
+G3's mid-render changes. The stub now provides a permissive-bounds
+`ParameterRowDisplay` (min/max = ±1e6) wired to **only** the matrix rows
+(`ROW_MATRIX1..12`) and LFO-osc rows (`ROW_LFOOSC1..3`); all other rows stay on
+the zeroed dummy so `midi_decoder_test`'s NRPN-assembly behavior is unchanged.
+The real bounds (matrix mul `[-10,24]`; LFO freq `[0,100.8]`) would clamp
+identically for the goldens' in-range values (mul 0.6, LFO freq 9.0).
 
 **G1 algorithm note:** the default `preenMainPreset` has all-zero modulation
 indices, so only the **carrier count** distinguishes algorithms under it (an
@@ -96,6 +146,19 @@ preset and is deferred.
 - **Determinism self-check:** `GoldenMaster.DeterminismSelfCheck` renders the
   golden twice in one process and asserts byte-exact equality. This is the
   prerequisite that makes the golden lock trustworthy.
+- **Tolerance-headroom monitor (Phase G2):** `GoldenMaster.ToleranceHeadroom`
+  renders `a4_default_sustain`, computes the per-sample max |delta| against the
+  committed same-platform fixture across ALL samples (`goldenCompare` stops at
+  the first mismatch; this scans the whole buffer), and records it as test
+  properties (`max_delta_stored_units`, `max_delta_audio_lsb`, `max_delta_block`)
+  visible in the ctest/CI JUnit XML. On the exact commit that generated the
+  fixture the value is **0** (within-process byte-exactness, per the
+  DeterminismSelfCheck); a future macOS point release / glibc update shifting
+  libm tables by a few ULP would show a small non-zero value — the point is to
+  surface silent drift toward the ±256 ceiling *before* the main gate fails. It
+  does NOT tighten the gate (the committed fixture is from a prior libm build;
+  exact-match would false-positive on legitimate drift). DeterminismSelfCheck
+  gives a binary pass/fail; ToleranceHeadroom quantifies the consumption.
 
 ## Regenerating fixtures
 
