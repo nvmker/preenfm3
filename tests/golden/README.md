@@ -116,18 +116,22 @@ A golden mismatch is a signal to investigate what changed in the render path,
 not an instruction to regenerate. This is the same stance the per-unit tests
 take for preserved firmware quirks (see `tests/SEAM.md`).
 
-### Known benign UBSAN finding in the render path
+### Previously reported UBSAN finding in the render path — resolved
 
-`Synth::buildNewSampleBlock` formats each DAC sample with `*cb <<= 8`
-(`Synth.cpp:~475/497`) on the clamped `int32_t`. When the clamped sample is
-negative, this is **C++-standard undefined behavior** (left shift of a negative
-signed value). It is well-defined on the two's-complement STM32H7 (Cortex-M7)
-hardware the firmware targets, and the committed golden locks the actual
-on-hardware result. The finding surfaces when the test binary is run **directly**
-under UBSAN; `make test-asan` (via ctest) reports the test as passing because
-UBSAN prints without aborting and ctest only shows output for failed tests. It
-is a pre-existing firmware trait, not a fixture defect. The standard
-well-defined fix (`(int32_t)((uint32_t)v << 8)`) would produce identical bytes,
-so it could be applied as a separate firmware change without regenerating the
-fixture — but that is a deliberate firmware edit, out of scope for the golden
-tier itself.
+`Synth::buildNewSampleBlock` previously formatted each DAC sample with
+`*cb <<= 8` (`Synth.cpp:~475/497`) on the clamped `int32_t`. When the clamped
+sample was negative this was **C++-standard undefined behavior** (left shift of
+a negative signed value), well-defined only on the two's-complement STM32H7
+(Cortex-M7) target. It has since been rewritten as the fully standard-defined,
+bit-identical signed-multiply form `*cb = *cb * 256` (all three output buffers).
+The preceding clamp bounds the value to [-0x7FFFFF, 0x7FFFFF], so the scaled
+result stays within [-0x7FFFFF00, 0x7FFFFF00] — strictly inside int32_t range,
+which means signed arithmetic cannot overflow (no UB) and no cast is needed
+(no implementation-defined unsigned-to-signed step). The committed golden
+fixtures are **unchanged** — the rewrite produces the same bytes as the
+on-hardware result the fixtures locked, verified by the
+`GoldenMaster.A4DefaultSustain200Blocks` test passing against the existing
+fixtures with no regeneration. Running the test binary directly under UBSAN
+(`UBSAN_OPTIONS=halt_on_error=1 ... --gtest_filter='GoldenMaster.*'`) now exits
+clean; previously it aborted at `Synth.cpp:475` with `left shift of negative
+value`.

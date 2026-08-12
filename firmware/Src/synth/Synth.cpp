@@ -472,7 +472,13 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
             *cb1 = -0x7FFFFF;
             outputSaturated |= 0b001;
         }
-        *cb1 <<= 8;
+        // Signed multiply is fully standard-defined (no UB, no
+        // implementation-defined step): the clamp above bounds the value to
+        // [-0x7FFFFF, 0x7FFFFF], so the scaled result stays within
+        // [-0x7FFFFF00, 0x7FFFFF00] -- strictly inside int32_t range, so signed
+        // arithmetic cannot overflow. Same bits as a left shift by 8 with none
+        // of the cast noise; identical form applied to cb2/cb3 below.
+        *cb1 = *cb1 * 256;
         cb1++;
 
         if (unlikely(*cb2 > 0x7FFFFF)) {
@@ -483,7 +489,7 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
             *cb2 = -0x7FFFFF;
             outputSaturated |= 0b010;
         }
-        *cb2 <<= 8;
+        *cb2 = *cb2 * 256;
         cb2++;
 
         if (unlikely(*cb3 > 0x7FFFFF)) {
@@ -494,7 +500,7 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
             *cb3 = -0x7FFFFF;
             outputSaturated |= 0b100;
         }
-        *cb3 <<= 8;
+        *cb3 = *cb3 * 256;
         cb3++;
     }
 
