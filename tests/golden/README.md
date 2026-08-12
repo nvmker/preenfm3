@@ -122,25 +122,29 @@ a signal that something in the render path changed; investigate first.
 
 ### Regenerating the `_linux` fixtures via GitHub Actions
 
-If you don't have a Linux host, regenerate the `_linux` (glibc) fixtures with
-the manual **regenerate-linux-goldens** workflow (`.github/workflows/`):
+The `_linux` (glibc) fixtures are committed; use this workflow to regenerate
+them on demand when a render change legitimately alters them and you don't
+have a Linux host. The manual **regenerate-linux-goldens** workflow
+(`.github/workflows/`) must exist on `master` to be dispatchable — GitHub
+registers `workflow_dispatch` workflows from the default branch — so it's
+usable once this PR merges.
 
-1. GitHub **Actions** tab → **regenerate-linux-goldens** → **Run workflow** →
-   pick the PR branch as the dispatch branch.
-2. The workflow (ubuntu-latest) builds the tests, runs regen mode to write
-   every `_linux` triple, **self-verifies** with a full `ctest` (this green
-   run IS the linux-gate evidence), then commits + pushes the changed `_linux`
-   fixture files to the branch. The PR auto-updates.
-3. The commit is pushed by the default `GITHUB_TOKEN`, whose pushes do **not**
-   re-trigger `pull_request` workflows (GitHub loop prevention) — so the
-   Self-verify step is the linux-green proof; the separate `tests.yml` check
-   can be re-run manually if desired.
+```sh
+gh workflow run regenerate-linux-goldens.yml --ref <target-branch>
+```
 
-After the workflow lands the `_linux` fixture files, add the matching `_linux`
-entries to `schema.json` by hand (copy the `_macos` entry, swap `variant`→
-`linux` and `hash`←the value printed in the run log). The test reads `.bin`/`.xxh`,
-not `schema.json`, so CI is green on the fixture files alone; the schema entry
-is catalog completeness.
+(or via the Actions UI: select the workflow → **Run workflow** → choose the
+branch.) The workflow (ubuntu-latest) builds the tests, regenerates every
+`_linux` triple, **self-verifies** with a full `ctest` (this green run IS the
+linux-gate evidence), then commits + pushes the changed `_linux` fixture files
+to the target branch. The commit is pushed by the default `GITHUB_TOKEN`,
+whose pushes do **not** re-trigger `pull_request` workflows (GitHub loop
+prevention) — so the Self-verify step is the linux-green proof; the separate
+`tests.yml` check can be re-run manually if desired.
+
+After it runs, update any `_linux` entry in `schema.json` whose `hash` changed
+(the test reads `.bin`/`.xxh`, not `schema.json`, so CI is green on the fixture
+files alone; `schema.json` is catalog completeness).
 
 ## Warm-start decision
 
