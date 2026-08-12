@@ -120,7 +120,7 @@ void runGolden(const char* idBase, std::size_t nBlocks,
                << " actual=0x" << diff.actualSample << std::dec
                << " delta=" << diff.sampleDelta
                << " (tolerance=±256 stored units = ±1 audio-LSB; the firmware "
-                  "clamps to 24-bit then left-shifts 8)"
+                  "clamps to 24-bit then left-shifts 8)\n"
                << "If this is a deliberate render change, regenerate with"
                << " PFM3_REGENERATE_GOLDENS=1 (see tests/golden/README.md).";
     }

@@ -69,7 +69,7 @@ struct RenderEvent {
 // SINGLE source of truth for the sequences the committed fixtures lock —
 // changing one invalidates its fixture (regenerate via
 // PFM3_REGENERATE_GOLDENS=1; see tests/golden/README.md). Phase G1 note: the two
-// FM-algo goldens (fm_algo2, fm_algo17_6op) reuse a4Sustain()'s events — the FM
+// FM-algo goldens (fm_algo2, fm_algo27_6carrier) reuse a4Sustain()'s events — the FM
 // algorithm is set out-of-band via setTimbreAlgo() (it is a per-timbre state
 // change, not a note event), so the script alone does not describe those
 // fixtures; the TEST pairs setTimbreAlgo + renderScript.
