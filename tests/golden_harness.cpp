@@ -38,7 +38,16 @@ GoldenHarness::GoldenHarness(std::string fixtureDir, TimbreSetup setup)
     // render reads garbage voices. The factories (g0Default=6, multiTimbre=12)
     // stay within budget; this guard catches a future TimbreSetup that doesn't.
     int voiceSum = 0;
-    for (int t = 0; t < NUMBER_OF_TIMBRES; t++) voiceSum += setup_.voices[t];
+    for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+        if (setup_.voices[t] < 0) {
+            std::cerr << "golden: TimbreSetup.voices[" << t << "] = "
+                      << setup_.voices[t] << " is negative — wraps to a huge "
+                         "uint8_t at assignment (MixerState.h numberOfVoices) "
+                         "and OOBs voiceNumber_; refusing to construct.\n";
+            std::abort();
+        }
+        voiceSum += setup_.voices[t];
+    }
     if (voiceSum > MAX_NUMBER_OF_VOICES) {
         std::cerr << "golden: TimbreSetup voice sum " << voiceSum
                   << " > MAX_NUMBER_OF_VOICES (" << MAX_NUMBER_OF_VOICES
@@ -105,9 +114,11 @@ void GoldenHarness::setUpSynthState() {
     // user-CC matrix sources resolve to 0 regardless, so that patch is
     // irrelevant here and is intentionally omitted.
 
-    // Per-timbre instrumentState: timbre 0 listens on MIDI channel 1, full note
-    // range, 6 voices. Timbres 1-5 silenced (numberOfVoices=0) so Synth::init's
-    // numberOfVoicesChanged disables them and buildNewSampleBlock skips them.
+    // Per-timbre instrumentState: MIDI channel t+1, full note range, and
+    // numberOfVoices from TimbreSetup (g0Default: timbre 0=6, timbres 1-5=0 ->
+    // silenced; multiTimbre: timbres 0+1=6). Synth::init's
+    // numberOfVoicesChanged allocates from this; buildNewSampleBlock skips any
+    // timbre whose numberOfVoices==0.
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
         ss_->mixerState.instrumentState_[t].midiChannel = (t == 0) ? 1 : (t + 1);
         ss_->mixerState.instrumentState_[t].firstNote = 0;
