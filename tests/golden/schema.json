@@ -48,6 +48,66 @@
       "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
       "files": ["a4_default_sustain_linux.bin", "a4_default_sustain_linux.xxh", "a4_default_sustain_linux.diff.txt"],
       "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on linux/glibc (CI ubuntu gcc + ubuntu clang-coverage)"
+    },
+    {
+      "id": "envelope_adsr_full_macos",
+      "variant": "macos",
+      "preset": "default preenMainPreset (timbre 0)",
+      "noteSequence": "noteOn(0,69,100)@block0; noteOff(0,69)@block300",
+      "nBlocks": 600,
+      "samplesPerBlock": 192,
+      "totalSamples": 115200,
+      "hash": "e873d1dd67184295",
+      "compareLsbTolerance": 256,
+      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+      "warmStart": "all blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10) + Env release tail (blocks 300-599)",
+      "files": ["envelope_adsr_full_macos.bin", "envelope_adsr_full_macos.xxh", "envelope_adsr_full_macos.diff.txt"],
+      "guards": "Env stage transitions (attack/decay/sustain) + release tail on noteOff — G0's sustain-only golden never exercises noteOff/release"
+    },
+    {
+      "id": "fm_algo2_macos",
+      "variant": "macos",
+      "preset": "default preenMainPreset, timbre 0 engine1.algo overridden to ALGO2",
+      "noteSequence": "setTimbreAlgo(0, ALGO2) + afterNewParamsLoad(0); noteOn(0,69,100)@block0; no note-off",
+      "nBlocks": 200,
+      "samplesPerBlock": 192,
+      "totalSamples": 38400,
+      "hash": "713eab8fc66121f7",
+      "compareLsbTolerance": 256,
+      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+      "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10)",
+      "files": ["fm_algo2_macos.bin", "fm_algo2_macos.xxh", "fm_algo2_macos.diff.txt"],
+      "guards": "ALGO2 ({1,1,2,0,0,0}) = 2 carriers + 1 modulator — the multi-carrier output summing path the default ALGO1 (1 carrier) never exercises"
+    },
+    {
+      "id": "fm_algo27_6carrier_macos",
+      "variant": "macos",
+      "preset": "default preenMainPreset, timbre 0 engine1.algo overridden to ALG27",
+      "noteSequence": "setTimbreAlgo(0, ALG27) + afterNewParamsLoad(0); noteOn(0,69,100)@block0; no note-off",
+      "nBlocks": 200,
+      "samplesPerBlock": 192,
+      "totalSamples": 38400,
+      "hash": "686bac6da3937528",
+      "compareLsbTolerance": 256,
+      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+      "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10)",
+      "files": ["fm_algo27_6carrier_macos.bin", "fm_algo27_6carrier_macos.xxh", "fm_algo27_6carrier_macos.diff.txt"],
+      "guards": "ALG27 ({1,1,1,1,1,1}) = all 6 carriers, additive — the maximal carrier-topology departure from ALGO1; exercises the full 6-carrier summing path. (Chosen over ALG17, which renders byte-identical to G0 under the zero-IM default preset — see spec Design Notes.)"
+    },
+    {
+      "id": "multi_timbre_mix_macos",
+      "variant": "macos",
+      "preset": "default preenMainPreset (timbres 0 + 1)",
+      "noteSequence": "noteOn(0,69,100) + noteOn(1,72,100)@block0; no note-off",
+      "nBlocks": 200,
+      "samplesPerBlock": 192,
+      "totalSamples": 38400,
+      "hash": "d8f72fbd66ea49bf",
+      "compareLsbTolerance": 256,
+      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+      "warmStart": "all 200 blocks incl. per-timbre smoothVolume_/smoothPan_ transient (~blocks 0-10)",
+      "files": ["multi_timbre_mix_macos.bin", "multi_timbre_mix_macos.xxh", "multi_timbre_mix_macos.diff.txt"],
+      "guards": "voicesToTimbre multi-timbre mix + per-timbre smoothVolume_/smoothPan_ + fxBus->mixAdd — timbres 0+1 (6+6=12 <= MAX_NUMBER_OF_VOICES 16) summing into the 6 outputs"
     }
   ]
 }
