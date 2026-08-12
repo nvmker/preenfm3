@@ -1,10 +1,10 @@
 {
-  "schemaVersion": 3,
-  "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp. The full render is byte-stable per (libm-class), NOT per compiler: ubuntu gcc and ubuntu clang both link glibc and produce byte-identical renders, while macOS clang links libsystem and differs. The discriminator is the platform/libm; tests/golden_master_test.cpp selects by __APPLE__. FM feedback amplifies the ~1-ULP libm-driven table differences (Osc::init/Env::init precompute via sinf/expf/logf), so cross-libm renders diverge by >1 LSB within ~1 block.",
+  "schemaVersion": 4,
+  "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp. The full render is byte-stable per (libm-class), NOT per compiler: ubuntu gcc and ubuntu clang both link glibc and produce byte-identical renders, while macOS clang links libsystem and differs. The discriminator is the platform/libm; tests/golden_master_test.cpp selects by __APPLE__. FM feedback amplifies the ~1-ULP libm-driven table differences (Osc::init/Env::init precompute via sinf/expf/logf), so cross-libm renders diverge by >1 audio-LSB within ~1 block. v4: compare tolerance is 256 stored units (= 1 audio-LSB; the firmware clamps to 24-bit then <<8), and the hash is diagnostic-only (goldenCompare is authoritative). Fixture bytes are UNCHANGED from v3.",
   "comparison": {
-    "artifactType": "int32_t DAC-format render (3 buffers x 64 stereo per block = 192 int32/block)",
-    "lsbTolerance": 1,
-    "hashAlgorithm": "FNV-1a 64-bit over tolerance-normalized buffer + splitmix64 finalizer (self-contained, no system xxhash)",
+    "artifactType": "int32_t DAC-format render (3 buffers x 64 stereo per block = 192 int32/block); stored value = (24-bit clamped sample) << 8",
+    "authoritativeGate": "goldenCompare, ±256 stored int32 units = ±1 audio-LSB (the firmware's final <<8 puts the 24-bit audio in the top 24 bits; a bare ±1 would only cover always-zero padding). Absorbs benign within-platform drift.",
+    "hashRole": "DIAGNOSTIC ONLY — FNV-1a 64-bit + splitmix64 over a tolerance-1-normalized buffer; a mismatch is printed to stderr but never fails the test (normalization bucket boundaries can flip under benign drift; making it authoritative would defeat the tolerance). goldenCompare is the sole pass/fail gate.",
     "bufferLayoutPerBlock": "[buffer1(64) buffer2(64) buffer3(64)] = out1/2, out3/4, out5/6",
     "buildFlag": "-ffp-contract=off (tests/CMakeLists.txt) — strict IEEE mul/add, no FMA contraction, for best per-variant reproducibility (does NOT close the cross-libm gap, which is libm-driven)"
   },
@@ -28,7 +28,8 @@
       "samplesPerBlock": 192,
       "totalSamples": 38400,
       "hash": "7455c83076f0ffaa",
-      "lsbTolerance": 1,
+      "compareLsbTolerance": 256,
+      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
       "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
       "files": ["a4_default_sustain_macos.bin", "a4_default_sustain_macos.xxh", "a4_default_sustain_macos.diff.txt"],
       "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on macOS/libsystem"
@@ -42,7 +43,8 @@
       "samplesPerBlock": 192,
       "totalSamples": 38400,
       "hash": "8f8766fe3e1ceff3",
-      "lsbTolerance": 1,
+      "compareLsbTolerance": 256,
+      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
       "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
       "files": ["a4_default_sustain_linux.bin", "a4_default_sustain_linux.xxh", "a4_default_sustain_linux.diff.txt"],
       "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on linux/glibc (CI ubuntu gcc + ubuntu clang-coverage)"

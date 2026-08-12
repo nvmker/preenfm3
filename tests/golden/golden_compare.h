@@ -28,13 +28,10 @@ namespace golden {
 // caller (which knows samplesPerBlock); goldenCompare only has the flat index.
 struct GoldenDiff {
     bool matched = true;
-    bool hashMismatch = false;   // true when goldenCompare passed within tolerance
-                                // but the tolerance-normalized hash differed
-                                // (a bucket-boundary split; see golden/README.md)
     std::size_t firstMismatchIndex = 0;   // flat index into the buffer
     int32_t expectedSample = 0;
     int32_t actualSample = 0;
-    int32_t sampleDelta = 0;              // |actual - expected|; always >= 0
+    int32_t sampleDelta = 0;              // |actual - expected| in stored int32 units
     std::size_t blockIndex = 0;           // firstMismatchIndex / samplesPerBlock
 };
 
