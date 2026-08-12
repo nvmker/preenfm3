@@ -13,6 +13,28 @@ sequence. The render goes through the **real** firmware Synth graph
 locks the **aggregate** chain, complementing the per-unit goldens in
 `synth_math_test.cpp` / `hexter_test.cpp`.
 
+## Cross-compiler fixtures
+
+The full render is **NOT byte-stable across compilers**, even with
+`-ffp-contract=off`. `Osc::init` / `Env::init` precompute their tables at init
+time via `sinf`/`expf`/`logf`, and those table values differ ~1-ULP between
+platform libms (macOS libsystem vs glibc). The preenfm oscillators use **FM
+feedback**, which is chaotic — a ~1-ULP wavetable/env-table difference amplifies
+exponentially, so block 0's output stays within ±1 LSB but by block 1 the two
+compilers diverge by ~36% of full scale. No compile flag fixes this (it was
+probed: `-ffp-contract=off` did not converge clang↔gcc).
+
+Therefore each supported compiler has its **own committed fixture**, and
+`tests/golden_master_test.cpp` selects by compiler (`__clang__` → `_clang`,
+`__GNUC__` → `_gcc`). Each fixture is a faithful per-compiler lock; the
+regression guard catches any same-compiler render change (the realistic
+regression class). Adding a new supported compiler requires generating +
+committing its fixture (see *Regenerating fixtures* below, run under that
+compiler).
+
+Current fixtures: `a4_default_sustain_clang` (local dev, macOS Apple clang) and
+`a4_default_sustain_gcc` (CI, ubuntu system g++).
+
 ## Fixture layout (per golden id `X`)
 
 | File | Contents |
@@ -29,9 +51,10 @@ buffer2 = out3/4, buffer3 = out5/6 (the 6 hardware DAC outputs).
 
 - **Authoritative gate:** `goldenCompare` — every sample must agree within
   ±`lsbTolerance` (default ±1 LSB). A 1-ULP float drift in the mix becomes 0-or-1
-  LSB after the `×0x7fffff` scale + truncation, so ±1 LSB absorbs benign
-  compiler drift (gcc/clang, x86/arm64) while any real DSP change moves many
-  samples by many LSBs.
+  LSB after the `×0x7fffff` scale + truncation, so ±1 LSB absorbs benign drift
+  **within a compiler** (minor-version / build-path differences). It does NOT
+  absorb cross-compiler drift — see *Cross-compiler fixtures* above. Any real
+  DSP change moves many samples by many LSBs.
 - **Hash gate:** a self-contained FNV-1a 64-bit + splitmix64 finalizer over the
   tolerance-normalized buffer. No system/Homebrew `xxhash` (CI is ubuntu/gcc).
   The normalization quantizes each sample to its ±tolerance bucket so benign
@@ -67,9 +90,10 @@ a signal that something in the render path changed; investigate first.
 
 ## Warm-start decision
 
-All 200 blocks of `a4_default_sustain` are captured **including** the
-`smoothVolume_`/`smoothPan_` one-pole transient (blocks ~0–10). The transient is
-deterministic and is part of the locked behavior — no warm-start skip.
+All 200 blocks of each `a4_default_sustain_<compiler>` fixture are captured
+**including** the `smoothVolume_`/`smoothPan_` one-pole transient (blocks ~0–10).
+The transient is deterministic (per-compiler) and is part of the locked behavior
+— no warm-start skip.
 
 ## Schema versioning
 
