@@ -31,9 +31,11 @@
 // discriminator is the PLATFORM (__APPLE__), not the compiler.
 
 #include "golden_harness.h"
+#include "golden/golden_snapshot.h"
 
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -90,14 +92,22 @@ const std::string& a4DefaultSustainId() {
 // algoTimbre:  timbre whose FM algorithm to override before render, or -1 to
 //              leave the default ALGO1 (from preenMainPreset). `algo` is ignored
 //              when algoTimbre < 0.
+// preRender:   optional setup hook run AFTER construction + setTimbreAlgo and
+//              BEFORE renderScript. Phase G3 goldens use it to call
+//              setMatrixRow(...) (their matrix routing is a per-timbre state
+//              change, like setTimbreAlgo). Default {} = no extra setup (G0/G1).
 void runGolden(const char* idBase, std::size_t nBlocks,
                const golden::RenderScript& script,
                const golden::TimbreSetup& setup,
-               int algoTimbre, Algorithm algo) {
+               int algoTimbre, Algorithm algo,
+               std::function<void(golden::GoldenHarness&)> preRender = {}) {
     const std::string id = std::string(idBase) + "_" + PFM3_GOLDEN_VARIANT;
     golden::GoldenHarness harness(kFixtureDir, setup);
     if (algoTimbre >= 0) {
         harness.setTimbreAlgo(algoTimbre, algo);
+    }
+    if (preRender) {
+        preRender(harness);
     }
     std::vector<int32_t> render(nBlocks * golden::GoldenHarness::kSamplesPerBlock);
     harness.renderScript(script, nBlocks, render.data());
@@ -245,4 +255,128 @@ TEST(GoldenMaster, MultiTimbreMix) {
               golden::RenderScript::multiTimbreMix(),
               golden::TimbreSetup::multiTimbre(),
               /*algoTimbre=*/-1, ALGO1);
+}
+
+// ===========================================================================
+// Phase G2 — tolerance-headroom monitor. DeterminismSelfCheck proves in-process
+// byte-exactness with a binary memcmp; this test QUANTIFIES how much of the ±256
+// stored-unit (±1 audio-LSB) compare tolerance the current render actually
+// consumes against the committed same-platform fixture, and records it as a test
+// property (visible in ctest/CI XML). The ±256 tolerance exists to absorb
+// benign within-platform drift (a future macOS point release / glibc update
+// shifting libm tables by a few ULP); this test surfaces silent drift toward
+// the ceiling before the main gate fails. It does NOT tighten the gate — the
+// committed fixture is from a prior libm build, so exact-match (tolerance 0)
+// would false-positive on legitimate libm drift. See tests/golden/README.md
+// -> Comparison model + spec-golden-master-phase-g2-g3.md Design Notes.
+// ===========================================================================
+TEST(GoldenMaster, ToleranceHeadroom) {
+    if (regenMode()) {
+        GTEST_SKIP() << "skipped in regeneration mode (no committed fixture to diff)";
+    }
+
+    golden::GoldenHarness harness(kFixtureDir);
+    std::vector<int32_t> render(kNBlocks * golden::GoldenHarness::kSamplesPerBlock);
+    harness.renderA4DefaultSustain(kNBlocks, render.data());
+
+    // Load the committed same-platform fixture and compute the per-sample max
+    // |delta| across ALL samples (goldenCompare stops at the first mismatch;
+    // this scans the whole buffer to quantify total consumption).
+    const std::size_t count = kNBlocks * golden::GoldenHarness::kSamplesPerBlock;
+    const std::string binPath = golden::fixturePath(
+        kFixtureDir, a4DefaultSustainId(), ".bin");
+    std::vector<int32_t> expected(count);
+    ASSERT_TRUE(golden::readRenderBin(binPath, expected.data(), count))
+        << "could not read committed fixture " << binPath
+        << " (run PFM3_REGENERATE_GOLDENS=1 make golden-regen if missing)";
+
+    int64_t maxDelta = 0;
+    std::size_t maxIdx = 0;
+    for (std::size_t i = 0; i < count; i++) {
+        int64_t d = static_cast<int64_t>(render[i]) -
+                    static_cast<int64_t>(expected[i]);
+        if (d < 0) d = -d;
+        if (d > maxDelta) { maxDelta = d; maxIdx = i; }
+    }
+
+    // Record the observed max delta so it is visible in CI/ctest output. The
+    // property survives in JUnit XML for trend tracking across builds.
+    testing::Test::RecordProperty("max_delta_stored_units",
+                                  std::to_string(maxDelta));
+    testing::Test::RecordProperty("max_delta_audio_lsb",
+                                  std::to_string(maxDelta / 256));
+    testing::Test::RecordProperty("max_delta_block",
+                                  std::to_string(maxIdx / golden::GoldenHarness::kSamplesPerBlock));
+
+    // The headroom assertion: the render must stay within the compare tolerance.
+    // Expected 0 on the exact commit that generated the fixture (within-process
+    // byte-exactness, per DeterminismSelfCheck); small non-zero is legitimate
+    // libm/compiler drift since the fixture's commit build. A value at/over the
+    // ceiling means the tolerance is consumed — investigate before it breaches.
+    EXPECT_LE(maxDelta, static_cast<int64_t>(golden::GoldenHarness::kCompareLsbTolerance))
+        << "a4_default_sustain max |delta| vs committed fixture = " << maxDelta
+        << " stored units (" << (maxDelta / 256) << " audio-LSB) at block "
+        << (maxIdx / golden::GoldenHarness::kSamplesPerBlock)
+        << "; the ±256 tolerance is the gate — this much is consumed";
+}
+
+// ===========================================================================
+// Phase G3 — live matrix-modulation goldens. Each wires an LFO1->destination
+// matrix routing out-of-band via setMatrixRow (overwriting matrixRowState8,
+// which is {LFO1,0,INDEX_MODULATION2,0} = inactive in the default preset), then
+// renders with an optional mid-render PARAM_CHANGE. These lock the live
+// setNewValueFromMidi -> matrix -> Voice path on a SOUNDING voice — the
+// "stuck/wrong CC routing" bug class G0/G1 cannot reach. The default preset's
+// lfoOsc1 is {LFO_SIN,4.5,0,0} (active), so MATRIX_SOURCE_LFO1 produces a
+// modulating value with no MIDI input. matrixRowState8 (rowIdx 7) is chosen over
+// rows 0-3 to avoid the special-case compute path + the MTX1..4_MUL feedback
+// quirk. See spec-golden-master-phase-g2-g3.md Design Notes.
+// ===========================================================================
+
+// Steady LFO1 -> OSC1_FREQ (mul 0.5), 400 blocks (~several LFO1 cycles at the
+// default 4.5 Hz). The LFO auto-modulates osc1 pitch; no PARAM_CHANGE. Guards
+// the LFO1 -> matrix -> osc-freq -> Voice routing end-to-end.
+TEST(GoldenMaster, LiveLfoPitchModulation) {
+    runGolden("live_lfo_pitch_modulation", 400,
+              golden::RenderScript::liveLfoPitchModulation(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/-1, ALGO1,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  h.setMatrixRow(0, /*rowIdx=*/7, MATRIX_SOURCE_LFO1,
+                                 /*mul=*/0.5f, OSC1_FREQ);
+              });
+}
+
+// LFO1 -> OSC1_FREQ set up with mul=0.0 (inactive), then a PARAM_CHANGE at
+// block 80 sets ROW_MATRIX8/ENCODER_MATRIX_MUL = 0.6, turning the modulation ON
+// mid-note. Guards the live CC -> matrix-mul -> Voice path: pitch wobble kicks
+// in from block 80. Render 200.
+TEST(GoldenMaster, LiveMatrixMulChange) {
+    runGolden("live_matrix_mul_change", 200,
+              golden::RenderScript::liveMatrixMulChange(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/-1, ALGO1,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  h.setMatrixRow(0, /*rowIdx=*/7, MATRIX_SOURCE_LFO1,
+                                 /*mul=*/0.0f, OSC1_FREQ);
+              });
+}
+
+// LFO1 -> MIX_OSC1 (mul 0.5, a tremolo on osc1's level), then a PARAM_CHANGE
+// at block 100 sets ROW_LFOOSC1/ENCODER_LFO_FREQ = 9.0 (doubling the LFO speed
+// from the default 4.5), so the tremolo rate doubles mid-note. Guards a non-
+// pitch (amplitude) matrix destination + the live LFO-freq CC update. Render
+// 300. (Originally specified as LFO1->ALL_ENV_DECAY; changed to MIX_OSC1 after
+// implementation found ALL_ENV_DECAY inaudible on a sustained note — the env
+// leaves its decay stage ~block 50, so decay-time modulation has no effect.
+// See spec-golden-master-phase-g2-g3.md Spec Change Log.)
+TEST(GoldenMaster, LiveLfoFreqChange) {
+    runGolden("live_lfo_freq_change", 300,
+              golden::RenderScript::liveLfoFreqChange(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/-1, ALGO1,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  h.setMatrixRow(0, /*rowIdx=*/7, MATRIX_SOURCE_LFO1,
+                                 /*mul=*/0.5f, MIX_OSC1);
+              });
 }
