@@ -40,12 +40,12 @@
       "nBlocks": 200,
       "samplesPerBlock": 192,
       "totalSamples": 38400,
-      "hash": "PENDING_BOOTSTRAP",
+      "hash": "8f8766fe3e1ceff3",
       "lsbTolerance": 1,
       "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
       "files": ["a4_default_sustain_gcc.bin", "a4_default_sustain_gcc.xxh", "a4_default_sustain_gcc.diff.txt"],
       "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on gcc",
-      "bootstrapNote": "generated in CI (ubuntu/gcc) via the temporary golden-bootstrap workflow; hash + files committed after first generation. See tests/golden/README.md -> Cross-compiler fixtures."
+      "bootstrapNote": "generated under ubuntu/gcc in CI (clang vs gcc diverge by >1 LSB within ~1 block due to libm-driven table differences amplified by FM feedback); see tests/golden/README.md -> Cross-compiler fixtures."
     }
   ]
 }
