@@ -52,7 +52,11 @@ constexpr const char* kFixtureDir = PFM3_GOLDEN_DIR;
 constexpr std::size_t kNBlocks = 200;
 
 bool regenMode() {
-    return std::getenv("PFM3_REGENERATE_GOLDENS") != nullptr;
+    // Require the documented opt-in value exactly ("=1"): a bare presence
+    // check would also enable regen for PFM3_REGENERATE_GOLDENS=0 or an empty
+    // value, silently overwriting fixtures during an ordinary test run.
+    const char* v = std::getenv("PFM3_REGENERATE_GOLDENS");
+    return v != nullptr && std::strcmp(v, "1") == 0;
 }
 
 // The full-render golden is (libm-class)-specific: libm differences in the
@@ -105,23 +109,17 @@ TEST(GoldenMaster, A4DefaultSustain200Blocks) {
     const bool ok =
         harness.compareAgainstFixture(id, render.data(), kNBlocks, &diff);
     if (!ok) {
-        if (diff.hashMismatch) {
-            // hash-level mismatch (goldenCompare passed within tolerance);
-            // the expected/actual hash values are printed to stderr by the harness.
-            FAIL() << "golden hash mismatch for " << id << ": goldenCompare "
-                      "passed within tolerance but the tolerance-normalized "
-                      "hash differs (expected/actual hashes on stderr).\nIf "
-                      "this is a deliberate render change, regenerate with "
-                      "PFM3_REGENERATE_GOLDENS=1 (see tests/golden/README.md).";
-        } else {
-            FAIL() << "golden mismatch for " << id << " at flat index "
-                   << diff.firstMismatchIndex << " (block " << diff.blockIndex
-                   << "): expected=0x" << std::hex << diff.expectedSample
-                   << " actual=0x" << diff.actualSample << std::dec
-                   << " delta=" << diff.sampleDelta << " (tolerance=±1 LSB)\n"
-                   << "If this is a deliberate render change, regenerate with"
-                   << " PFM3_REGENERATE_GOLDENS=1 (see tests/golden/README.md).";
-        }
+        // goldenCompare is authoritative (the hash is diagnostic-only; see
+        // tests/golden/README.md).
+        FAIL() << "golden mismatch for " << id << " at flat index "
+               << diff.firstMismatchIndex << " (block " << diff.blockIndex
+               << "): expected=0x" << std::hex << diff.expectedSample
+               << " actual=0x" << diff.actualSample << std::dec
+               << " delta=" << diff.sampleDelta
+               << " (tolerance=±256 stored units = ±1 audio-LSB; the firmware "
+                  "clamps to 24-bit then <<8)\n"
+               << "If this is a deliberate render change, regenerate with"
+               << " PFM3_REGENERATE_GOLDENS=1 (see tests/golden/README.md).";
     }
     SUCCEED();
 }

@@ -52,20 +52,25 @@ buffer2 = out3/4, buffer3 = out5/6 (the 6 hardware DAC outputs).
 ## Comparison model
 
 - **Authoritative gate:** `goldenCompare` — every sample must agree within
-  ±`lsbTolerance` (default ±1 LSB). A 1-ULP float drift in the mix becomes 0-or-1
-  LSB after the `×0x7fffff` scale + truncation, so ±1 LSB absorbs benign drift
-  **within a platform/libm** (minor-version / build-path differences). It does NOT
-  absorb cross-libm drift — see *Cross-platform fixtures* above. Any real
-  DSP change moves many samples by many LSBs.
-- **Hash gate:** a self-contained FNV-1a 64-bit + splitmix64 finalizer over the
-  tolerance-normalized buffer. No system/Homebrew `xxhash` (CI is ubuntu/gcc).
-  The normalization quantizes each sample to its ±tolerance bucket so benign
-  drift is hash-stable in the common case; bucket boundaries can still split
-  under a uniform shift (a known, documented limitation — Phase G2 cross-host
-  validation will decide whether to tighten to an exact-bit hash).
+  **±256 stored `int32` units**. The renderer's final DAC formatting is
+  `int32 = (24-bit clamped sample) << 8` (`Synth.cpp` clamps to ±0x7FFFFF then
+  left-shifts by 8), so **256 stored units = 1 audio-LSB** — the meaningful
+  signal tolerance. (A bare ±1 on the stored value would only cover the
+  always-zero low padding bits and effectively require an exact match.) This
+  absorbs benign drift **within a platform/libm** (minor-version / build-path
+  differences); it does NOT absorb cross-libm drift — see *Cross-platform
+  fixtures*. Any real DSP change moves many samples by many audio-LSBs.
+- **Hash (diagnostic-only):** a self-contained FNV-1a 64-bit + splitmix64
+  finalizer over a tolerance-normalized buffer (granularity 1; no system/Homebrew
+  `xxhash`). The committed `.xxh` is compared on each run, but a mismatch is
+  **informational only** — printed to stderr, never fails the test.
+  `goldenCompare` is the sole pass/fail gate. (The hash's normalization can flip
+  on a bucket boundary even when `goldenCompare` passes within tolerance, so
+  making it authoritative would re-introduce false positives that defeat the
+  tolerance.)
 - **Determinism self-check:** `GoldenMaster.DeterminismSelfCheck` renders the
   golden twice in one process and asserts byte-exact equality. This is the
-  prerequisite that makes the lock trustworthy.
+  prerequisite that makes the golden lock trustworthy.
 
 ## Regenerating fixtures
 
