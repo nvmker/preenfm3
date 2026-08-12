@@ -34,7 +34,7 @@ jobs:
       - name: Checkout (the dispatch branch)
         uses: actions/checkout@v5
         with:
-          persist-credentials: true   # keep GITHUB_TOKEN for `git push`
+          persist-credentials: true # keep GITHUB_TOKEN for `git push`
 
       - name: Configure + build tests
         run: cmake -B build/test -S tests && cmake --build build/test -j
