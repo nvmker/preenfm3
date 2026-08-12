@@ -1,29 +1,51 @@
 {
-  "schemaVersion": 1,
-  "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp and one fixture triple (.bin/.xxh/.diff.txt) in this directory.",
+  "schemaVersion": 2,
+  "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp. The full render is NOT byte-stable across compilers (libm differences in Osc::init/Env::init precomputed tables, amplified by FM feedback), so each supported compiler has its OWN committed fixture; tests/golden_master_test.cpp selects by __clang__/__GNUC__.",
   "comparison": {
     "artifactType": "int32_t DAC-format render (3 buffers x 64 stereo per block = 192 int32/block)",
     "lsbTolerance": 1,
     "hashAlgorithm": "FNV-1a 64-bit over tolerance-normalized buffer + splitmix64 finalizer (self-contained, no system xxhash)",
-    "bufferLayoutPerBlock": "[buffer1(64) buffer2(64) buffer3(64)] = out1/2, out3/4, out5/6"
+    "bufferLayoutPerBlock": "[buffer1(64) buffer2(64) buffer3(64)] = out1/2, out3/4, out5/6",
+    "buildFlag": "-ffp-contract=off (tests/CMakeLists.txt) — strict IEEE mul/add, no FMA contraction, for best per-compiler reproducibility"
   },
   "determinism": {
+    "scope": "per-compiler (clang render != gcc render by >1 LSB within ~1 block due to libm-driven table differences amplified by FM feedback; each compiler is self-consistent)",
     "rng": "HAL_RNG gated to seed 0 under PFM3_HOST (Synth.cpp:285); downstream noise[] fill loop shared host/firmware",
-    "selfCheck": "GoldenMaster.DeterminismSelfCheck renders twice in-process and asserts byte-exact equality"
+    "selfCheck": "GoldenMaster.DeterminismSelfCheck renders twice in-process and asserts byte-exact equality (per-compiler)"
   },
+  "compilers": [
+    { "id": "clang", "define": "__clang__", "localDev": "macOS Apple clang (default CI dev leg is gcc; clang fixture generated locally)" },
+    { "id": "gcc", "define": "__GNUC__", "ci": "ubuntu-latest system g++ (the CI Host-unit-tests + Coverage legs)" }
+  ],
   "fixtures": [
     {
-      "id": "a4_default_sustain",
+      "id": "a4_default_sustain_clang",
+      "compiler": "clang",
       "preset": "default preenMainPreset (copied by Synth::init into timbre 0)",
       "noteSequence": "noteOn(timbre=0, note=69 [A4], velocity=100) before block 0; no note-off",
       "nBlocks": 200,
       "samplesPerBlock": 192,
       "totalSamples": 38400,
-      "hash": "6271935aac784574",
+      "hash": "7455c83076f0ffaa",
       "lsbTolerance": 1,
       "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
-      "files": ["a4_default_sustain.bin", "a4_default_sustain.xxh", "a4_default_sustain.diff.txt"],
-      "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain; end-to-end matrix routing, voice allocation, DAC-scale mix, smoother transients"
+      "files": ["a4_default_sustain_clang.bin", "a4_default_sustain_clang.xxh", "a4_default_sustain_clang.diff.txt"],
+      "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on clang"
+    },
+    {
+      "id": "a4_default_sustain_gcc",
+      "compiler": "gcc",
+      "preset": "default preenMainPreset (copied by Synth::init into timbre 0)",
+      "noteSequence": "noteOn(timbre=0, note=69 [A4], velocity=100) before block 0; no note-off",
+      "nBlocks": 200,
+      "samplesPerBlock": 192,
+      "totalSamples": 38400,
+      "hash": "PENDING_BOOTSTRAP",
+      "lsbTolerance": 1,
+      "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+      "files": ["a4_default_sustain_gcc.bin", "a4_default_sustain_gcc.xxh", "a4_default_sustain_gcc.diff.txt"],
+      "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on gcc",
+      "bootstrapNote": "generated in CI (ubuntu/gcc) via the temporary golden-bootstrap workflow; hash + files committed after first generation. See tests/golden/README.md -> Cross-compiler fixtures."
     }
   ]
 }
