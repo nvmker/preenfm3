@@ -66,7 +66,17 @@ private:
 #define MACRO_CONCAT_(x,y) x##y
 #define MACRO_CONCAT(x,y) MACRO_CONCAT_(x,y)
 
-#ifdef SHOW_CPU_USAGE
+// Under PFM3_HOST the DWT/SCB hardware registers are unreachable on a host
+// CPU — scoped_cyccnt's ctor runs RESET_DWT_CYCCNT() (writes SCB_DEMCR
+// 0xE000EDFC, DWT_CYCCNT 0xE0001004, DWT_CONTROL 0xE0001000) and its dtor
+// reads DWT_CYCCNT via READ_DWT_CYCCNT(); any of these memory-mapped ARM
+// accesses would fault. CPU-load profiling is meaningless on host anyway, so
+// the macros become no-ops (reusing the SHOW_CPU_USAGE=0 branch below). Inert
+// under the Arm build (PFM3_HOST is never defined there). See tests/SEAM.md
+// (refined rule: PFM3_HOST in firmware headers is allowed for genuinely
+// host-incompatible constructs — libc redecls, ARM asm, section attrs, and
+// hardware-register reads).
+#if defined(SHOW_CPU_USAGE) && !defined(PFM3_HOST)
 #define CYCLE_MEASURE_START( x )			\
         {							\
             scoped_cyccnt MACRO_CONCAT(CYCNT_,__COUNTER__)( x );	\
