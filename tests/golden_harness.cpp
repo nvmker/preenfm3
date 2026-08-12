@@ -137,6 +137,23 @@ void GoldenHarness::setUpSynthState() {
     // totalNumberofCyclesInv_, is stubbed in midi_decoder_collaborators_stub).
     synth_->setSynthState(ss_);
     ss_->params = synth_->getTimbre(0)->getParamRaw();
+
+    // Register Synth as a SynthParamListener, mirroring firmware/preenfm3.cpp:449
+    // (`synthState.insertParamListener(&synth)`). WITHOUT this, SynthState's
+    // firstParamListener stays 0 (memset) and Synth::setNewValueFromMidi's
+    // `propagateNewParamValueFromExternal` loops over zero listeners, so
+    // Synth::newParamValue NEVER runs for the G3 PARAM_CHANGE path — the flat
+    // field write (Timbre::setNewValue) still lands and IS read live by
+    // Matrix/LfoOsc, so the goldens render correctly, but the newParamValue
+    // side-effects (verifyLfoUsed, resetMatrixDestination) would be a dead path.
+    // Registering the listener makes setNewValueFromMidi fully production-
+    // faithful. Render-neutral for the committed G3 goldens: the LFO case body
+    // in Synth::newParamValue is commented out, and the matrix case's
+    // verifyLfoUsed/resetMatrixDestination are no-ops for the goldens' mul/freq
+    // changes (verified by re-running the G3 goldens against the committed
+    // fixtures after this change — byte-identical). Found by step-04 review
+    // (Blind Hunter finding: param-listener registration gap).
+    ss_->insertParamListener(synth_);
 }
 
 void GoldenHarness::renderScript(const RenderScript& script,
@@ -171,10 +188,71 @@ void GoldenHarness::renderScript(const RenderScript& script,
         while (nextEvent < script.events.size() &&
                script.events[nextEvent].blockOffset == blk) {
             const RenderEvent& ev = script.events[nextEvent++];
-            if (ev.isNoteOn) {
-                synth_->noteOn(ev.timbre, ev.note, ev.velocity);
-            } else {
-                synth_->noteOff(ev.timbre, ev.note);
+            switch (ev.kind) {
+                case RenderEventKind::NOTE_ON:
+                    synth_->noteOn(ev.timbre, ev.note, ev.velocity);
+                    break;
+                case RenderEventKind::NOTE_OFF:
+                    synth_->noteOff(ev.timbre, ev.note);
+                    break;
+                case RenderEventKind::PARAM_CHANGE: {
+                    // Production-faithful CC-routing entry point (Synth.h:122).
+                    // Only (row,encoder) pairs with a newParamValueFromExternal
+                    // switch case take effect live on a sounding voice —
+                    // ENCODER_MATRIX_MUL (writes rows[r].mul, read live by
+                    // Matrix::computeAllDestinations) and ENCODER_LFO_FREQ
+                    // (writes lfo->freq, read live) both qualify. See
+                    // RenderEventKind doc + spec Design Notes for the
+                    // ROW_OSC1..6 / ROW_ENGINE no-case constraint.
+                    //
+                    // Bounds validation (step-04 review, Edge Case Hunter):
+                    // setNewValueFromMidi indexes allParameterRows.row[row] and
+                    // params_[row*4+encoder] with NO internal check; a fat-
+                    // fingered row/encoder would OOB-heap-read/write. The
+                    // factory paramChange(...) is the only constructor, but the
+                    // fields are public ints, so validate here as the last line
+                    // of defense (consistent with the blockOffset/rowIdx aborts
+                    // elsewhere in the harness). NaN/Inf value would bypass
+                    // Timbre::setNewValue's clamp (NaN comparisons are false)
+                    // and poison the field — reject non-finite values too.
+                    if (ev.timbre < 0 || ev.timbre >= NUMBER_OF_TIMBRES ||
+                        ev.row < 0 || ev.row >= NUMBER_OF_ROWS ||
+                        ev.encoder < 0 ||
+                        ev.encoder >= NUMBER_OF_ENCODERS_PFM2) {
+                        std::cerr << "golden: PARAM_CHANGE at block "
+                                  << ev.blockOffset << " has out-of-range "
+                                  << "(timbre=" << ev.timbre << " row=" << ev.row
+                                  << " encoder=" << ev.encoder << "; valid "
+                                  << "timbre[0," << NUMBER_OF_TIMBRES
+                                  << ") row[0," << NUMBER_OF_ROWS
+                                  << ") encoder[0," << NUMBER_OF_ENCODERS_PFM2
+                                  << ")) — refusing to dispatch (would OOB "
+                                  << "index params_/allParameterRows).\n";
+                        std::abort();
+                    }
+                    if (!std::isfinite(ev.value)) {
+                        std::cerr << "golden: PARAM_CHANGE at block "
+                                  << ev.blockOffset << " (row=" << ev.row
+                                  << " encoder=" << ev.encoder
+                                  << ") value is non-finite (" << ev.value
+                                  << ") — would bypass the clamp and poison the "
+                                  << "param field.\n";
+                        std::abort();
+                    }
+                    synth_->setNewValueFromMidi(ev.timbre, ev.row, ev.encoder,
+                                                ev.value);
+                    break;
+                }
+                default:
+                    // A non-factory RenderEventKind (memory corruption, or a
+                    // future kind without a dispatch arm). Aborting matches the
+                    // harness's blockOffset/rowIdx guard philosophy — never
+                    // silently render through an event we did not handle.
+                    std::cerr << "golden: renderScript event at block "
+                              << ev.blockOffset << " has unknown kind "
+                              << static_cast<int>(ev.kind) << " — refusing to "
+                              << "silently skip it.\n";
+                    std::abort();
             }
         }
         // buildNewSampleBlock zeroes the 3 buffers itself (Synth.cpp:325-333).
@@ -203,6 +281,78 @@ void GoldenHarness::setTimbreAlgo(int timbre, Algorithm algo) {
     // faithful re-init (Synth.h:95; idempotent; re-applies env curves/matrix/
     // FX). Must precede noteOn (see golden_harness.h).
     synth_->getTimbre(timbre)->getParamRaw()->engine1.algo = algo;
+    synth_->afterNewParamsLoad(timbre);
+}
+
+void GoldenHarness::setMatrixRow(int timbre, int rowIdx, int source, float mul,
+                                 int dest1, int dest2) {
+    // Overwrite one matrix row's {source, mul, dest1, dest2} fields. The rows
+    // live at params_.matrixRowState1..12 (Common.h:574); MatrixRowParams is
+    // {source, mul, dest1, dest2} (Common.h:491) — exactly 4 floats, matching
+    // NUMBER_OF_ENCODERS_PFM2 so the flat-index math in setNewValueFromMidi
+    // (row*4+encoder) lands on the right field. Matrix::init bound
+    // &matrixRowState1 to the runtime Matrix (Matrix.h:31) at Synth::init
+    // time; that pointer stays valid (params_ doesn't move), so the patched
+    // field values are read live every block by computeAllDestinations.
+    // afterNewParamsLoad resets the runtime sources/destinations caches
+    // (Voice::afterNewParamsLoad) so the new routing takes effect from block 0.
+    // Same proven pattern as setTimbreAlgo. Must precede noteOn.
+    // Validate ALL inputs (step-04 review + Copilot PR review): an invalid
+    // timbre indexes timbres_[] OOB via getTimbre(); source/dest1/dest2 are
+    // later dereferenced as array indices by Matrix::computeAllDestinations
+    // (sources[(int)source], destinations[(int)dest1], destinations[(int)dest2]);
+    // a non-finite mul poisons the render. Same defensive philosophy as the
+    // PARAM_CHANGE dispatch + the blockOffset guard. MATRIX_SOURCE_MAX and
+    // DESTINATION_MAX are counts (Common.h), so half-open [0, MAX). DESTINATION_NONE
+    // (=0) is a valid dest ("no second destination").
+    if (timbre < 0 || timbre >= NUMBER_OF_TIMBRES) {
+        std::cerr << "golden: setMatrixRow timbre=" << timbre << " out of range "
+                  << "[0," << NUMBER_OF_TIMBRES << ") — would OOB timbres_[].\n";
+        std::abort();
+    }
+    if (rowIdx < 0 || rowIdx >= MATRIX_SIZE) {
+        std::cerr << "golden: setMatrixRow rowIdx=" << rowIdx
+                  << " out of range [0," << MATRIX_SIZE
+                  << ") — refusing to write OOB; fix the caller.\n";
+        std::abort();
+    }
+    if (source < 0 || source >= MATRIX_SOURCE_MAX ||
+        dest1 < 0 || dest1 >= DESTINATION_MAX ||
+        dest2 < 0 || dest2 >= DESTINATION_MAX) {
+        std::cerr << "golden: setMatrixRow(timbre=" << timbre
+                  << ",rowIdx=" << rowIdx << ") has out-of-range source/dest "
+                  << "(source=" << source << " dest1=" << dest1
+                  << " dest2=" << dest2 << "; valid source[0,"
+                  << MATRIX_SOURCE_MAX << ") dest[0," << DESTINATION_MAX
+                  << ")) — would OOB-index Matrix sources/destinations.\n";
+        std::abort();
+    }
+    if (!std::isfinite(mul)) {
+        std::cerr << "golden: setMatrixRow(timbre=" << timbre
+                  << ",rowIdx=" << rowIdx << ") mul is non-finite (" << mul
+                  << ") — would poison the render.\n";
+        std::abort();
+    }
+    struct MatrixRowParams* row;
+    switch (rowIdx) {
+        case 0:  row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState1;  break;
+        case 1:  row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState2;  break;
+        case 2:  row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState3;  break;
+        case 3:  row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState4;  break;
+        case 4:  row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState5;  break;
+        case 5:  row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState6;  break;
+        case 6:  row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState7;  break;
+        case 7:  row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState8;  break;
+        case 8:  row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState9;  break;
+        case 9:  row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState10; break;
+        case 10: row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState11; break;
+        case 11: row = &synth_->getTimbre(timbre)->getParamRaw()->matrixRowState12; break;
+        default: return;  // unreachable (guarded above)
+    }
+    row->source = static_cast<float>(source);
+    row->mul    = mul;
+    row->dest1  = static_cast<float>(dest1);
+    row->dest2  = static_cast<float>(dest2);
     synth_->afterNewParamsLoad(timbre);
 }
 
@@ -289,21 +439,64 @@ RenderScript RenderScript::a4Sustain() {
     // G0 + the two FM-algo goldens: single A4 (MIDI 69) noteOn at vel 100,
     // sustain plateau (no note-off). The FM goldens set the algorithm out-of-
     // band via setTimbreAlgo before calling renderScript with this script.
-    return { { {0, true, 0, (char)69, (char)100} } };
+    return { { RenderEvent::noteOn(0, 0, (char)69, (char)100) } };
 }
 
 RenderScript RenderScript::envelopeAdsrFull() {
     // Full ADSR: attack+sustain+release. noteOn at block 0, noteOff at block 300
     // (release tail captured across the remaining 300 blocks). Render 600.
-    return { { {0,   true,  0, (char)69, (char)100},
-               {300, false, 0, (char)69, (char)0} } };
+    return { { RenderEvent::noteOn(0, 0, (char)69, (char)100),
+               RenderEvent::noteOff(300, 0, (char)69) } };
 }
 
 RenderScript RenderScript::multiTimbreMix() {
     // Timbres 0 + 1 both noteOn at block 0 (sum 12 <= MAX_NUMBER_OF_VOICES 16).
     // Guards voicesToTimbre mix + per-timbre smoothVolume_ + fxBus->mixAdd.
-    return { { {0, true, 0, (char)69, (char)100},
-               {0, true, 1, (char)72, (char)100} } };
+    return { { RenderEvent::noteOn(0, 0, (char)69, (char)100),
+               RenderEvent::noteOn(0, 1, (char)72, (char)100) } };
+}
+
+RenderScript RenderScript::liveLfoPitchModulation() {
+    // G3 golden 1 (steady LFO->pitch): noteOn@0, render 400 blocks (~1.2
+    // LFO1 cycles; lfoOsc1 default = {LFO_SIN, 4.5, 0, 0}). The LFO1->OSC1_FREQ
+    // routing is set out-of-band via setMatrixRow(0, row8, LFO1, 0.5, OSC1_FREQ)
+    // in the TEST before render — it is a per-timbre state change, not an event.
+    // The LFO auto-modulates osc1 pitch; no PARAM_CHANGE needed. Render window
+    // 400 captures ~1.2 LFO1 cycles (~267 ms of modulation); a routing/amplitude
+    // regression still moves many samples across 400 blocks (not a 1-block edge
+    // effect).
+    return { { RenderEvent::noteOn(0, 0, (char)69, (char)100) } };
+}
+
+RenderScript RenderScript::liveMatrixMulChange() {
+    // G3 golden 2 (live matrix-mul change): noteOn@0 with the LFO1->OSC1_FREQ
+    // routing set to mul=0.0 out-of-band on matrixRowState8 (rowIdx 7), then a
+    // PARAM_CHANGE at block 80 sets ROW_MATRIX8/ENCODER_MATRIX_MUL = 0.6,
+    // turning modulation ON mid-note. ROW_MATRIX8 (not ROW_MATRIX1) so the
+    // PARAM_CHANGE writes the SAME row the TEST's setMatrixRow(0,7,...) set up
+    // (matrixRowState8). Row 7 (rows 4+ generic loop) avoids the rows 0-3
+    // special-case path + the MTX1..4_MUL feedback-lock quirk. Locks the live
+    // CC->matrix-mul->voice path: pitch wobble kicks in from block 80. Render 200.
+    return { { RenderEvent::noteOn(0, 0, (char)69, (char)100),
+               RenderEvent::paramChange(80, 0, ROW_MATRIX8,
+                                        ENCODER_MATRIX_MUL, 0.6f) } };
+}
+
+RenderScript RenderScript::liveLfoFreqChange() {
+    // G3 golden 3 (live LFO-frequency change on an amplitude destination):
+    // noteOn@0 with LFO1->MIX_OSC1 routing set out-of-band (mul=0.5, a tremolo
+    // on osc1's level — audible on a sustained note, unlike ALL_ENV_DECAY which
+    // is silent once the env leaves its decay stage ~block 50; see Spec Change
+    // Log). A PARAM_CHANGE at block 100 sets ROW_LFOOSC1/ENCODER_LFO_FREQ = 9.0
+    // (doubling the LFO speed from the default 4.5), so the tremolo rate
+    // doubles mid-note. Locks the live LFO-freq CC update path + a non-pitch
+    // (amplitude) matrix destination. Render 300. (ROW_LFOOSC1/ENCODER_LFO_FREQ
+    // writes lfoOsc1.freq, read live by LfoOsc; the stub's permissive
+    // ParameterDisplay for LFO rows lets the value through — see
+    // midi_decoder_collaborators_stub.cpp.)
+    return { { RenderEvent::noteOn(0, 0, (char)69, (char)100),
+               RenderEvent::paramChange(100, 0, ROW_LFOOSC1,
+                                        ENCODER_LFO_FREQ, 9.0f) } };
 }
 
 TimbreSetup TimbreSetup::g0Default() {

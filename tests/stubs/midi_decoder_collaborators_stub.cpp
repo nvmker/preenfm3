@@ -77,10 +77,41 @@ void SynthState::loadPresetFromMidi(int /*timbre*/, int /*bank*/, int /*bankLSB*
 // change) fails to compile, the intended early signal.
 namespace {
 struct ParameterRowDisplay dummyParamRow = {};  // zeroed: displayType=DISPLAY_TYPE_NONE
+
+// Phase G3 golden-master live-param-change support (FAVOR-REAL-DATA EXCEPTION
+// extension). The golden tier drives Synth::setNewValueFromMidi MID-RENDER on
+// matrix-mul (ROW_MATRIX8/ENCODER_MATRIX_MUL) and LFO-freq
+// (ROW_LFOOSC1/ENCODER_LFO_FREQ) rows. Timbre::setNewValue clamps newValue to
+// ParameterDisplay.{min,max}Value; the zeroed dummy above (max=0) rejects every
+// positive value, silently defeating those changes (the PARAM_CHANGE writes 0,
+// the render is byte-identical to a no-change render — a zero-signal golden).
+// This permissive row accepts any in-range value the golden sends. The real
+// bounds (matrix mul [-10,24] per FMDisplayEditor.cpp matrixParameterRow;
+// LFO freq [0, LFO_FREQ_MAX+0.9=100.8] per lfoParameterRow) would clamp
+// IDENTICALLY for the golden's in-range values (matrix mul 0.6, LFO freq 9.0);
+// permissive bounds avoid duplicating FMDisplayEditor.cpp's display-layer data
+// (names/order arrays) that is not host-relevant. Only the matrix rows and the
+// 3 LFO-osc rows point here; every other row stays on the zeroed dummy so
+// midi_decoder_test's NRPN-assembly behavior is unchanged.
+struct ParameterRowDisplay permissiveParamRow = []{
+    struct ParameterRowDisplay r = {};
+    for (int e = 0; e < NUMBER_OF_ENCODERS_PFM2; e++) {
+        r.params[e].minValue = -1000000.0f;
+        r.params[e].maxValue =  1000000.0f;
+    }
+    return r;
+}();
 }
 
 struct AllParameterRowsDisplay allParameterRows = []{
     struct AllParameterRowsDisplay a;
     for (int i = 0; i <= NUMBER_OF_ROWS; i++) a.row[i] = &dummyParamRow;
+    // G3 golden overrides: matrix rows + LFO-osc rows use permissive bounds so
+    // setNewValueFromMidi accepts the golden's in-range values without clamping
+    // to 0. See permissiveParamRow doc above.
+    for (int r = ROW_MATRIX1; r <= ROW_MATRIX_LAST; r++) a.row[r] = &permissiveParamRow;
+    a.row[ROW_LFOOSC1] = &permissiveParamRow;
+    a.row[ROW_LFOOSC2] = &permissiveParamRow;
+    a.row[ROW_LFOOSC3] = &permissiveParamRow;
     return a;
 }();
