@@ -63,11 +63,29 @@ GoldenHarness::GoldenHarness(std::string fixtureDir, TimbreSetup setup)
     // buffers, exactly matching the firmware's BSS+ctor. See golden_harness.h.
     std::memset(&synthBacking_, 0, sizeof(synthBacking_));
     synth_ = new (&synthBacking_) Synth();
+    // Phase G4: zero + placement-construct MidiDecoder (same rationale as
+    // Synth — its ctor inits most members but NOT songPosition, read on every
+    // 6th MIDI_CLOCK; zeroing covers it). Precede setUpSynthState's wiring.
+    std::memset(&midiDecoderBacking_, 0, sizeof(midiDecoderBacking_));
+    midiDecoder_ = new (&midiDecoderBacking_) MidiDecoder();
+    // Phase G4: zero + placement-construct Sequencer + FMDisplaySequencer the
+    // same way Synth is handled. Firmware globals are BSS zero-init; several
+    // Sequencer bool members (e.g. extMidiRunning_, Sequencer.cpp:205) are read
+    // without being set by the ctor/reset() and rely on that zero-init. A plain
+    // member would leave them indeterminate -> UBSAN under test-asan. Must
+    // precede the wiring in setUpSynthState.
+    std::memset(&seqBacking_, 0, sizeof(seqBacking_));
+    seq_ = new (&seqBacking_) Sequencer();
+    std::memset(&dispSeqBacking_, 0, sizeof(dispSeqBacking_));
+    displaySeq_ = new (&dispSeqBacking_) FMDisplaySequencer();
     setUpSynthState();
 }
 
 GoldenHarness::~GoldenHarness() {
-    if (synth_) synth_->~Synth();   // virtual dtor on the placement-new'd object
+    if (synth_) synth_->~Synth();                     // reverse construction order:
+    if (midiDecoder_) midiDecoder_->~MidiDecoder();  //  dependents before deps;
+    if (seq_) seq_->~Sequencer();                    //  Synth, MidiDecoder, then
+    if (displaySeq_) displaySeq_->~FMDisplaySequencer();   //  Sequencer (uses displaySeq_)
 }
 
 void GoldenHarness::setUpSynthState() {
@@ -154,6 +172,31 @@ void GoldenHarness::setUpSynthState() {
     // fixtures after this change — byte-identical). Found by step-04 review
     // (Blind Hunter finding: param-listener registration gap).
     ss_->insertParamListener(synth_);
+
+    // Phase G4: wire a real MidiDecoder to synth_ + a null VisualInfo so
+    // MIDI_BYTE events can drive the production clock-byte path (newByte ->
+    // synth->midiTick / midiClockStart -> sequencer). Same wiring as
+    // midi_decoder_test.cpp's fixture (setSynthState + setSynth +
+    // setVisualInfo). The arpeggiator golden sends no MIDI bytes, but the
+    // decoder is wired unconditionally — it is cheap, keeps the harness model
+    // uniform, and makes the seq-external golden a pure additive script.
+    midiDecoder_->setSynthState(ss_);
+    midiDecoder_->setSynth(synth_);
+    midiDecoder_->setVisualInfo(&visualInfo_);
+
+    // Phase G4: wire a real Sequencer bidirectionally (preenfm3.cpp:417-420).
+    // setRefreshStatusPointer MUST precede any refresh() call — onMidiStart ->
+    // displaySequencer_->refresh derefs *refreshStatusP_, which the stub ctor
+    // (sequencer_collaborators_stub.cpp) doesn't init. displaySeq_.setSequencer
+    // is skipped: FMDisplaySequencer::setSequencer is off-host (no stub) ->
+    // link error; the smoke test proved playback doesn't need it. Render-neutral
+    // for G0-G3/arp: no MIDI clock bytes -> onMidiClock never fires, and
+    // synthMode=MIXER means Synth::noteOn never routes to sequencer_->insertNote.
+    displaySeq_->setRefreshStatusPointer(&dummyRefreshStatusA_,
+                                         &dummyRefreshStatusB_);
+    synth_->setSequencer(seq_);
+    seq_->setSynth(synth_);
+    seq_->setDisplaySequencer(displaySeq_);
 }
 
 void GoldenHarness::renderScript(const RenderScript& script,
@@ -241,6 +284,20 @@ void GoldenHarness::renderScript(const RenderScript& script,
                     }
                     synth_->setNewValueFromMidi(ev.timbre, ev.row, ev.encoder,
                                                 ev.value);
+                    break;
+                }
+                case RenderEventKind::MIDI_BYTE: {
+                    // Phase G4: feed one raw MIDI byte through the REAL
+                    // MidiDecoder (newByte) — the production clock-byte parse +
+                    // dispatch path (0xF8 -> midiTick + every-6th ->
+                    // midiClockSongPositionStep; 0xFA -> midiClockStart).
+                    // Exercises MidiDecoder -> Synth -> Sequencer for the
+                    // seq-external golden; the arp golden sends no MIDI bytes.
+                    // No bounds check: a uint8_t can't OOB, and newByte
+                    // classifies all 256 values (>=0xF8 realtime switch, else
+                    // the status/data state machine, which no-ops unknown bytes
+                    // harmlessly).
+                    midiDecoder_->newByte(ev.byte);
                     break;
                 }
                 default:
@@ -354,6 +411,101 @@ void GoldenHarness::setMatrixRow(int timbre, int rowIdx, int source, float mul,
     row->dest1  = static_cast<float>(dest1);
     row->dest2  = static_cast<float>(dest2);
     synth_->afterNewParamsLoad(timbre);
+}
+
+void GoldenHarness::enableArpeggiator(int timbre, int bpm, int direction,
+                                      int octave) {
+    // Validate (same defensive philosophy as setMatrixRow / PARAM_CHANGE): an
+    // invalid timbre OOBs timbres_[] via getTimbre(); bpm<=0 zeroes
+    // ticksPerSecond_ in setNewBPMValue -> division-by-zero in
+    // updateArpegiatorInternalClock (ticksEveryNCalls_ = CALLED_PER_SECOND /
+    // ticksPerSecond_). direction/octave have no OOB risk in the arp engine
+    // (bounded by usage) but reject negatives defensively.
+    if (timbre < 0 || timbre >= NUMBER_OF_TIMBRES) {
+        std::cerr << "golden: enableArpeggiator timbre=" << timbre << " out of "
+                  << "range [0," << NUMBER_OF_TIMBRES << ") — would OOB "
+                  << "timbres_[].\n";
+        std::abort();
+    }
+    if (bpm <= 0) {
+        std::cerr << "golden: enableArpeggiator bpm=" << bpm << " <= 0 — would "
+                  << "zero ticksPerSecond_ and divide-by-zero in the arp clock.\n";
+        std::abort();
+    }
+    // Synth::newParamValue casts bpm to uint8_t (Synth.cpp:646) — values > 255
+    // wrap (256->0) -> setNewBPMValue(0) -> divide-by-zero. Reject > 255.
+    // direction/octave are also uint8_t-cast but the arp engine bounds them by
+    // usage (octave in modular arithmetic; unknown direction -> UP), so no
+    // extra clamp is needed for correctness. (step-04 review, Edge Case Hunter.)
+    if (bpm > 255) {
+        std::cerr << "golden: enableArpeggiator bpm=" << bpm << " > 255 — the "
+                  << "firmware cast to uint8_t wraps it (256->0), zeroing "
+                  << "ticksPerSecond_ -> divide-by-zero.\n";
+        std::abort();
+    }
+    // Order matters: BPM FIRST (writes params_.engineArp1.BPM + calls
+    // setNewBPMValue -> ticksPerSecond_/ticksEveryNCalls_), THEN CLOCK_INTERNAL
+    // (setArpeggiatorClock re-calls setNewBPMValue(params_.engineArp1.BPM), now
+    // non-zero). DIRECTION/OCTAVE write flat fields read live by the arp engine
+    // — OCTAVE has no newParamValue case but the flat write lands and
+    // engineArp1.octave is read in StepArpeggio (Timbre.cpp:2865+). The stub's
+    // permissive ParameterRowDisplay for ROW_ARPEGGIATOR1 lets all four values
+    // through (see midi_decoder_collaborators_stub.cpp).
+    synth_->setNewValueFromMidi(timbre, ROW_ARPEGGIATOR1, ENCODER_ARPEGGIATOR_BPM,
+                                static_cast<float>(bpm));
+    synth_->setNewValueFromMidi(timbre, ROW_ARPEGGIATOR1, ENCODER_ARPEGGIATOR_CLOCK,
+                                static_cast<float>(CLOCK_INTERNAL));
+    synth_->setNewValueFromMidi(timbre, ROW_ARPEGGIATOR1, ENCODER_ARPEGGIATOR_DIRECTION,
+                                static_cast<float>(direction));
+    synth_->setNewValueFromMidi(timbre, ROW_ARPEGGIATOR1, ENCODER_ARPEGGIATOR_OCTAVE,
+                                static_cast<float>(octave));
+}
+
+void GoldenHarness::setupSequencerTriadPlayback() {
+    // Guard the serialize-patch below against a future sequencer-state format
+    // bump: the patch assumes stepActivated_[] is the LAST
+    // NUMBER_OF_STEP_SEQUENCES bytes of the getFullState buffer
+    // (Sequencer.cpp:727-733, true for SEQ_VERSION2). A version change could
+    // move stepActivated_[] -> the patch flips the wrong byte -> silent seq
+    // golden (zero-signal trap). static_assert fails the build at the bump.
+    // (step-04 review, Blind Hunter + Edge Case Hunter.)
+    static_assert(SEQ_CURRENT_VERSION == SEQ_VERSION2,
+                  "serialize-patch offset assumes SEQ_VERSION2 layout; "
+                  "re-verify stepActivated_[] position after a format bump");
+    // Populate instrument 0's step sequence: C4/E4/G4 (MIDI 60/64/67) at step
+    // indices 0/32/64 over 1 bar. stepGetSequence returns StepSeqValue* (a
+    // union: full / values[8] / unique share storage; values[2]=velocity,
+    // values[3]=note; unique = the per-step retrigger token). full=0 first
+    // zeroes the union, then unique/values write specific bytes. Each step's
+    // unique MUST differ or the gate `instrumentStepLastUnique_ != newUnique`
+    // suppresses retrigger (Sequencer.cpp:~407); 10/11/12 are distinct non-zero
+    // tokens. The array INDEX (0/32/64) is WHEN the note fires (step index =
+    // midiClockTimer_>>4); values[3] is WHICH note.
+    StepSeqValue* steps = seq_->stepGetSequence(0);
+    steps[0].full  = 0; steps[0].unique  = 10; steps[0].values[2]  = 100; steps[0].values[3]  = 60;
+    steps[32].full = 0; steps[32].unique = 11; steps[32].values[2] = 100; steps[32].values[3] = 64;
+    steps[64].full = 0; steps[64].unique = 12; steps[64].values[2] = 100; steps[64].values[3] = 67;
+    // Activate step-seq 0 via the FAITHFUL serialize route. stepActivated_ is
+    // private (only the recording path stepRecordNotes sets it; no public
+    // setter), but setFullState reads it from the buffer. getFullState writes
+    // stepActivated_[] LAST (Sequencer.cpp:727-733), so it occupies the final
+    // NUMBER_OF_STEP_SEQUENCES bytes — flip byte 0 to activate seq 0. The
+    // default instrumentStepSeq_[0]=0 maps instrument 0 -> step-seq 0.
+    // stepNotes (populated above) are NOT serialized, so setFullState does NOT
+    // clobber them. externalClock_ is already true (the Sequencer ctor's
+    // getFullDefaultState sets it).
+    uint8_t buf[2048]; uint32_t size = 0;
+    seq_->getFullState(buf, &size);
+    // Assumes instrumentStepSeq_[0]==0 (the default post-ctor: instrument 0 ->
+    // step-seq 0). If a future default-state change made instrumentStepSeq_[0]
+    // != 0, activating stepActivated_[0] would arm the WRONG instrument's seq
+    // -> silent seq golden. The default is stable (loadStateVersion2 sets
+    // instrumentStepSeq_[t]=t). (step-04 review, Edge Case Hunter.)
+    buf[size - NUMBER_OF_STEP_SEQUENCES] = 1;   // stepActivated_[0] = true
+    seq_->setFullState(buf);
+    // Arm: start playback (running_=true). onMidiClock gates on running_;
+    // without this the 0xF8 bytes advance nothing.
+    seq_->start();
 }
 
 bool GoldenHarness::compareAgainstFixture(const std::string& id,
@@ -497,6 +649,43 @@ RenderScript RenderScript::liveLfoFreqChange() {
     return { { RenderEvent::noteOn(0, 0, (char)69, (char)100),
                RenderEvent::paramChange(100, 0, ROW_LFOOSC1,
                                         ENCODER_LFO_FREQ, 9.0f) } };
+}
+
+RenderScript RenderScript::arpTriadUp() {
+    // G4: C-major triad (MIDI 60/64/67) held at block 0; the arpeggiator
+    // (enabled out-of-band via enableArpeggiator in the TEST: internal clock
+    // @120 BPM, UP=0, 2 octaves) cycles the three notes across octaves. At
+    // 120 BPM the internal arp clock advances ~1 step per 31 blocks
+    // (CALLED_PER_SECOND=1500 calls/sec / (120*24/60)=48 ticks-per-sec -> ~31.25
+    // calls/tick), so 300 blocks captures ~9 arp steps (3 notes x 2 oct =
+    // 6-note cycle, ~1.5 full cycles) — enough periodic retriggering to lock
+    // the arp note-cycling + octave-shift + voice-realloc path. The arp's
+    // clock is a pure block counter (Timbre::updateArpegiatorInternalClock,
+    // advanced inside buildNewSampleBlock) — no MIDI bytes / HAL shim.
+    return { { RenderEvent::noteOn(0, 0, (char)60, (char)100),
+               RenderEvent::noteOn(0, 0, (char)64, (char)100),
+               RenderEvent::noteOn(0, 0, (char)67, (char)100) } };
+}
+
+RenderScript RenderScript::seqExternalPlayback() {
+    // G4 seq-external: 0xFA (MIDI_START) at block 0, then bursts of 4x0xF8
+    // (MIDI_CLOCK) at blocks 1..96 = 384 clocks (1 full bar @ the Sequencer's
+    // default tempo). Each 0xF8 -> synth->midiTick -> sequencer->onMidiClock,
+    // which adds 256/24 ~= 10.667 to midiClockTimer_; step index =
+    // midiClockTimer_>>4 advances ~every 1.5 clocks, so the 3 step notes
+    // (C4/E4/G4 at step indices 0/32/64, set out-of-band via
+    // setupSequencerTriadPlayback) fire at ~0/48/96 clocks and the bar wraps.
+    // Each clock burst fires noteOnFromSequencer synchronously during newByte,
+    // BEFORE that block's buildNewSampleBlock captures the resulting audio.
+    // Bursts of 4 + 1 render (vs all 384 clocks up front) yields separable
+    // note-onset transients in the fixture. Render 97 blocks (0..96).
+    std::vector<RenderEvent> ev;
+    ev.reserve(1 + 96 * 4);
+    ev.push_back(RenderEvent::midiByte(0, 0xFA));
+    for (int blk = 1; blk <= 96; blk++) {
+        for (int c = 0; c < 4; c++) ev.push_back(RenderEvent::midiByte(blk, 0xF8));
+    }
+    return { std::move(ev) };
 }
 
 TimbreSetup TimbreSetup::g0Default() {
