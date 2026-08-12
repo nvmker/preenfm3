@@ -299,8 +299,10 @@ TEST(GoldenMaster, ToleranceHeadroom) {
         if (d > maxDelta) { maxDelta = d; maxIdx = i; }
     }
 
-    // Record the observed max delta so it is visible in CI/ctest output. The
-    // property survives in JUnit XML for trend tracking across builds.
+    // Record the observed max delta. RecordProperty emits ONLY to GoogleTest
+    // XML/JSON output, so .github/workflows/tests.yml runs this test with
+    // --gtest_output and greps the properties into the run log (RecordProperty
+    // is otherwise invisible for a passing test under ctest --output-on-failure).
     // max_delta_audio_lsb is emitted as a DOUBLE — integer truncation would
     // report 0 for any drift up to 255 stored units (step-04 review: the trend
     // signal the test advertises must survive sub-LSB drift). max_delta_block
