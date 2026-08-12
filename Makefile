@@ -122,6 +122,18 @@ test:
 	cmake --build $(TEST_DIR) -j
 	ctest --test-dir $(TEST_DIR) --output-on-failure
 
+# --- Golden-master regeneration ----------------------------------------------
+# Rebuilds the test binary and runs the Golden tests in REGENERATION mode: each
+# golden test writes its .bin/.xxh/.diff.txt fixture instead of comparing. The
+# regenerated fixtures are then the committed lock a plain `make test` compares
+# against. Regenerate ONLY on a deliberate, understood render-output change and
+# explain why in the commit message. See tests/golden/README.md.
+.PHONY: golden-regen
+golden-regen:
+	cmake -B $(TEST_DIR) -S tests
+	cmake --build $(TEST_DIR) -j
+	PFM3_REGENERATE_GOLDENS=1 ctest --test-dir $(TEST_DIR) -R 'Golden' --output-on-failure
+
 # --- Coverage (LLVM source-based) ------------------------------------------
 # Builds tests/ with clang + -fprofile-instr-generate -fcoverage-mapping, runs
 # ctest, merges the per-test .profraw, and prints llvm-cov report scoped to
