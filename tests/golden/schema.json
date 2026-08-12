@@ -1,26 +1,27 @@
 {
-  "schemaVersion": 2,
-  "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp. The full render is NOT byte-stable across compilers (libm differences in Osc::init/Env::init precomputed tables, amplified by FM feedback), so each supported compiler has its OWN committed fixture; tests/golden_master_test.cpp selects by __clang__/__GNUC__.",
+  "schemaVersion": 3,
+  "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp. The full render is byte-stable per (libm-class), NOT per compiler: ubuntu gcc and ubuntu clang both link glibc and produce byte-identical renders, while macOS clang links libsystem and differs. The discriminator is the platform/libm; tests/golden_master_test.cpp selects by __APPLE__. FM feedback amplifies the ~1-ULP libm-driven table differences (Osc::init/Env::init precompute via sinf/expf/logf), so cross-libm renders diverge by >1 LSB within ~1 block.",
   "comparison": {
     "artifactType": "int32_t DAC-format render (3 buffers x 64 stereo per block = 192 int32/block)",
     "lsbTolerance": 1,
     "hashAlgorithm": "FNV-1a 64-bit over tolerance-normalized buffer + splitmix64 finalizer (self-contained, no system xxhash)",
     "bufferLayoutPerBlock": "[buffer1(64) buffer2(64) buffer3(64)] = out1/2, out3/4, out5/6",
-    "buildFlag": "-ffp-contract=off (tests/CMakeLists.txt) — strict IEEE mul/add, no FMA contraction, for best per-compiler reproducibility"
+    "buildFlag": "-ffp-contract=off (tests/CMakeLists.txt) — strict IEEE mul/add, no FMA contraction, for best per-variant reproducibility (does NOT close the cross-libm gap, which is libm-driven)"
   },
   "determinism": {
-    "scope": "per-compiler (clang render != gcc render by >1 LSB within ~1 block due to libm-driven table differences amplified by FM feedback; each compiler is self-consistent)",
+    "scope": "per (libm-class): macOS-libsystem and linux-glibc renders differ by >1 LSB within ~1 block (libm-driven table differences amplified by FM feedback); ubuntu gcc and ubuntu clang (both glibc) are byte-identical",
+    "discriminator": "__APPLE__ (macOS -> _macos variant) vs else (linux/glibc -> _linux variant)",
     "rng": "HAL_RNG gated to seed 0 under PFM3_HOST (Synth.cpp:285); downstream noise[] fill loop shared host/firmware",
-    "selfCheck": "GoldenMaster.DeterminismSelfCheck renders twice in-process and asserts byte-exact equality (per-compiler)"
+    "selfCheck": "GoldenMaster.DeterminismSelfCheck renders twice in-process and asserts byte-exact equality (per-variant)"
   },
-  "compilers": [
-    { "id": "clang", "define": "__clang__", "localDev": "macOS Apple clang (default CI dev leg is gcc; clang fixture generated locally)" },
-    { "id": "gcc", "define": "__GNUC__", "ci": "ubuntu-latest system g++ (the CI Host-unit-tests + Coverage legs)" }
+  "variants": [
+    { "id": "macos", "select": "__APPLE__ defined", "libm": "libsystem", "use": "local dev (macOS Apple clang)" },
+    { "id": "linux", "select": "__APPLE__ undefined", "libm": "glibc", "use": "CI ubuntu gcc (Host unit tests) + ubuntu clang (Coverage leg)" }
   ],
   "fixtures": [
     {
-      "id": "a4_default_sustain_clang",
-      "compiler": "clang",
+      "id": "a4_default_sustain_macos",
+      "variant": "macos",
       "preset": "default preenMainPreset (copied by Synth::init into timbre 0)",
       "noteSequence": "noteOn(timbre=0, note=69 [A4], velocity=100) before block 0; no note-off",
       "nBlocks": 200,
@@ -29,12 +30,12 @@
       "hash": "7455c83076f0ffaa",
       "lsbTolerance": 1,
       "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
-      "files": ["a4_default_sustain_clang.bin", "a4_default_sustain_clang.xxh", "a4_default_sustain_clang.diff.txt"],
-      "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on clang"
+      "files": ["a4_default_sustain_macos.bin", "a4_default_sustain_macos.xxh", "a4_default_sustain_macos.diff.txt"],
+      "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on macOS/libsystem"
     },
     {
-      "id": "a4_default_sustain_gcc",
-      "compiler": "gcc",
+      "id": "a4_default_sustain_linux",
+      "variant": "linux",
       "preset": "default preenMainPreset (copied by Synth::init into timbre 0)",
       "noteSequence": "noteOn(timbre=0, note=69 [A4], velocity=100) before block 0; no note-off",
       "nBlocks": 200,
@@ -43,9 +44,8 @@
       "hash": "8f8766fe3e1ceff3",
       "lsbTolerance": 1,
       "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
-      "files": ["a4_default_sustain_gcc.bin", "a4_default_sustain_gcc.xxh", "a4_default_sustain_gcc.diff.txt"],
-      "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on gcc",
-      "bootstrapNote": "generated under ubuntu/gcc in CI (clang vs gcc diverge by >1 LSB within ~1 block due to libm-driven table differences amplified by FM feedback); see tests/golden/README.md -> Cross-compiler fixtures."
+      "files": ["a4_default_sustain_linux.bin", "a4_default_sustain_linux.xxh", "a4_default_sustain_linux.diff.txt"],
+      "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on linux/glibc (CI ubuntu gcc + ubuntu clang-coverage)"
     }
   ]
 }
