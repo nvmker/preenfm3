@@ -70,7 +70,7 @@ this directory.
 | `fm_algo2` | setTimbreAlgo(0, ALGO2), noteOn(0,69,100)@0 | 200 | ALGO2 `{1,1,2,0,0,0}` — 2-carrier summing | ✅ | ✅ |
 | `fm_algo27_6carrier` | setTimbreAlgo(0, ALG27), noteOn(0,69,100)@0 | 200 | ALG27 `{1,1,1,1,1,1}` — 6-carrier additive summing | ✅ | ✅ |
 | `multi_timbre_mix` | noteOn(0,69,100) + noteOn(1,72,100)@0 | 200 | voicesToTimbre mix + per-timbre smoothVolume_ + fxBus->mixAdd | ✅ | ✅ |
-| `live_lfo_pitch_modulation` | setMatrixRow(LFO1→OSC1_FREQ@0.5), noteOn(0,69,100)@0 | 400 | steady LFO1→matrix→osc-freq→Voice routing (several LFO cycles) | ✅ | ✅ |
+| `live_lfo_pitch_modulation` | setMatrixRow(LFO1→OSC1_FREQ@0.5), noteOn(0,69,100)@0 | 400 | steady LFO1→matrix→osc-freq→Voice routing (~1.2 LFO cycles) | ✅ | ✅ |
 | `live_matrix_mul_change` | setMatrixRow(LFO1→OSC1_FREQ@0.0), noteOn@0, setNewValueFromMidi(ROW_MATRIX8,ENCODER_MATRIX_MUL,0.6)@80 | 200 | live CC→matrix-mul→Voice: pitch wobble kicks in mid-note | ✅ | ✅ |
 | `live_lfo_freq_change` | setMatrixRow(LFO1→MIX_OSC1@0.5), noteOn@0, setNewValueFromMidi(ROW_LFOOSC1,ENCODER_LFO_FREQ,9.0)@100 | 300 | live LFO-freq CC + non-pitch (amplitude/tremolo) destination | ✅ | ✅ |
 

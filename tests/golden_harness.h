@@ -116,7 +116,7 @@ struct RenderScript {
     static RenderScript envelopeAdsrFull();           // G1: noteOn(0,69,100)@0 + noteOff(0,69)@300.
     static RenderScript multiTimbreMix();             // G1: noteOn(0,69,100)@0 + noteOn(1,72,100)@0.
     static RenderScript liveLfoPitchModulation();     // G3: noteOn@0; LFO1->OSC1_FREQ set out-of-band; render steady (LFO auto-modulates).
-    static RenderScript liveMatrixMulChange();        // G3: noteOn@0; PARAM_CHANGE(ROW_MATRIX1,ENCODER_MATRIX_MUL,0.6)@blk80 turns the LFO1->OSC1_FREQ routing on mid-note.
+    static RenderScript liveMatrixMulChange();        // G3: noteOn@0; PARAM_CHANGE(ROW_MATRIX8,ENCODER_MATRIX_MUL,0.6)@blk80 turns the LFO1->OSC1_FREQ routing on mid-note (row 8 = the row setMatrixRow targets).
     static RenderScript liveLfoFreqChange();        // G3: noteOn@0; PARAM_CHANGE(ROW_LFOOSC1,ENCODER_LFO_FREQ,9.0)@blk100 doubles the LFO rate driving LFO1->MIX_OSC1 (tremolo).
 };
 
