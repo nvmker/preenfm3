@@ -49,35 +49,75 @@ struct SynthBacking {
     alignas(alignof(Synth)) unsigned char bytes[sizeof(Synth)];
 };
 
-// A single note event in a RenderScript, applied at a deterministic block
-// offset. isNoteOn=true  -> Synth::noteOn(timbre, note, velocity);
-// isNoteOn=false         -> Synth::noteOff(timbre, note)   (velocity ignored).
-// Velocity is kept on the noteOff event too only so a single aggregate-init
-// literal reads naturally; renderScript() does not forward it.
+// The kind of a RenderEvent. NOTE_ON/NOTE_OFF fire Synth::noteOn/noteOff;
+// PARAM_CHANGE fires Synth::setNewValueFromMidi(timbre, row, encoder, value) —
+// the production-faithful CC-routing entry point (Synth.h:122). PARAM_CHANGE is
+// the Phase G3 addition: it locks the live mid-render param-update path on a
+// SOUNDING voice. NOTE: Synth::newParamValueFromExternal (the listener
+// setNewValueFromMidi propagates to) has switch cases for matrix rows
+// (ENCODER_MATRIX_MUL writes rows[r].mul, read live every block by
+// Matrix::computeAllDestinations), LFO rows (ENCODER_LFO_FREQ writes lfo->freq,
+// read live), effect rows, etc. — but NO case for ROW_OSC1..6 or ROW_ENGINE. So
+// a PARAM_CHANGE can only move the render live if its (row, encoder) has a case;
+// changing osc frequency or engine algo mid-note does NOT take effect on a
+// sounding voice (the voice reads those at note allocation). Route live
+// pitch/env changes THROUGH THE MATRIX (destination OSC1_FREQ / ALL_ENV_DECAY)
+// instead — which is exactly the setMatrixSource path the golden-master plan
+// targets. See spec-golden-master-phase-g2-g3.md Design Notes.
+enum class RenderEventKind { NOTE_ON, NOTE_OFF, PARAM_CHANGE };
+
+// A single event in a RenderScript, applied at a deterministic block offset.
+// The note payload (note/velocity) is valid for NOTE_ON/NOTE_OFF; the param
+// payload (row/encoder/value) is valid for PARAM_CHANGE. Use the static
+// factories (noteOn/noteOff/paramChange) — aggregate init across 8 fields is
+// error-prone and the factories are the single source of truth for what each
+// fixture locks.
 struct RenderEvent {
-    std::size_t blockOffset;   // fires immediately before this block's render
-    bool        isNoteOn;
-    int         timbre;
-    char        note;
-    char        velocity;
+    std::size_t     blockOffset;   // fires immediately before this block's render
+    RenderEventKind kind;
+    int             timbre;
+    char            note;          // NOTE_ON / NOTE_OFF payload
+    char            velocity;      // NOTE_ON payload (NOTE_OFF ignores it)
+    int             row;           // PARAM_CHANGE payload (Synth param-grid row)
+    int             encoder;       // PARAM_CHANGE payload (row sub-encoder)
+    float           value;         // PARAM_CHANGE payload (new float value)
+
+    static RenderEvent noteOn(std::size_t blk, int timbre, char note, char vel) {
+        return { blk, RenderEventKind::NOTE_ON, timbre, note, vel, 0, 0, 0.0f };
+    }
+    static RenderEvent noteOff(std::size_t blk, int timbre, char note) {
+        return { blk, RenderEventKind::NOTE_OFF, timbre, note, 0, 0, 0, 0.0f };
+    }
+    static RenderEvent paramChange(std::size_t blk, int timbre,
+                                   int row, int encoder, float value) {
+        return { blk, RenderEventKind::PARAM_CHANGE, timbre, 0, 0, row, encoder, value };
+    }
 };
 
-// A scripted note sequence. renderScript() applies events in their LISTED ORDER
+// A scripted event sequence. renderScript() applies events in their LISTED ORDER
 // as each block offset is reached, so factories MUST emit events pre-sorted by
 // blockOffset (stable original order disambiguates same-offset events, e.g. the
-// two noteOns in multiTimbreMix() at block 0). The named factories below are the
-// SINGLE source of truth for the sequences the committed fixtures lock —
-// changing one invalidates its fixture (regenerate via
-// PFM3_REGENERATE_GOLDENS=1; see tests/golden/README.md). Phase G1 note: the two
-// FM-algo goldens (fm_algo2, fm_algo27_6carrier) reuse a4Sustain()'s events — the FM
-// algorithm is set out-of-band via setTimbreAlgo() (it is a per-timbre state
-// change, not a note event), so the script alone does not describe those
-// fixtures; the TEST pairs setTimbreAlgo + renderScript.
+// two noteOns in multiTimbreMix() at block 0, or a PARAM_CHANGE + noteOn at the
+// same block). The named factories below are the SINGLE source of truth for the
+// sequences the committed fixtures lock — changing one invalidates its fixture
+// (regenerate via PFM3_REGENERATE_GOLDENS=1; see tests/golden/README.md).
+// Phase G1 note: the two FM-algo goldens (fm_algo2, fm_algo27_6carrier) reuse
+// a4Sustain()'s events — the FM algorithm is set out-of-band via setTimbreAlgo()
+// (a per-timbre state change, not a note event), so the script alone does not
+// describe those fixtures; the TEST pairs setTimbreAlgo + renderScript.
+// Phase G3 note: the three live-modulation goldens additionally fire
+// PARAM_CHANGE events mid-render; their matrix routing is set out-of-band via
+// setMatrixRow() before render (also a per-timbre state change), so — like the
+// FM goldens — the script + the TEST's setMatrixRow call together describe the
+// fixture.
 struct RenderScript {
     std::vector<RenderEvent> events;
-    static RenderScript a4Sustain();         // noteOn(0,69,100)@0; no note-off.
-    static RenderScript envelopeAdsrFull();  // noteOn(0,69,100)@0 + noteOff(0,69)@300.
-    static RenderScript multiTimbreMix();    // noteOn(0,69,100)@0 + noteOn(1,72,100)@0.
+    static RenderScript a4Sustain();                  // G0: noteOn(0,69,100)@0; no note-off.
+    static RenderScript envelopeAdsrFull();           // G1: noteOn(0,69,100)@0 + noteOff(0,69)@300.
+    static RenderScript multiTimbreMix();             // G1: noteOn(0,69,100)@0 + noteOn(1,72,100)@0.
+    static RenderScript liveLfoPitchModulation();     // G3: noteOn@0; LFO1->OSC1_FREQ set out-of-band; render steady (LFO auto-modulates).
+    static RenderScript liveMatrixMulChange();        // G3: noteOn@0; PARAM_CHANGE(ROW_MATRIX8,ENCODER_MATRIX_MUL,0.6)@blk80 turns the LFO1->OSC1_FREQ routing on mid-note (row 8 = the row setMatrixRow targets).
+    static RenderScript liveLfoFreqChange();        // G3: noteOn@0; PARAM_CHANGE(ROW_LFOOSC1,ENCODER_LFO_FREQ,9.0)@blk100 doubles the LFO rate driving LFO1->MIX_OSC1 (tremolo).
 };
 
 // Per-timbre voice allocation at Synth::init time. 0 silences a timbre
@@ -133,6 +173,27 @@ public:
     // (Timbre.cpp:686) sees the new algo. The default preset is ALGO1, so the
     // G0 + multi-timbre goldens never call this.
     void setTimbreAlgo(int timbre, Algorithm algo);
+
+    // Override a single modulation-matrix row AFTER construction and BEFORE the
+    // first render (Phase G3). Writes params_.matrixRowState{rowIdx}
+    // {source, mul, dest1, dest2} (Common.h:491/574) — the rows are bound to the
+    // runtime Matrix via &matrixRowState1 (Matrix::init, Matrix.h:31) and read
+    // LIVE every block by Matrix::computeAllDestinations (Matrix.h:85-118,
+    // `destination += sources[source] * mul`, skipping source==NONE or mul==0
+    // rows) — then calls synth_->afterNewParamsLoad(timbre) (idempotent;
+    // Voice::afterNewParamsLoad resets the runtime sources/destinations caches
+    // which recompute from the patched row fields next block; it does NOT
+    // clobber the row fields). Same proven pattern as setTimbreAlgo. Call BEFORE
+    // noteOn. The default preset ships 12 rows (several active, e.g. row 1
+    // MODWHEEL->INDEX_ALL_MODULATION, row 2 LFO1->PAN_OSC2@0.5); overwriting an
+    // inactive row (row 8 is {LFO1,0,INDEX_MODULATION2,0}) adds a routing
+    // without disturbing the active defaults. The LFO1 source is auto-injected
+    // per-block by Voice (lfoOsc[0].nextValueInMatrix); the default preset's
+    // lfoOsc1 is {LFO_SIN, 4.5, 0, 0} (active), so MATRIX_SOURCE_LFO1 produces a
+    // modulating value with no MIDI input — sources needing MIDI (MODWHEEL,
+    // PITCHBEND, CC1-4) resolve to 0 and would be a no-op trap.
+    void setMatrixRow(int timbre, int rowIdx, int source, float mul,
+                      int dest1, int dest2 = DESTINATION_NONE);
 
     // Generic render: apply `script`'s events by block offset, rendering
     // `nBlocks` blocks into `out` (must hold nBlocks*kSamplesPerBlock int32_t).

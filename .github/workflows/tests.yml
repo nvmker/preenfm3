@@ -37,3 +37,20 @@ jobs:
       # --output-on-failure surfaces assertion text inline on red.
       - name: Run tests
         run: ctest --test-dir build/test --output-on-failure
+
+      # Surface the GoldenMaster.ToleranceHeadroom drift metric (max_delta vs
+      # the committed fixture) in the run log. RecordProperty emits ONLY to
+      # XML/JSON output, which `ctest --output-on-failure` does not capture for
+      # a passing test — so without this step the tolerance-headroom trend
+      # signal never reaches CI (the EXPECT_LE gate is still enforced by the
+      # ctest run above; this surfaces how close to the ±256 ceiling the render
+      # is, expected 0 on the fixture-generating commit). Run that one test with
+      # --gtest_output and print the recorded properties.
+      - name: Tolerance-headroom metric
+        run: |
+          T=./build/test/pfm3_tests
+          $T --gtest_filter='GoldenMaster.ToleranceHeadroom' \
+            --gtest_output=xml:build/test/th.xml >/dev/null 2>&1 || true
+          grep -oE 'name="max_delta_[^"]*" value="[^"]*"' \
+            build/test/th.xml || \
+            echo "(no ToleranceHeadroom XML found)"
