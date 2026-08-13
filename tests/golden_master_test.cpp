@@ -390,3 +390,49 @@ TEST(GoldenMaster, LiveLfoFreqChange) {
                                  /*mul=*/0.5f, MIX_OSC1);
               });
 }
+
+// ===========================================================================
+// Phase G4 — timed goldens. G0-G3 lock static-param and live-param renders;
+// G4 locks the TIME-ADVANCED paths. The arpeggiator's clock is a pure sample-
+// block counter (advanced inside buildNewSampleBlock), so it needs no MIDI
+// bytes / HAL shim — only enableArpeggiator (internal clock) + held notes.
+// ===========================================================================
+
+// Arpeggiator: C-major triad (60/64/67) held, arp internal clock @120 BPM,
+// UP, 2 octaves. The arp cycles the 3 notes across 2 octaves (~1 step per 31
+// blocks), retriggerring voices periodically. Guards the arp note-cycling +
+// octave-shift + voice-realloc path — the regression class G0-G3 never reach
+// (their notes sustain unchanged once allocated). Render 300. The MIDI_BYTE
+// event kind + the harness MidiDecoder are wired but unused here (the arp
+// golden is the shim-free half of G4); the seq-external golden drives them.
+TEST(GoldenMaster, ArpTriadUp) {
+    runGolden("arp_triad_up", 300,
+              golden::RenderScript::arpTriadUp(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/-1, ALGO1,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  h.enableArpeggiator(/*timbre=*/0, /*bpm=*/120,
+                                      /*direction=*/0 /*ARPEGGIO_DIRECTION_UP*/,
+                                      /*octave=*/2);
+              });
+}
+
+// Sequencer external-MIDI-clock playback: the harness-owned Sequencer is
+// loaded with a minimal triad sequence (C4/E4/G4 at step indices 0/32/64) +
+// armed via setupSequencerTriadPlayback, then MIDI_BYTE events feed 0xFA
+// (MIDI_START) + bursts of 4x0xF8 (MIDI_CLOCK) across 97 blocks. Each clock
+// burst fires noteOnFromSequencer synchronously during newByte (via
+// MidiDecoder -> synth->midiTick -> sequencer->onMidiClock -> step advance),
+// so each block's render captures the resulting audio. Guards the
+// MidiDecoder clock-byte parse -> Synth -> Sequencer -> noteOnFromSequencer
+// chain — the regression class G0-G3 + the arp golden never reach (their
+// notes enter via Synth::noteOn directly, never via the sequencer).
+TEST(GoldenMaster, SeqExternalPlayback) {
+    runGolden("seq_external_playback", 97,
+              golden::RenderScript::seqExternalPlayback(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/-1, ALGO1,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  h.setupSequencerTriadPlayback();
+              });
+}
