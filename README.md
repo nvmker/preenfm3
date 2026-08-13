@@ -28,19 +28,25 @@ own line of development. I intend to keep developing the firmware here.
 
 ### What changed from upstream
 
-- **Dropped STM32CubeIDE.** CubeIDE (especially the version the firmware was
-  developed against, built on GCC 7) is outdated and a poor platform to
-  build on. It has been removed entirely.
-- **New build system: CMake + Arm GNU Toolchain 15.** The firmware, bootloader,
-  and shared library now build with CMake and `arm-none-eabi-gcc` 15.x
-  (CI pins `15.2.rel1`). No IDE required — configure and build from the CLI, or
-  via the convenience `Makefile` wrapper.
-- **CI/CD via GitHub Actions.** Added workflows for build verification and
-  automated releases (see [CI & releases](#ci--releases) below).
-- **`-O3`/`-Ofast` boot hard-fault fixed.** The original code miscompiled at
-  high optimization with the new Arm GNU Toolchain 15 (unaligned float stores in the Sequencer state
-  serialization, vectorized into trapping `vstr` on Cortex-M7). This was fixed
-  with unaligned-safe helpers, so `-Ofast` now boots and runs on hardware.
+- **Modernized build.** Dropped STM32CubeIDE; the firmware, bootloader, and
+  shared library now build with CMake + `arm-none-eabi-gcc` 15.x from the CLI
+  (or the `Makefile` wrapper). No IDE required.
+- **CI/CD via GitHub Actions.** Build verification, automated releases, and a
+  host test / coverage / static-analysis pipeline on every push and pull
+  request (see [CI & releases](#ci--releases)).
+- **Host-side test suite + full-render golden master.** The real firmware synth
+  graph (`Synth → Timbre → Voice → Matrix → FxBus → Osc/Env`, no mocks) runs
+  under a `PFM3_HOST` seam in GoogleTest — per-unit goldens plus full-render
+  fixtures locking `Synth::buildNewSampleBlock` end-to-end. Upstream ships no
+  test harness; this fork covers the whole render path as a regression net. See
+  [`tests/README.md`](tests/README.md) + [`tests/golden/README.md`](tests/golden/README.md).
+
+**Features added:**
+
+- **DX7 import folder picker.** When loading DX7 patches you can now browse and
+  select a folder (bank directory) on the SD card, then pick the bank and preset
+  within it — previously the loader scanned a single fixed directory. The bank
+  and preset cursor persist across navigation and reboot.
 
 Current firmware version: v1.10 (see [`firmware/Inc/version.h`](firmware/Inc/version.h)).
 
@@ -87,35 +93,74 @@ probe wiring.
 
 ### Tests & static analysis
 
+The host test build runs the **real firmware synth graph** — `Synth → Timbre →
+Voice → Matrix → FxBus → Osc/Env`, the actual firmware translation units — on the
+host compiler behind a `PFM3_HOST` seam. No mocks, no hardware in the loop. See
+[`tests/SEAM.md`](tests/SEAM.md) for how the firmware TUs are pulled in, and
+[`tests/README.md`](tests/README.md) for the test roadmap.
+
 ```sh
-make test       # host-side GoogleTest unit tests (host compiler, not arm-none-eabi)
-make analyze    # cppcheck + clang-tidy over the firmware cross-build DB
+make test         # host GoogleTest suite (host compiler, not arm-none-eabi)
+make test-cov     # + llvm-cov coverage report on firmware/Src (floor-gated)
+make test-asan    # + ASAN/UBSAN over the render path (verifies no UB)
+make golden-regen # regenerate the full-render golden fixtures (deliberate; see below)
+make analyze      # cppcheck + clang-tidy over the firmware cross-build DB
 ```
 
-`make analyze` runs **cppcheck** (primary) and **clang-tidy** (secondary) over
-`build/release/compile_commands.json`, writing
-`build/release/analyze-{cppcheck,clang-tidy}.txt`. Findings are advisory —
-**not a CI gate**. Config lives in [`.clang-tidy`](.clang-tidy) and
-[`scripts/cppcheck-suppressions.txt`](scripts/cppcheck-suppressions.txt);
-clang-tidy's cross-compile include resolution is in
-[`scripts/analyze-tidy.sh`](scripts/analyze-tidy.sh). Override the binaries with
-`make analyze CPPCHECK=... CLANG_TIDY=...`, or analyze a different build with
-`make BUILD_DIR=build/o2 analyze`.
+**Two tiers of audio-path coverage:**
 
-See [`doc/BUILDING.md`](doc/BUILDING.md) → *Static analysis* for the full
-target reference.
+- **Per-unit goldens** — `Osc::getNextBlock`, `Env` ADSR traces, DX7-import
+  snapshots, Matrix routing, note-stack allocation, etc. Lock individual DSP /
+  param units (`synth_math_test.cpp`, `hexter_test.cpp`, `note_stack_test.cpp`,
+  `sequencer_test.cpp`, …).
+- **Full-render golden master** — snapshots the complete 6-output mix of
+  `Synth::buildNewSampleBlock` across scripted note / parameter sequences,
+  locking the entire render chain end-to-end as a regression guard. The
+  committed fixtures cover static sustains, full envelopes, the FM algorithms,
+  multi-timbre mixes, live mid-render parameter changes (the CC-routing path),
+  and the time-advanced paths (arpeggiator note-cycling + sequencer external-
+  MIDI-clock playback). A mismatch is a signal to investigate what changed in
+  the render path, not an automatic "fix." See
+  [`tests/golden/README.md`](tests/golden/README.md) for the fixture catalog,
+  comparison model, and design rationale.
+
+The full render is **libm-specific** — `Osc::init`/`Env::init` precompute their
+tables via `sinf`/`expf`/`logf`, and the preenfm oscillators' FM feedback
+amplifies the ~1-ULP differences between platform libms (macOS libsystem vs
+Linux glibc) into large render divergence within a block. So each platform
+commits its **own** fixture (selected at test time by `__APPLE__`); the compare
+gate is ±1 audio-LSB (±256 stored units). The
+[`regenerate-linux-goldens`](.github/workflows/regenerate-linux-goldens.yml)
+workflow regenerates the Linux (glibc) fixtures on dispatch when a render change
+legitimately alters them.
+
+`make analyze` runs **cppcheck** (primary) and **clang-tidy** (secondary) over
+`build/release/compile_commands.json` →
+`build/release/analyze-{cppcheck,clang-tidy}.txt`. Findings are advisory —
+**not a CI gate**. Config in [`.clang-tidy`](.clang-tidy) +
+[`scripts/cppcheck-suppressions.txt`](scripts/cppcheck-suppressions.txt);
+override with `make analyze CPPCHECK=... CLANG_TIDY=...`, or analyze a different
+build with `make BUILD_DIR=build/o2 analyze`. See [`doc/BUILDING.md`](doc/BUILDING.md)
+→ *Static analysis* for the full target reference.
 
 ---
 
 ## CI & releases
 
-Three GitHub Actions workflows under [`.github/workflows/`](.github/workflows):
+GitHub Actions workflows under [`.github/workflows/`](.github/workflows).
+[`ci.yml`](.github/workflows/ci.yml) is the orchestrator (every push / pull
+request) and calls the reusable build / test / coverage / static-analysis
+workflows:
 
 | Workflow | Trigger | Purpose |
 | ---------- | --------- | --------- |
-| [`ci.yml`](.github/workflows/ci.yml) | every push / pull request | Cross-compile + link check (no hardware in the loop) |
-| [`build.yml`](.github/workflows/build.yml) | reusable | Installs Arm GNU Toolchain 15.x (cached), builds Release, parses versions, uploads `.bin`/`.hex` |
-| [`release.yml`](.github/workflows/release.yml) | `v*` tag push *or* manual dispatch | Builds, packages `pfm3_firmware_<ver>.zip`, publishes a GitHub Release with auto-generated notes |
+| [`ci.yml`](.github/workflows/ci.yml) | every push / pull request | Orchestrator: calls build + tests + coverage + static-analysis |
+| [`build.yml`](.github/workflows/build.yml) | reusable | Installs Arm GNU Toolchain 15.x (cached), builds Release, uploads `.bin`/`.hex` |
+| [`tests.yml`](.github/workflows/tests.yml) | reusable | Host GoogleTest suite (ubuntu gcc) — incl. the full-render golden master |
+| [`coverage.yml`](.github/workflows/coverage.yml) | reusable | llvm-cov coverage report on `firmware/Src` (floor gate) |
+| [`static-analysis.yml`](.github/workflows/static-analysis.yml) | reusable | cppcheck (baseline gate) + clang-tidy |
+| [`regenerate-linux-goldens.yml`](.github/workflows/regenerate-linux-goldens.yml) | manual dispatch | Regenerates the Linux (glibc) golden fixtures + self-verifies + commits |
+| [`release.yml`](.github/workflows/release.yml) | `v*` tag push *or* manual dispatch | Builds, packages `pfm3_firmware_<ver>.zip`, publishes a GitHub Release |
 
 Releases are published on this fork's
 [Releases page](https://github.com/nvmker/preenfm3/releases). A release run
@@ -125,9 +170,15 @@ asserts the tag matches `version.h` before building, so a mismatch fails fast.
 
 ## Roadmap
 
-This fork is under development. The immediate direction is continued
-firmware work on top of the modernized build — new features and fixes will land
-here. Upstream may be tracked for backports if the original project comes back to life.
+This fork is under active development. Current focus areas:
+
+- **Firmware features + fixes** on top of the modernized CMake / Arm GNU 15 build.
+- **Test-infrastructure depth** — the host GoogleTest seam now covers the full
+  synth render graph, with per-unit goldens and a full-render golden-master tier
+  in place. The remaining gap is HIL coverage for the `-Ofast`-only paths the
+  host build can't reach.
+
+Upstream may be tracked for backports if the original project comes back to life.
 
 ---
 
