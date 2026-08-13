@@ -21,6 +21,19 @@
 #include "FMDisplaySequencer.h"
 
 // --- FMDisplaySequencer ------------------------------------------------------
+// Phase G4: the real ctor (FMDisplaySequencer.cpp:35) is off-host
+// (FMDisplaySequencer.cpp is NOT compiled — TFT/UI family). Its body is
+// trivial (2 field inits), replicated here so the golden harness can
+// instantiate a FMDisplaySequencer for the seq-external golden. Without it,
+// Sequencer::onMidiStart -> displaySequencer_->refresh -> *refreshStatusP_
+// crashes (the ctor never sets refreshStatusP_; the harness calls
+// setRefreshStatusPointer to a dummy int pair after construction). Other
+// members stay default-init; the playback path reads only seqMode_/stepSize_
+// + calls the inline refresh methods (which write the dummy refresh ints).
+FMDisplaySequencer::FMDisplaySequencer() {
+    seqMode_ = SEQ_MODE_NORMAL;
+    stepSize_ = 16;
+}
 void FMDisplaySequencer::displayBeat() {}
 void FMDisplaySequencer::newNoteEntered(int) {}
 void FMDisplaySequencer::updateCurrentData() {}

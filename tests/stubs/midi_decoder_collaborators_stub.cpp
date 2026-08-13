@@ -113,5 +113,14 @@ struct AllParameterRowsDisplay allParameterRows = []{
     a.row[ROW_LFOOSC1] = &permissiveParamRow;
     a.row[ROW_LFOOSC2] = &permissiveParamRow;
     a.row[ROW_LFOOSC3] = &permissiveParamRow;
+    // Phase G4 golden override: the arpeggiator row uses permissive bounds so
+    // setNewValueFromMidi(t, ROW_ARPEGGIATOR1, ENCODER_ARPEGGIATOR_{CLOCK,BPM,
+    // DIRECTION,OCTAVE}, ...) accepts the golden's values (CLOCK_INTERNAL=1,
+    // bpm=120, direction=0/UP, octave=2) without clamping to 0 — without this
+    // the arp stays disabled (clock clamps to 0) and the golden renders
+    // byte-identical to a sustained triad (zero-signal trap; same mechanism as
+    // G3's matrix/LFO rows). Only ROW_ARPEGGIATOR1 is overridden — the golden
+    // drives no other arp row. See spec-golden-master-phase-g4.md Design Notes.
+    a.row[ROW_ARPEGGIATOR1] = &permissiveParamRow;
     return a;
 }();

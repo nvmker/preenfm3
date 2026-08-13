@@ -11,6 +11,10 @@
 #pragma once
 
 #include "Synth.h"
+#include "MidiDecoder.h"        // Phase G4: MIDI_BYTE events drive newByte
+#include "NullVisualInfo.h"      // Phase G4: null VisualInfo for MidiDecoder
+#include "Sequencer.h"           // Phase G4: seq-external golden (owned Sequencer)
+#include "FMDisplaySequencer.h"  // Phase G4: owned FMDisplaySequencer (stub ctor)
 
 #include <cstddef>
 #include <cstdint>
@@ -49,6 +53,37 @@ struct SynthBacking {
     alignas(alignof(Synth)) unsigned char bytes[sizeof(Synth)];
 };
 
+// Backing storage for Sequencer + FMDisplaySequencer, zeroed then placement-
+// constructed — same rationale as SynthBacking. In firmware both are GLOBALS
+// (preenfm3.cpp:53/61) -> BSS zero-init before their ctors run. Several
+// Sequencer bool/flag members (e.g. extMidiRunning_, Sequencer.cpp:205) are
+// read by onMidiStart/onMidiClock WITHOUT being initialized by the ctor or
+// reset() — they rely on BSS zero-init. A plain stack member leaves them
+// indeterminate -> UBSAN 'load of value N, not a valid bool' under test-asan.
+// Zeroing the backing then placement-new'ing mirrors the firmware exactly.
+// The FMDisplaySequencer stub ctor (sequencer_collaborators_stub.cpp) sets only
+// seqMode_/stepSize_; zeroing first NULLs refreshStatusP_ etc. (setRefresh-
+// StatusPointer is called right after construction, before any refresh()).
+struct SequencerBacking {
+    alignas(alignof(Sequencer)) unsigned char bytes[sizeof(Sequencer)];
+};
+struct FMDisplaySequencerBacking {
+    alignas(alignof(FMDisplaySequencer))
+        unsigned char bytes[sizeof(FMDisplaySequencer)];
+};
+// Backing storage for MidiDecoder, zeroed then placement-constructed — same
+// rationale as SynthBacking/SequencerBacking. MidiDecoder's ctor
+// (MidiDecoder.cpp:61-78) inits most members (midiClockCpt=0,
+// isExternalMidiClockStarted=false) but NOT songPosition (read on every 6th
+// MIDI_CLOCK at MidiDecoder.cpp:103). A proper 0xFA-first script sets
+// songPosition=0 before any read, but zeroing the backing first is belt-and-
+// suspenders matching the Sequencer treatment of the same uninit-member class —
+// a future script emitting 0xF8 before 0xFA can't then dispatch an arbitrary
+// song position (UB + wrong render). (Step-04 Edge Case Hunter finding.)
+struct MidiDecoderBacking {
+    alignas(alignof(MidiDecoder)) unsigned char bytes[sizeof(MidiDecoder)];
+};
+
 // The kind of a RenderEvent. NOTE_ON/NOTE_OFF fire Synth::noteOn/noteOff;
 // PARAM_CHANGE fires Synth::setNewValueFromMidi(timbre, row, encoder, value) —
 // the production-faithful CC-routing entry point (Synth.h:122). PARAM_CHANGE is
@@ -64,7 +99,7 @@ struct SynthBacking {
 // pitch/env changes THROUGH THE MATRIX (destination OSC1_FREQ / ALL_ENV_DECAY)
 // instead — which is exactly the setMatrixSource path the golden-master plan
 // targets. See spec-golden-master-phase-g2-g3.md Design Notes.
-enum class RenderEventKind { NOTE_ON, NOTE_OFF, PARAM_CHANGE };
+enum class RenderEventKind { NOTE_ON, NOTE_OFF, PARAM_CHANGE, MIDI_BYTE };
 
 // A single event in a RenderScript, applied at a deterministic block offset.
 // The note payload (note/velocity) is valid for NOTE_ON/NOTE_OFF; the param
@@ -81,16 +116,25 @@ struct RenderEvent {
     int             row;           // PARAM_CHANGE payload (Synth param-grid row)
     int             encoder;       // PARAM_CHANGE payload (row sub-encoder)
     float           value;         // PARAM_CHANGE payload (new float value)
+    unsigned char   byte;          // MIDI_BYTE payload (raw MIDI byte, e.g. 0xF8)
 
     static RenderEvent noteOn(std::size_t blk, int timbre, char note, char vel) {
-        return { blk, RenderEventKind::NOTE_ON, timbre, note, vel, 0, 0, 0.0f };
+        return { blk, RenderEventKind::NOTE_ON, timbre, note, vel, 0, 0, 0.0f, 0 };
     }
     static RenderEvent noteOff(std::size_t blk, int timbre, char note) {
-        return { blk, RenderEventKind::NOTE_OFF, timbre, note, 0, 0, 0, 0.0f };
+        return { blk, RenderEventKind::NOTE_OFF, timbre, note, 0, 0, 0, 0.0f, 0 };
     }
     static RenderEvent paramChange(std::size_t blk, int timbre,
                                    int row, int encoder, float value) {
-        return { blk, RenderEventKind::PARAM_CHANGE, timbre, 0, 0, row, encoder, value };
+        return { blk, RenderEventKind::PARAM_CHANGE, timbre, 0, 0, row, encoder, value, 0 };
+    }
+    // Phase G4: feed one raw MIDI byte through the REAL MidiDecoder (newByte)
+    // at a block offset — the production clock-byte path. 0xFA=MIDI_START,
+    // 0xFB=MIDI_CONTINUE, 0xF8=MIDI_CLOCK (every 6th advances the song
+    // position), 0xFC=MIDI_STOP. Used by the sequencer external-clock golden;
+    // the arpeggiator golden needs no MIDI bytes (its clock is internal).
+    static RenderEvent midiByte(std::size_t blk, unsigned char b) {
+        return { blk, RenderEventKind::MIDI_BYTE, 0, 0, 0, 0, 0, 0.0f, b };
     }
 };
 
@@ -118,6 +162,8 @@ struct RenderScript {
     static RenderScript liveLfoPitchModulation();     // G3: noteOn@0; LFO1->OSC1_FREQ set out-of-band; render steady (LFO auto-modulates).
     static RenderScript liveMatrixMulChange();        // G3: noteOn@0; PARAM_CHANGE(ROW_MATRIX8,ENCODER_MATRIX_MUL,0.6)@blk80 turns the LFO1->OSC1_FREQ routing on mid-note (row 8 = the row setMatrixRow targets).
     static RenderScript liveLfoFreqChange();        // G3: noteOn@0; PARAM_CHANGE(ROW_LFOOSC1,ENCODER_LFO_FREQ,9.0)@blk100 doubles the LFO rate driving LFO1->MIX_OSC1 (tremolo).
+    static RenderScript arpTriadUp();                // G4: C-major triad (60/64/67) held; arp (enabled out-of-band via enableArpeggiator, internal clock, UP, 2 oct) cycles the notes across blocks.
+    static RenderScript seqExternalPlayback();        // G4: 0xFA@0 + bursts of 4x0xF8@1..96 (384 clocks = 1 bar) drive the sequencer external-MIDI-clock path; step notes (C4/E4/G4) set out-of-band via setupSequencerTriadPlayback fire via noteOnFromSequencer.
 };
 
 // Per-timbre voice allocation at Synth::init time. 0 silences a timbre
@@ -195,6 +241,37 @@ public:
     void setMatrixRow(int timbre, int rowIdx, int source, float mul,
                       int dest1, int dest2 = DESTINATION_NONE);
 
+    // Enable the arpeggiator on `timbre` with INTERNAL clock (Phase G4). Fires
+    // setNewValueFromMidi on ROW_ARPEGGIATOR1 for BPM, CLOCK (CLOCK_INTERNAL=1),
+    // DIRECTION (e.g. ARPEGGIO_DIRECTION_UP=0), and OCTAVE (range). The arp's
+    // internal clock is a pure sample-block counter (Timbre::updateArpegiator-
+    // InternalClock, advanced inside buildNewSampleBlock) — NO MIDI clock / HAL
+    // shim needed (verified: zero HAL_GetTick in the arp path). Call BEFORE
+    // noteOn so the note stack builds under an armed arp. The stub's permissive
+    // ParameterRowDisplay for ROW_ARPEGGIATOR1 (midi_decoder_collaborators_
+    // stub.cpp) lets the values through — without it clock clamps to 0 and the
+    // arp stays disabled (zero-signal trap; see spec Design Notes).
+    void enableArpeggiator(int timbre, int bpm, int direction, int octave);
+
+    // Load a minimal triad sequence (C4/E4/G4 = MIDI 60/64/67 at step indices
+    // 0/32/64) into the sequencer's stepNotes[0], activate step-seq 0, and arm
+    // playback (Phase G4 seq-external golden). stepActivated_ is private with
+    // no public setter (set only by the recording path stepRecordNotes); the
+    // FAITHFUL activation route is setFullState, which reads stepActivated_[]
+    // from the last NUMBER_OF_STEP_SEQUENCES bytes of the getFullState buffer
+    // (Sequencer.cpp getFullState writes them last). stepNotes (populated
+    // directly via stepGetSequence) are NOT in the buffer, so setFullState does
+    // not clobber them. Call BEFORE render; the TEST feeds 0xFA + 0xF8 via
+    // MIDI_BYTE events. Verified by a throwaway smoke test (subagent probe:
+    // max|sample|=254M stored units across 96 blocks; removing stepActivated
+    // -> silent, proving the gate).
+    void setupSequencerTriadPlayback();
+
+    // Access the wired MidiDecoder (Phase G4). Owns its own decoder so MIDI_BYTE
+    // events can drive newByte without going through a MidiController. The
+    // decoder is wired to synth_ + a null VisualInfo in the ctor.
+    MidiDecoder& midiDecoder() { return *midiDecoder_; }
+
     // Generic render: apply `script`'s events by block offset, rendering
     // `nBlocks` blocks into `out` (must hold nBlocks*kSamplesPerBlock int32_t).
     // buildNewSampleBlock zeroes the 3 buffers itself (Synth.cpp:325-333).
@@ -228,6 +305,31 @@ private:
     SynthState* ss_;
     SynthBacking synthBacking_;
     Synth* synth_;   // placement-new'd into synthBacking_ in the ctor
+    // Phase G4: a real MidiDecoder wired to synth_ + a null VisualInfo, so
+    // MIDI_BYTE events drive the production clock-byte path (newByte ->
+    // synth->midiTick/midiClockStart -> sequencer). The arpeggiator golden
+    // doesn't feed MIDI bytes but the decoder is wired unconditionally (cheap;
+    // keeps the harness model uniform + ready for the seq golden). Placement-
+    // new'd into a ZEROED backing (MidiDecoderBacking) — the ctor inits most
+    // members but NOT songPosition; zeroing covers it (step-04 review).
+    MidiDecoderBacking midiDecoderBacking_;
+    MidiDecoder* midiDecoder_;
+    NullVisualInfo visualInfo_;
+    // Phase G4: a real Sequencer + FMDisplaySequencer, wired bidirectionally
+    // (synth.setSequencer / seq.setSynth / seq.setDisplaySequencer — the
+    // preenfm3.cpp:417-420 wiring). Needed only by the seq-external golden but
+    // wired unconditionally: render-neutral for G0-G3/arp (they never feed
+    // clock bytes, so onMidiClock never fires + synthMode=MIXER means noteOn
+    // doesn't route to the sequencer). displaySeq_'s refreshStatusP_ is pointed
+    // at the dummy ints below (refresh() derefs it unconditionally; the stub
+    // ctor at sequencer_collaborators_stub.cpp doesn't init it). displaySeq_'s
+    // ctor is itself a test stub (FMDisplaySequencer.cpp is off-host).
+    SequencerBacking seqBacking_;
+    Sequencer* seq_;   // placement-new'd into seqBacking_ in the ctor
+    FMDisplaySequencerBacking dispSeqBacking_;
+    FMDisplaySequencer* displaySeq_;   // placement-new'd into dispSeqBacking_
+    int dummyRefreshStatusA_ = 0;
+    int dummyRefreshStatusB_ = 0;
 };
 
 }  // namespace golden
