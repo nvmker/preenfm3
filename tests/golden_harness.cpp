@@ -434,13 +434,25 @@ void GoldenHarness::enableArpeggiator(int timbre, int bpm, int direction,
     }
     // Synth::newParamValue casts bpm to uint8_t (Synth.cpp:646) — values > 255
     // wrap (256->0) -> setNewBPMValue(0) -> divide-by-zero. Reject > 255.
-    // direction/octave are also uint8_t-cast but the arp engine bounds them by
-    // usage (octave in modular arithmetic; unknown direction -> UP), so no
-    // extra clamp is needed for correctness. (step-04 review, Edge Case Hunter.)
+    // (step-04 review, Edge Case Hunter.)
     if (bpm > 255) {
         std::cerr << "golden: enableArpeggiator bpm=" << bpm << " > 255 — the "
                   << "firmware cast to uint8_t wraps it (256->0), zeroing "
                   << "ticksPerSecond_ -> divide-by-zero.\n";
+        std::abort();
+    }
+    // octave must be >= 1: StepArpeggio's RANDOM branch loops
+    // `while (current_octave_ >= octave) current_octave_ -= octave` (Timbre.cpp
+    // :2865-2867); with octave==0 that is `while (>=0) -= 0` -> infinite loop
+    // (hangs the render). The permissive stub bypasses the firmware's normal
+    // 1..N octave clamp, so the harness must enforce it. (Copilot PR review.)
+    // direction needs no clamp: the non-RANDOM branches have no such loop, and
+    // an unknown direction defaults to UP via __getDirection (Timbre.cpp:81).
+    if (octave < 1) {
+        std::cerr << "golden: enableArpeggiator octave=" << octave << " < 1 — "
+                  << "StepArpeggio's RANDOM branch loops forever "
+                  << "(while(current_octave_>=octave) -= octave; octave 0 -> "
+                  << "no progress). Use octave >= 1.\n";
         std::abort();
     }
     // Order matters: BPM FIRST (writes params_.engineArp1.BPM + calls
