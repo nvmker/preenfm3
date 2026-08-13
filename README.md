@@ -48,7 +48,7 @@ own line of development. I intend to keep developing the firmware here.
   within it — previously the loader scanned a single fixed directory. The bank
   and preset cursor persist across navigation and reboot.
 
-Current firmware version: v1.10 (see [`firmware/Inc/version.h`](firmware/Inc/version.h)).
+Current firmware version: v1.11 (see [`firmware/Inc/version.h`](firmware/Inc/version.h)).
 
 ---
 
