@@ -4,10 +4,13 @@
 # This is a REGRESSION FLOOR, not a target: coverage is expected to GROW as the
 # plan's phases land, and the floor is ratcheted UP after each phase.
 #
-# Baseline as of Phase 0 check-in: 12.45% lines (1556 / 12498), measured by
-# `make test-cov`. The floor is set at 12 (integer) to leave a 0.45-pt buffer
-# against benign line-count churn (a TU restructured at the same coverage)
-# flapping the gate. See _bmad-output/planning-artifacts/test-coverage-plan.md.
+# Baseline as of Phase 1 (test-coverage-plan.md quick wins): 30.07% lines
+# (3758 / 12498), measured by `make test-cov` on branch test/coverage-phase1
+# (Phase 0 was 12.45%; the 5 Phase-1 suites — event_scheduler, LfoStepSeq,
+# LfoOsc, MixerState, FxBus — lifted it past the >=30% Phase-1 gate). The floor
+# is set at 29 (integer) to leave a ~1-pt buffer against benign line-count
+# churn (a TU restructured at the same coverage) flapping the gate. See
+# _bmad-output/planning-artifacts/test-coverage-plan.md.
 #
 # How CI uses this (scripts/ci/coverage-gate.sh):
 #   - llvm-cov report runs scoped to firmware/Src (headers excluded), same scope
@@ -25,4 +28,4 @@
 # The floor MUST be a single integer on its own line (the gate script grep-matches
 # the first line that is only digits). Comments (#) are ignored.
 
-12
+29
