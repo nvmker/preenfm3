@@ -44,8 +44,18 @@ struct EntryView {
 };
 std::vector<EntryView> ListContents(EventScheduler& es) {
     std::vector<EntryView> out;
+    bool seen[kEventSchedulerSize] = {};
     uint8_t cur = es.root();
     while (cur != 0) {
+        if (cur >= kEventSchedulerSize) {
+            ADD_FAILURE() << "scheduler list contains invalid slot " << (int)cur;
+            break;
+        }
+        if (seen[cur]) {
+            ADD_FAILURE() << "scheduler list contains a cycle at slot " << (int)cur;
+            break;
+        }
+        seen[cur] = true;
         out.push_back({es.entry(cur).note, es.entry(cur).velocity,
                        es.entry(cur).when});
         cur = es.entry(cur).next;

@@ -143,11 +143,16 @@ TEST_F(FxBusTest, NonPositiveSendSkipsBothEarlyReturnGates) {
     bus_->mixSumInit();
     EXPECT_FLOAT_EQ(bus_->getSampleBlock()[0], 5.0f)
         << "totalSent==0: mixSumInit must early-return before zeroing";
-    // processBlock's early return: outBuff untouched.
+    // processBlock's early return: outBuff untouched. Distinct nonzero
+    // sentinels catch both zero-fill and accidental partial writes.
     int32_t out[kStereo];
-    std::memset(out, 0, sizeof(out));
+    int32_t expected[kStereo];
+    for (int i = 0; i < kStereo; i++) {
+        out[i] = 0x12340000 + i;
+        expected[i] = out[i];
+    }
     bus_->processBlock(out);
-    for (int i = 0; i < kStereo; i++) EXPECT_EQ(out[i], 0);
+    for (int i = 0; i < kStereo; i++) EXPECT_EQ(out[i], expected[i]);
 }
 
 // Pure helper: linear interpolation with wraparound at index 0 (y0 comes
@@ -221,12 +226,15 @@ TEST_F(FxBusTest, ProcessBlockImpulseProducesNonZeroWetOutput) {
     }
     EXPECT_GT(nonzero, 0) << "wet path must respond to the first impulse";
 
-    // More blocks: tail grows/changes, everything stays finite.
+    // More blocks with SILENT input: the tank must decay on its own rather
+    // than being re-excited by another impulse. mixAdd(silence, send>0) keeps
+    // processBlock active while contributing zero new samples.
+    float silence[kStereo] = {};
     int32_t out2[kStereo];
     std::memset(out2, 0, sizeof(out2));
     for (int b = 0; b < 8; b++) {
         bus_->mixSumInit();
-        bus_->mixAdd(impulse, 1.0f, 1.0f);
+        bus_->mixAdd(silence, 1.0f, 1.0f);
         bus_->processBlock(out2);
         for (int i = 0; i < kStereo; i++) {
             EXPECT_LT(std::abs((long long)out2[i]), 1LL << 30);
@@ -275,8 +283,8 @@ TEST_F(FxBusTest, ProcessBlockImpulseProducesNonZeroWetOutput) {
 // THE deferred-preset machine: slowParamChange arms it (somethingChanged,
 // waitCount 100); it does NOT fire for 100 mixSumInit cycles (each cycle
 // needs a mixAdd first — totalSent == 0 skips the machine entirely), fires on
-// the 101st, and applies presetChanged(nextPresetNum) for every preset arm:
-// sizes 0-4 (presets 0..14), the >=15 specials, and the >=15 default.
+// the 101st, and applies presetChanged(nextPresetNum) for every preset value:
+// sizes 0-4 (presets 0..14), specials 15..18, and out-of-range defaults.
 TEST_F(FxBusTest, DeferredPresetChangeFiresAfterWaitCountForAllPresets) {
     struct P { int num; float size; };
     // Preset 0 is EXCLUDED here: currentPresetNum starts at 0, so
@@ -284,8 +292,11 @@ TEST_F(FxBusTest, DeferredPresetChangeFiresAfterWaitCountForAllPresets) {
     // drives preset 0 after a real preset has changed currentPresetNum).
     const P presets[] = {
         {1, 0.13f},  {2, 0.23f},  {3, 0.26f},  {4, 0.26f},
-        {6, 0.465f}, {8, 0.465f}, {9, 0.775f}, {12, 0.87f},  {15, 1.0f},
-        {16, 0.72f}, {17, 0.94f}, {18, 0.6f},  {20, 0.41f /*default*/},
+        {5, 0.26f},  {6, 0.465f}, {7, 0.465f}, {8, 0.465f},
+        {9, 0.775f}, {10, 0.775f}, {11, 0.775f},
+        {12, 0.87f}, {13, 0.87f}, {14, 0.87f}, {15, 1.0f},
+        {16, 0.72f}, {17, 0.94f}, {18, 0.6f},
+        {19, 0.41f /*default*/}, {20, 0.41f /*default*/},
     };
     for (const P& p : presets) {
         SCOPED_TRACE(p.num);
