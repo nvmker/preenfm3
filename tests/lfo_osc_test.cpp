@@ -298,6 +298,28 @@ TEST_F(LfoOscTest, KeyboardSyncRampScalesOutputFromZeroOnNoteOn) {
         EXPECT_NEAR(Source(), expected, kTol) << "sample " << i;
         currentRamp += kInvLfo;
     }
+
+    // Continue through the threshold: once currentRamp >= keybRamp, the
+    // firmware stops applying the ramp multiplier and emits the full waveform
+    // (+bias). This catches an off-by-one or a ramp that never terminates.
+    bool reachedUnscaled = false;
+    for (int i = 6; i < 900; i++) {
+        phase += 60.0f * kInvLfo;
+        if (phase >= 1.0f) phase -= 1.0f;
+        const float rampBefore = currentRamp;
+        lfo_->nextValueInMatrix();
+        float expected = ShapeValue(LFO_TRIANGLE, phase);
+        if (rampBefore < params_.keybRamp) {
+            expected *= rampBefore * rampInv;
+            currentRamp += kInvLfo;
+        } else {
+            reachedUnscaled = true;
+        }
+        expected += 0.1f;
+        EXPECT_NEAR(Source(), expected, kTol) << "sample " << i;
+    }
+    EXPECT_TRUE(reachedUnscaled) << "keyboard-sync ramp never reached full output";
+    EXPECT_GE(lfo_->currentRamp, params_.keybRamp);
 }
 
 // Negative keybRamp ("KSyn off"): valueChanged(ENCODER_LFO_KSYNC) resyncs

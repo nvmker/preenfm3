@@ -12,16 +12,12 @@
 //   broken migration silently garbles user mixer banks — the byte-exact
 //   layout asserts here catch it.
 //
-// KNOWN LATENT QUIRK locked as golden (do NOT fix here):
+// Serialization invariant fixed in this PR:
 //   The 0.01f-scaled byte params (FX send, reverb level, the 13 master-FX
-//   params) do NOT all round-trip byte-identically: restore stores
-//   `0.01f * byte` and save re-truncates `value * 100.0f`. 62 of the 256 byte
-//   values (5, 10, 15, 20, 23, 27, 30, 40, 43, 46, 49, 53, 54, 59, 60, 67,
-//   73, 80, 86, 92, ...) come back ONE LESS — e.g. the DEFAULT predelay time
-//   (0.54f, saved as 54) reloads as 0.53999999f and re-saves as 53. Repeated
-//   save/load cycles walk such params down by 1 per cycle. The safe-value
-//   round-trip test below avoids those bytes; the drift itself is locked by
-//   RestoreSaveCycleDriftsNonRoundTrippableBytes.
+//   params) restore as `0.01f * byte` and save with nearest-byte rounding.
+//   Every valid percent byte (0..100) must therefore survive repeated
+//   save/load cycles exactly; the exhaustive round-trip test below drives all
+//   20 percent-valued slots through every value.
 //
 // Fixture notes (see tests/SEAM.md):
 //   * MixerState embeds a REAL FxBus whose delay buffers are STATIC class
@@ -44,11 +40,11 @@
 
 namespace {
 
-// Byte values that survive the 0.01f/(*100) truncation round trip (see the
-// header quirk note). All values below are < 92 and verified not in the
-// drift set {5,10,15,20,23,27,30,40,43,46,49,53,54,59,60,67,73,80,86,92,...}.
-const uint8_t kSafeParamBytes[13] = {31, 32, 33, 34, 35, 36, 37, 38, 11, 12,
-                                     13, 14, 16};
+// Distinctive baseline bytes for the v6 send/reverb/master-FX slots. The
+// exhaustive round-trip test overwrites all percent-valued slots with every
+// valid value in [0, 100].
+const uint8_t kParamBytes[13] = {31, 32, 33, 34, 35, 36, 37, 38, 11, 12,
+                                 13, 14, 16};
 
 // Tiny layout writer mirroring the firmware's index++ serialization idiom.
 struct MixBuf {
@@ -80,7 +76,7 @@ void PutTimbre(MixBuf& mb, int t, bool pan, bool comp, bool send) {
     mb.f32(0.5f + 0.1f * t);   // volume
     if (pan) mb.u8(10 + t);
     if (comp) mb.u8(t % 4);
-    if (send) mb.u8(kSafeParamBytes[t % 13]);
+    if (send) mb.u8(kParamBytes[t % 13]);
 }
 
 // Build a minimal valid buffer for any version 1..6 with distinctive values.
@@ -105,9 +101,23 @@ MixBuf BuildVersionBuffer(int version) {
         mb.u8(9);                // reverbPreset_
         mb.u8(1);                // reverbOutput_
         mb.u8(88);               // reverbLevel_ byte (round-trip safe)
-        for (int i = 0; i < 13; i++) mb.u8(kSafeParamBytes[i]);
+        for (int i = 0; i < 13; i++) mb.u8(kParamBytes[i]);
     }
     return mb;
+}
+
+// v6 percent-byte positions: 6 per-timbre sends, global reverb level, and 13
+// master-FX params. Fill all 20 so each serializer call site is exercised for
+// the same boundary value.
+void FillV6PercentBytes(MixBuf& mb, uint8_t value) {
+    const int kTimbreStart = 21;
+    const int kTimbreStride = 29;
+    const int kSendOffset = 28;
+    for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+        mb.b[kTimbreStart + t * kTimbreStride + kSendOffset] = (char)value;
+    }
+    mb.b[202] = (char)value;  // reverbLevel_
+    for (int i = 203; i <= 215; i++) mb.b[i] = (char)value;
 }
 
 class MixerStateTest : public ::testing::Test {
@@ -182,7 +192,7 @@ TEST_F(MixerStateTest, GetFullDefaultStateWritesNameAndDefaults) {
 // save/restore order (MixerState.cpp:87-99 / :533-545: PREDELAYTIME, DECAY,
 // PREDELAYMIX, SIZE, DIFFUSION, DAMPING, ..., LOOPHP, NOTCHBASE,
 // NOTCHSPREAD). getFullState<->restoreFullState round-trips byte-identical
-// (RoundTripV6IsByteIdenticalForSafeBytes below), but restoring a DEFAULT
+// (RoundTripV6IsByteIdenticalForEveryPercentByte below), but restoring a DEFAULT
 // mix — what a new-bank load does — permutes 8 of the 13 params: DECAY
 // receives PREDELAYMIX_DEFAULT, PREDELAYMIX receives SIZE_DEFAULT, ...
 // NOTCHSPREAD receives LOOPHP_DEFAULT. This pins the permutation so a future
@@ -301,60 +311,65 @@ TEST_F(MixerStateTest, RestoreVersion6FullFieldSet) {
     MixBuf mb = BuildVersionBuffer(6);
     ms_.restoreFullState(mb.b);
     EXPECT_EQ(ms_.MPE_inst1_, 1);
-    EXPECT_NEAR(ms_.instrumentState_[0].send, 0.01f * kSafeParamBytes[0],
+    EXPECT_NEAR(ms_.instrumentState_[0].send, 0.01f * kParamBytes[0],
                 1e-9f);
-    EXPECT_NEAR(ms_.instrumentState_[5].send, 0.01f * kSafeParamBytes[5],
+    EXPECT_NEAR(ms_.instrumentState_[5].send, 0.01f * kParamBytes[5],
                 1e-9f);
     EXPECT_EQ(ms_.reverbPreset_, 9);
     EXPECT_EQ(ms_.reverbOutput_, 1);
     EXPECT_NEAR(ms_.reverbLevel_, 0.01f * 88, 1e-9f);
     // Buffer slot order -> GLOBALFX_* enum order.
     EXPECT_NEAR(ms_.fxBus_.masterfxConfig[GLOBALFX_PREDELAYTIME],
-                0.01f * kSafeParamBytes[0], 1e-9f);
+                0.01f * kParamBytes[0], 1e-9f);
     EXPECT_NEAR(ms_.fxBus_.masterfxConfig[GLOBALFX_DECAY],
-                0.01f * kSafeParamBytes[1], 1e-9f);
+                0.01f * kParamBytes[1], 1e-9f);
     EXPECT_NEAR(ms_.fxBus_.masterfxConfig[GLOBALFX_SIZE],
-                0.01f * kSafeParamBytes[3], 1e-9f);
+                0.01f * kParamBytes[3], 1e-9f);
     EXPECT_NEAR(ms_.fxBus_.masterfxConfig[GLOBALFX_LOOPHP],
-                0.01f * kSafeParamBytes[10], 1e-9f);
+                0.01f * kParamBytes[10], 1e-9f);
     EXPECT_NEAR(ms_.fxBus_.masterfxConfig[GLOBALFX_NOTCHSPREAD],
-                0.01f * kSafeParamBytes[12], 1e-9f);
+                0.01f * kParamBytes[12], 1e-9f);
 }
 
-// THE round-trip lock (v6): restore -> getFullState is byte-identical and
-// stable across repeated cycles, for round-trip-SAFE param bytes (see the
-// header quirk note — the unsafe 62 bytes are locked separately below).
-TEST_F(MixerStateTest, RoundTripV6IsByteIdenticalForSafeBytes) {
-    MixBuf mb = BuildVersionBuffer(6);
-    ms_.restoreFullState(mb.b);
+// THE round-trip lock (v6): every valid percent byte (0..100) survives both
+// restore->save and a second restore->save cycle exactly. Filling all 20
+// percent-valued slots per iteration exercises every rounded serializer call.
+TEST_F(MixerStateTest, RoundTripV6IsByteIdenticalForEveryPercentByte) {
+    for (int value = 0; value <= 100; value++) {
+        SCOPED_TRACE(value);
+        MixBuf mb = BuildVersionBuffer(6);
+        FillV6PercentBytes(mb, (uint8_t)value);
+        ms_.restoreFullState(mb.b);
 
-    char out1[256], out2[256];
-    uint32_t n1 = 0, n2 = 0;
-    ms_.getFullState(out1, &n1);
-    ASSERT_EQ(n1, 216u);
-    ASSERT_EQ(std::memcmp(out1, mb.b, n1), 0)
-        << "safe-byte v6 buffer must round-trip byte-identically";
+        char out1[256], out2[256];
+        uint32_t n1 = 0, n2 = 0;
+        ms_.getFullState(out1, &n1);
+        ASSERT_EQ(n1, 216u);
+        ASSERT_EQ(std::memcmp(out1, mb.b, n1), 0)
+            << "v6 buffer must round-trip byte-identically";
 
-    ms_.restoreFullState(out1);
-    ms_.getFullState(out2, &n2);
-    ASSERT_EQ(n2, 216u);
-    EXPECT_EQ(std::memcmp(out1, out2, n1), 0)
-        << "round trip must be stable across repeated save/load cycles";
+        ms_.restoreFullState(out1);
+        ms_.getFullState(out2, &n2);
+        ASSERT_EQ(n2, 216u);
+        EXPECT_EQ(std::memcmp(out1, out2, n1), 0)
+            << "repeated save/load cycle must remain byte-stable";
+    }
 }
 
-// THE drift quirk golden (header note): 54 is one of the 62 non-round-
-// tripping bytes. Restoring the DEFAULT state (predelay byte 54) and
-// re-saving emits 53 — repeated default-bank save/load walks predelay down
-// by 1 per cycle. Locked as-is; fixing is a separate firmware change.
-TEST_F(MixerStateTest, RestoreSaveCycleDriftsNonRoundTrippableBytes) {
-    char def[256], out[256];
+// Direct regression for the byte that exposed the truncation bug: the default
+// predelay value 54 must remain 54 after repeated default-bank save/load.
+TEST_F(MixerStateTest, DefaultPredelayByte54RemainsStableAcrossCycles) {
+    char def[256], out1[256], out2[256];
     uint32_t n = 0;
     ms_.getFullDefaultState(def, &n, 0);
     ASSERT_EQ((uint8_t)def[203], 54) << "default predelay byte moved";
     ms_.restoreFullState(def);
-    ms_.getFullState(out, &n);
-    EXPECT_EQ((uint8_t)out[203], 53)
-        << "0.01f*54 re-truncates to 53 — the save/load drift quirk";
+    ms_.getFullState(out1, &n);
+    EXPECT_EQ((uint8_t)out1[203], 54);
+    ms_.restoreFullState(out1);
+    ms_.getFullState(out2, &n);
+    EXPECT_EQ((uint8_t)out2[203], 54);
+    EXPECT_EQ(std::memcmp(out1, out2, n), 0);
 }
 
 // Unknown version: only setDefaultValues() runs — the mixer's serialized
