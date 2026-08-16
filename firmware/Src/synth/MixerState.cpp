@@ -67,7 +67,7 @@ void MixerState::getFullState(char *buffer, uint32_t *size) {
         // Compressor
         buffer[index++] = instrumentState_[t].compressorType;
         // FX send
-        buffer[index++] = (char)(instrumentState_[t].send * 100.0f);
+        buffer[index++] = static_cast<char>(__builtin_lroundf(instrumentState_[t].send * 100.0f));
     }
 
     // levelMetter: default mixer only
@@ -81,22 +81,22 @@ void MixerState::getFullState(char *buffer, uint32_t *size) {
     // reverb preset, output, volume
     buffer[index++] = reverbPreset_;
     buffer[index++] = reverbOutput_;
-    buffer[index++] = (char)(100.0f * reverbLevel_) ;
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * reverbLevel_));
 
 
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_PREDELAYTIME]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_DECAY]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_PREDELAYMIX]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_SIZE]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_DIFFUSION]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_DAMPING]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_LFODEPTH]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_LFOSPEED]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_INPUTBASE]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_INPUTWIDTH]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_LOOPHP]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_NOTCHBASE]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_NOTCHSPREAD]);
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_PREDELAYTIME]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_DECAY]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_PREDELAYMIX]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_SIZE]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_DIFFUSION]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_DAMPING]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_LFODEPTH]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_LFOSPEED]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_INPUTBASE]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_INPUTWIDTH]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_LOOPHP]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_NOTCHBASE]));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(100.0f * fxBus_.masterfxConfig[GLOBALFX_NOTCHSPREAD]));
 
     *size = index;
 }
