@@ -18,6 +18,19 @@
 #include "MixerState.h"
 #include "FxBus.h"
 
+namespace {
+
+// Percent-valued mixer fields are serialized as bytes in [0, 100]. Restore
+// converts them with `0.01f * byte`; truncating `value * 100.0f` on save makes
+// values such as 54 drift to 53 because 0.54f is represented just below the
+// mathematical value. Round to the nearest byte so repeated save/load cycles
+// are stable. All callers provide non-negative normalized values.
+uint8_t toPercentByte(float value) {
+    return static_cast<uint8_t>(value * 100.0f + 0.5f);
+}
+
+}  // namespace
+
 MixerState::MixerState() {
 }
 
@@ -67,7 +80,7 @@ void MixerState::getFullState(char *buffer, uint32_t *size) {
         // Compressor
         buffer[index++] = instrumentState_[t].compressorType;
         // FX send
-        buffer[index++] = (char)(instrumentState_[t].send * 100.0f);
+        buffer[index++] = static_cast<char>(toPercentByte(instrumentState_[t].send));
     }
 
     // levelMetter: default mixer only
@@ -81,22 +94,21 @@ void MixerState::getFullState(char *buffer, uint32_t *size) {
     // reverb preset, output, volume
     buffer[index++] = reverbPreset_;
     buffer[index++] = reverbOutput_;
-    buffer[index++] = (char)(100.0f * reverbLevel_) ;
+    buffer[index++] = static_cast<char>(toPercentByte(reverbLevel_));
 
-
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_PREDELAYTIME]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_DECAY]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_PREDELAYMIX]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_SIZE]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_DIFFUSION]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_DAMPING]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_LFODEPTH]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_LFOSPEED]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_INPUTBASE]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_INPUTWIDTH]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_LOOPHP]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_NOTCHBASE]);
-    buffer[index++] = (char)(100.0f * fxBus_.masterfxConfig[GLOBALFX_NOTCHSPREAD]);
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_PREDELAYTIME]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_DECAY]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_PREDELAYMIX]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_SIZE]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_DIFFUSION]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_DAMPING]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_LFODEPTH]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_LFOSPEED]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_INPUTBASE]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_INPUTWIDTH]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_LOOPHP]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_NOTCHBASE]));
+    buffer[index++] = static_cast<char>(toPercentByte(fxBus_.masterfxConfig[GLOBALFX_NOTCHSPREAD]));
 
     *size = index;
 }

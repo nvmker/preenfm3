@@ -4,8 +4,8 @@
 # This is a REGRESSION FLOOR, not a target: coverage is expected to GROW as the
 # plan's phases land, and the floor is ratcheted UP after each phase.
 #
-# Baseline as of Phase 1 (test-coverage-plan.md quick wins): 30.07% lines
-# (3758 / 12498), measured by `make test-cov` on branch test/coverage-phase1
+# Baseline as of Phase 1 (test-coverage-plan.md quick wins): 30.09% lines
+# (3761 / 12501), measured by `make test-cov` on branch test/coverage-phase1
 # (Phase 0 was 12.45%; the 5 Phase-1 suites — event_scheduler, LfoStepSeq,
 # LfoOsc, MixerState, FxBus — lifted it past the >=30% Phase-1 gate). The floor
 # is set at 29 (integer) to leave a ~1-pt buffer against benign line-count
