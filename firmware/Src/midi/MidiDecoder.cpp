@@ -22,7 +22,7 @@
 // tests/SEAM.md (Target #4 appendix).
 #ifndef PFM3_HOST
 extern "C" {
-#include "usbd_midi.h"
+#include "../../Middlewares/ST/STM32_USB_Device_Library/Class/MIDI/Inc/usbd_midi.h"
 }
 #endif
 
@@ -40,6 +40,10 @@ extern USBD_HandleTypeDef hUsbDeviceFS;
 // Let's call it MidiOut despite USB spec
 uint8_t usbMidiOutBuff[64];
 uint8_t *usbMidiOutBuffWrt;
+#ifdef PFM3_HOST
+uint16_t hostUsbMidiLastTransmitLength = 0;
+uint32_t hostUsbMidiTransmitCount = 0;
+#endif
 
 #ifndef PFM3_HOST
 extern UART_HandleTypeDef huart1;
@@ -64,6 +68,7 @@ MidiDecoder::MidiDecoder() {
     this->isExternalMidiClockStarted = false;
     this->midiClockCpt = 0;
     this->runningStatus = 0;
+    this->sysexOverflowed = false;
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
         omniOn[t] = false;
         bankNumber[t] = 0;
@@ -152,18 +157,28 @@ void MidiDecoder::newByte(unsigned char byte) {
             newMessageData(byte);
             break;
         case MIDI_EVENT_SYSEX:
-            if (likely(currentEventState.index < SYSEX_BUFFER_SIZE)) {
-                sysexBuffer[currentEventState.index++] = byte;
-            }
             if (byte == MIDI_SYSEX_END) {
-                if (currentEventState.index < SYSEX_BUFFER_SIZE) {
-                    // End of sysex =>Analyse Sysex
-                    if (this->analyseSysexBuffer(sysexBuffer, currentEventState.index) == 1) {
-                        currentEventState.eventState = MIDI_EVENT_COMPLETE;
-                    }
+                // F7 is framing, not payload. Only a non-overflowed, complete
+                // payload is eligible for analysis.
+                if (!sysexOverflowed) {
+                    this->analyseSysexBuffer(sysexBuffer, currentEventState.index);
                 }
                 currentEventState.eventState = MIDI_EVENT_WAITING;
                 currentEventState.index = 0;
+                sysexOverflowed = false;
+            } else if (byte >= 0x80) {
+                // A non-realtime status aborts sysex and starts a new message.
+                currentEventState.eventState = MIDI_EVENT_WAITING;
+                currentEventState.index = 0;
+                sysexOverflowed = false;
+                this->runningStatus = byte;
+                newMessageType(byte);
+            } else if (likely(currentEventState.index < SYSEX_BUFFER_SIZE)) {
+                sysexBuffer[currentEventState.index++] = byte;
+            } else {
+                // Keep the public index clamped while remembering that the
+                // eventual F7 must discard the truncated frame.
+                sysexOverflowed = true;
             }
             break;
         }
@@ -203,6 +218,7 @@ void MidiDecoder::newMessageType(unsigned char byte) {
         case MIDI_SYSEX:
             currentEventState.eventState = MIDI_EVENT_SYSEX;
             currentEventState.index = 0;
+            sysexOverflowed = false;
             break;
         case MIDI_SONG_POSITION:
             currentEvent.eventType = MIDI_SONG_POSITION;
@@ -1275,13 +1291,13 @@ void MidiDecoder::sendMidiUsbOutIfBufferFull() {
 
 void MidiDecoder::sendMidiUsbOut() {
 #ifdef PFM3_HOST
-    // Host stub: the real body hands the buffered USB-MIDI packets to the USB
-    // device layer via USBD_LL_Transmit (a HAL-typed call), which has no host
-    // implementation. The host tests never assert on USB-MIDI out output
-    // (Trap #1: the NRPN-send path that fills the buffer is excluded). Early-
-    // return keeps the symbol linkable for the few decode-adjacent code paths
-    // that call it (newParamValue when MIDICONFIG_SENDS is configured). Arm
-    // path keeps the real body below.
+    // Deterministic successful-transmit seam. It mirrors the production
+    // writer reset while exposing only the transmitted length/count.
+    if (usbMidiOutBuffWrt != usbMidiOutBuff && this->synthState_->fullState.midiConfigValue[MIDICONFIG_USB] == USBMIDI_IN_AND_OUT) {
+        hostUsbMidiLastTransmitLength = usbMidiOutBuffWrt - usbMidiOutBuff;
+        hostUsbMidiTransmitCount++;
+        usbMidiOutBuffWrt = usbMidiOutBuff;
+    }
     return;
 #else
     if (usbMidiOutBuffWrt != usbMidiOutBuff && this->synthState_->fullState.midiConfigValue[MIDICONFIG_USB] == USBMIDI_IN_AND_OUT) {
@@ -1378,7 +1394,7 @@ int MidiDecoder::getMemoryIndexFromMidi(int index) {
 
 
 uint8_t MidiDecoder::analyseSysexBuffer(uint8_t *sysexBuffer, uint16_t size) {
-    if (sysexBuffer[0] == 0x7d) {
+    if (size == 3 && sysexBuffer[0] == 0x7d) {
         switch (sysexBuffer[1]) {
         case 1:
         case 2:

@@ -396,6 +396,12 @@ public:
         return newGlide;
     }
 
+#ifdef PFM3_HOST
+    float hostMatrixSource(SourceEnum source) {
+        return matrix.getSource(source);
+    }
+#endif
+
 private:
     // private function for BP filter
     void recomputeBPValues(float q, float fSquare);
