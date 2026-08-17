@@ -18,11 +18,10 @@
 #ifndef MIDIDECODER_H_
 #define MIDIDECODER_H_
 
-#include "SynthStateAware.h"
-#include "Synth.h"
-#include "RingBuffer.h"
-#include "VisualInfo.h"
-#include "Storage.h"
+#include "../synth/SynthStateAware.h"
+#include "../synth/Synth.h"
+#include "../hardware/VisualInfo.h"
+#include "../filesystem/Storage.h"
 
 // number of external control change
 #define NUMBER_OF_ECC 4
@@ -248,6 +247,7 @@ private:
     struct Nrpn currentNrpn[NUMBER_OF_TIMBRES];
     bool omniOn[NUMBER_OF_TIMBRES];
     unsigned char runningStatus;
+    bool sysexOverflowed;
 
     // Midi Clock
     bool isExternalMidiClockStarted;

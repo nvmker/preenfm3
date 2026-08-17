@@ -104,6 +104,9 @@ public:
     void setMatrixSourceMPE(uint8_t channel, enum SourceEnum source, float newValue);
 
     void setMatrixPolyAfterTouch(uint8_t note, float newValue);
+#ifdef PFM3_HOST
+    float hostMaxMatrixSource(SourceEnum source);
+#endif
     void verifyLfoUsed(int encoder, float oldValue, float newValue);
 
     void midiClockStop() {

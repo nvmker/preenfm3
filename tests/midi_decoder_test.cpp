@@ -65,8 +65,8 @@
 // SynthState.h (and its Storage.h / MixerBank / ... closure), Timbre, Voice,
 // Matrix, Lfo*, dwt, SimpleComp, Common, SynthStateAware. RingBuffer.h carries
 // private data and is not reached via Synth.h, so pre-include it too.
-#include "Synth.h"
-#include "RingBuffer.h"
+#include "../firmware/Src/synth/Synth.h"
+#include "../lib/Inc/RingBuffer.h"
 
 #define private public  // NOLINT: scoped to MidiDecoder.h only (see header)
 #include "MidiDecoder.h"
@@ -714,6 +714,8 @@ TEST_F(MidiDecoderRouting, RunningStatusNoteOnRoutesCorrectly) {
 extern RingBuffer<uint8_t, 64> usartBufferOut;
 extern uint8_t usbMidiOutBuff[64];
 extern uint8_t* usbMidiOutBuffWrt;
+extern uint16_t hostUsbMidiLastTransmitLength;
+extern uint32_t hostUsbMidiTransmitCount;
 
 // MidiDecoder.cpp's INV127 macro is TU-local; mirror it for float expectations.
 constexpr float kInv127 = 0.00787401574803149606f;
@@ -756,6 +758,8 @@ protected:
         while (asyncActions.getCount() > 0) (void)asyncActions.remove();
         while (usartBufferOut.getCount() > 0) (void)usartBufferOut.remove();
         usbMidiOutBuffWrt = usbMidiOutBuff;
+        hostUsbMidiLastTransmitLength = 0;
+        hostUsbMidiTransmitCount = 0;
         usbMidiOutBuff[0] = usbMidiOutBuff[1] = usbMidiOutBuff[2] = usbMidiOutBuff[3] = 0;
         // MidiDecoder's ctor does NOT initialize songPosition (firmware relies
         // on the global's BSS zero-init); the fixture's stack member carries
@@ -870,11 +874,9 @@ TEST_F(MidiDecoderPhase2, ValidChannelSetSysexAppliesMixerVolume) {
 }
 
 TEST_F(MidiDecoderPhase2, NonChannelSetSysexFramesAreIgnored) {
-    // analyseSysexBuffer only recognizes [0]==0x7d && [1] in 1..6. Anything
-    // else returns 0 and applies nothing. The empty frame's [0] is 0xF7 (the
-    // terminator is stored as a data byte before analysis), so it fails the
-    // 0x7d check first — no stale-slot read is reachable: the last byte
-    // analysed is always the F7 terminator itself.
+    // analyseSysexBuffer only accepts an exact three-byte payload beginning
+    // with 0x7d and a channel in 1..6. F7 is framing, never payload, so empty
+    // and otherwise incomplete frames are rejected without reading stale slots.
     Feed({0xF0, 0x42, 0x01, 0x40, 0xF7});  // wrong manufacturer
     Feed({0xF0, 0x7d, 0x00, 0x40, 0xF7});  // channel 0
     Feed({0xF0, 0x7d, 0x07, 0x40, 0xF7});  // channel 7
@@ -884,25 +886,20 @@ TEST_F(MidiDecoderPhase2, NonChannelSetSysexFramesAreIgnored) {
         << "every rejected frame must still return the parser to WAITING";
 }
 
-TEST_F(MidiDecoderPhase2, TruncatedSysexHoldsUntilF7ThenApplies) {
-    // CHARACTERIZATION: a truncated frame (no F7) leaves the parser in SYSEX;
-    // there is NO re-anchor on a later status byte (bytes < 0xF8 are stored as
-    // sysex data). The buffered bytes are applied when an F7 finally arrives —
-    // even if garbage was appended in between. Locked as-is; a spec-compliant
-    // resync would change this.
-    Feed({0xF0, 0x7d, 0x01, 0x40});       // truncated channel-set frame
+TEST_F(MidiDecoderPhase2, UnexpectedStatusAbortsSysexAndIsReprocessed) {
+    Feed({0xF0, 0x7d, 0x01, 0x40});
     EXPECT_EQ(decoder_.currentEventState.eventState, MIDI_EVENT_SYSEX);
-    Feed({0xB0, 0x07, 0x20});             // status byte stored as DATA mid-sysex
-    EXPECT_EQ(decoder_.currentEventState.eventState, MIDI_EVENT_SYSEX);
-    Feed({0xF7});                          // late end applies the buffer
+    Feed({0xB0, CC_BANK_SELECT, 9});
     EXPECT_EQ(decoder_.currentEventState.eventState, MIDI_EVENT_WAITING);
-    EXPECT_FLOAT_EQ(ss_->mixerState.instrumentState_[0].volume, 64 * kInv127)
-        << "truncated frame + late F7 applies the first 3 buffered bytes";
+    EXPECT_FLOAT_EQ(ss_->mixerState.instrumentState_[0].volume, 0.0f)
+        << "aborted sysex payload must not be analysed";
+    EXPECT_EQ(decoder_.bankNumber[0], 9)
+        << "unexpected status must be reprocessed as the next MIDI message";
 }
 
 TEST_F(MidiDecoderPhase2, OversizedSysexClampsAndSkipsAnalysis) {
-    // >32 data bytes: index clamps at 32; at F7 index==32 so analyseSysexBuffer
-    // is SKIPPED (the `index < SYSEX_BUFFER_SIZE` guard) — nothing applies.
+    // >32 data bytes sets sysexOverflowed; F7 then rejects the whole frame
+    // without analysis, regardless of the clamped buffer index.
     Feed({0xF0, 0x7d, 0x01, 0x40});
     for (int i = 0; i < 40; i++) Feed({static_cast<uint8_t>(0x10 + (i & 7))});
     ASSERT_EQ(decoder_.currentEventState.index, 32);
@@ -913,10 +910,9 @@ TEST_F(MidiDecoderPhase2, OversizedSysexClampsAndSkipsAnalysis) {
 }
 
 TEST_F(MidiDecoderPhase2, ImmediateF7EarlyAbortsCleanly) {
-    // F0 followed directly by F7: the F7 is stored as the first data byte
-    // (index=1 < 32) so analyseSysexBuffer runs on a 1-byte buffer whose [0]
-    // is 0xF7 — not 0x7d — so nothing applies and the parser returns to
-    // WAITING. No OOB, no stuck state.
+    // F0 followed directly by F7 ends a zero-payload, incomplete frame. F7 is
+    // not analysed as payload; the frame is rejected and the parser returns
+    // to WAITING without an out-of-bounds access or stuck state.
     Feed({0xF0, 0xF7});
     EXPECT_EQ(decoder_.currentEventState.eventState, MIDI_EVENT_WAITING);
     EXPECT_FLOAT_EQ(ss_->mixerState.instrumentState_[0].volume, 0.0f);
@@ -987,7 +983,11 @@ TEST_F(MidiDecoderPhase2, MpeCc74OnMemberChannelIsPerChannelSlide) {
     // voiceNumber_[ch-1] == -1 early-returns).
     Feed({0x91, 60, 100});           // note on MPE member channel 2
     Feed({0xB1, CC_MPE_SLIDE_CC74, 100});  // member channel: per-voice slide
-    Feed({0xB0, CC_MPE_SLIDE_CC74, 100});  // global channel: no matrix slide
+    EXPECT_FLOAT_EQ(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_MPESLIDE),
+                    100 * kInv127);
+    Feed({0xB0, CC_MPE_SLIDE_CC74, 100});  // global channel: no per-voice slide
+    EXPECT_FLOAT_EQ(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_MPESLIDE),
+                    100 * kInv127);
     EXPECT_EQ(decoder_.currentEventState.eventState, MIDI_EVENT_WAITING);
     // Probe on a MEMBER channel (channel 0 notes are dropped in MPE mode —
     // see MpeChannelZeroNotesAreDropped), observed via isPlaying()
@@ -1022,12 +1022,16 @@ TEST_F(MidiDecoderPhase2, CurrentChannelCcReachesOnlyCurrentTimbre) {
     }
 }
 
-TEST_F(MidiDecoderPhase2, OmniOnTimbreReceivesAnyChannel) {
-    // omniOn[1] forces timbre 1 into the routing set regardless of channel.
+TEST_F(MidiDecoderPhase2, OmniOnTimbreReceivesUnassignedChannelWithoutFanOut) {
     decoder_.omniOn[1] = true;
-    Feed({0xB5, CC_BANK_SELECT, 3});  // channel 6, no timbre matches except omni[1]
+    char before[NUMBER_OF_TIMBRES];
+    for (int t = 0; t < NUMBER_OF_TIMBRES; t++) before[t] = decoder_.bankNumber[t];
+    Feed({0xBF, CC_BANK_SELECT, 3});  // channel 16 is unassigned in the fixture
     EXPECT_EQ(decoder_.bankNumber[1], 3);
-    EXPECT_EQ(decoder_.bankNumber[0], 0);
+    for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+        if (t != 1) EXPECT_EQ(decoder_.bankNumber[t], before[t])
+            << "unassigned omni probe fanned out to timbre " << t;
+    }
 }
 
 TEST_F(MidiDecoderPhase2, OmniModeMidiChannelZeroMatchesEveryChannel) {
@@ -1041,13 +1045,17 @@ TEST_F(MidiDecoderPhase2, OmniModeMidiChannelZeroMatchesEveryChannel) {
 // Remaining midiEventReceived arms.
 // ---------------------------------------------------------------------------
 
-TEST_F(MidiDecoderPhase2, PolyAfterTouchAfterTouchAndPitchBendArmsDispatch) {
-    Feed({0xA0, 60, 100});   // POLY_AFTER_TOUCH ch1 -> setMatrixPolyAfterTouch
-    Feed({0xD0, 80});        // AFTER_TOUCH ch1 -> setMatrixSource(AFTERTOUCH)
-    Feed({0xE0, 0x00, 0x68});// PITCH_BEND ch1 -> setMatrixSource(PITCHBEND)
-    // Parser stays responsive and notes still route afterwards.
-    Feed({0x90, 62, 100});
-    EXPECT_EQ(synth_.getLowerNote(0), 62);
+TEST_F(MidiDecoderPhase2, PolyAfterTouchAfterTouchAndPitchBendUpdateMatrixSources) {
+    Feed({0x90, 60, 100});
+    Feed({0xA0, 60, 100});
+    EXPECT_FLOAT_EQ(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_POLYPHONIC_AFTERTOUCH),
+                    100 * kInv127);
+    Feed({0xD0, 80});
+    EXPECT_FLOAT_EQ(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_AFTERTOUCH),
+                    80 * kInv127);
+    Feed({0xE0, 0x00, 0x68});
+    EXPECT_FLOAT_EQ(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_PITCHBEND),
+                    0.625f);
 }
 
 TEST_F(MidiDecoderPhase2, ProgramChangeQueuesLoadPresetWhenEnabled) {
@@ -1220,34 +1228,18 @@ TEST_F(MidiDecoderPhase2, MfxCcsOnGlobalChannelWriteFxBusConfig) {
     EXPECT_EQ(ss_->mixerState.reverbPreset_, 5) << "MFX CC off global channel must be dropped";
 }
 
-TEST_F(MidiDecoderPhase2, UserCcShortCircuitsBeforeTheCcTable) {
-    // userCC_[0] hijacks CC 0 (bank select): the MATRIX_SOURCE_USER_CC1 arm
-    // returns before the table, so bankNumber is NOT written.
-    ss_->mixerState.userCC_[0] = CC_BANK_SELECT;
-    FeedCC(CC_BANK_SELECT, 9);
-    EXPECT_EQ(decoder_.bankNumber[0], 0)
-        << "userCC must short-circuit before the CC table";
-    // userCC 1..4 exercise the remaining short-circuit arms. The matrix
-    // writes land in the timbre's private Voice pool (no public getter, and
-    // widening the #define private public scope to Timbre.h would break the
-    // ODR pre-include rule documented in this file's header), so observe the
-    // arms by ROUTING: each hijacked CC_BANK_SELECT must NOT reach the CC
-    // table's bank write — with a positive control proving the write fires
-    // the moment the hijack is lifted.
-    ss_->mixerState.userCC_[1] = CC_BANK_SELECT;
-    ss_->mixerState.userCC_[2] = CC_BANK_SELECT;
-    ss_->mixerState.userCC_[3] = CC_BANK_SELECT;
-    FeedCC(CC_BANK_SELECT, 9);  // routed through userCC arms 1..3, never the table
-    EXPECT_EQ(decoder_.bankNumber[0], 0)
-        << "userCC 1..3 hijacks must all short-circuit before the CC table";
-    // Positive control: unhijack, same CC -> the table arm fires.
-    ss_->mixerState.userCC_[0] = 255;
-    ss_->mixerState.userCC_[1] = 255;
-    ss_->mixerState.userCC_[2] = 255;
-    ss_->mixerState.userCC_[3] = 255;
+TEST_F(MidiDecoderPhase2, UserCcSlotsShortCircuitIndependently) {
+    for (int slot = 0; slot < 4; slot++) {
+        for (int i = 0; i < 4; i++) ss_->mixerState.userCC_[i] = 255;
+        ss_->mixerState.userCC_[slot] = CC_BANK_SELECT;
+        FeedCC(CC_BANK_SELECT, static_cast<uint8_t>(slot + 1));
+        EXPECT_EQ(decoder_.bankNumber[0], 0)
+            << "userCC slot " << slot << " did not independently hijack the CC";
+    }
+    for (int i = 0; i < 4; i++) ss_->mixerState.userCC_[i] = 255;
     FeedCC(CC_BANK_SELECT, 9);
     EXPECT_EQ(decoder_.bankNumber[0], 9)
-        << "unhijacked CC_BANK_SELECT must reach the CC table (positive control)";
+        << "unhijacked CC_BANK_SELECT must reach the CC table";
 }
 
 TEST_F(MidiDecoderPhase2, UnisonSpreadFallsThroughToSeqStartAll) {
@@ -1263,15 +1255,18 @@ TEST_F(MidiDecoderPhase2, UnisonSpreadFallsThroughToSeqStartAll) {
     EXPECT_FALSE(seq_->isRunning());
 }
 
-TEST_F(MidiDecoderPhase2, AllNotesOffStopsPlayingNotes) {
+TEST_F(MidiDecoderPhase2, AllNotesOffAndAllSoundOffHaveDistinctEffects) {
     Feed({0x90, 60, 100});
-    ASSERT_EQ(synth_.getLowerNote(0), 60);
-    FeedCC(CC_ALL_NOTES_OFF, 0);   // stopArpegiator + allNoteOff
-    FeedCC(CC_ALL_SOUND_OFF, 0);   // allSoundOff
-    // A fresh LOWER note still routes afterwards (no stuck state); a higher
-    // note would not move lowerNote_ while the released 60-voice lingers.
+    ASSERT_TRUE(synth_.isPlaying());
+    FeedCC(CC_ALL_NOTES_OFF, 0);
+    EXPECT_TRUE(synth_.isPlaying())
+        << "ALL_NOTES_OFF releases envelopes rather than killing sound immediately";
+
     Feed({0x90, 50, 100});
-    EXPECT_EQ(synth_.getLowerNote(0), 50);
+    ASSERT_TRUE(synth_.isPlaying());
+    FeedCC(CC_ALL_SOUND_OFF, 0);
+    EXPECT_FALSE(synth_.isPlaying())
+        << "ALL_SOUND_OFF must immediately silence allocated voices";
 }
 
 // ---------------------------------------------------------------------------
@@ -1317,6 +1312,8 @@ TEST_F(MidiDecoderPhase2, NewParamValueWithSendsCcEmitsCcAndDedups) {
     // a CC and writes it out; an identical consecutive change is suppressed by
     // lastSentCC.
     ASSERT_EQ(usartBufferOut.getCount(), 0);
+    decoder_.lastSentCC = {};
+    decoder_.lastSentCC.value[0] = 0xFF;
     // ROW_ENGINE/ENCODER_ENGINE_ALGO -> CC_ALGO, value 20.
     decoder_.newParamValue(0, ROW_ENGINE, ENCODER_ENGINE_ALGO, nullptr, 0.0f, 20.0f);
     ASSERT_EQ(usartBufferOut.getCount(), 3);
@@ -1336,12 +1333,12 @@ TEST_F(MidiDecoderPhase2, NewParamValueWithSendsCcEmitsCcAndDedups) {
 }
 
 TEST_F(MidiDecoderPhase2, NewParamValueCcClampsTo127) {
-    // cc.value[1] > 127 (e.g. a float param far above the CC range) is
-    // clamped to 127 before writing.
-    decoder_.newParamValue(0, ROW_ENGINE, ENCODER_ENGINE_ALGO, nullptr, 0.0f, 500.0f);
+    // Produce a defined intermediate uint8_t value of 200, then verify the
+    // outbound CC clamp. Avoid out-of-range float-to-uint8_t conversion.
+    decoder_.newParamValue(0, ROW_MODULATION1, 0, nullptr, 0.0f, 20.0f);
     ASSERT_EQ(usartBufferOut.getCount(), 3);
     EXPECT_EQ(usartBufferOut.remove(), 0xB0);
-    EXPECT_EQ(usartBufferOut.remove(), CC_ALGO);
+    EXPECT_EQ(usartBufferOut.remove(), CC_IM1);
     EXPECT_EQ(usartBufferOut.remove(), 127);
 }
 
@@ -1351,14 +1348,22 @@ TEST_F(MidiDecoderPhase2, NewParamValueWithSendsOffEmitsNothing) {
     EXPECT_EQ(usartBufferOut.getCount(), 0);
 }
 
-TEST_F(MidiDecoderPhase2, SendMidiUsbOutIfBufferFullIsSafeWhenNotFull) {
-    // Below 64 buffered bytes: no-op (sendMidiUsbOut is host-stubbed anyway;
-    // the guard itself must not misbehave). SetUp re-homed the writer, so
-    // usbMidiOutBuffWrt - usbMidiOutBuff == 0 < 64 here.
-    ASSERT_EQ(usbMidiOutBuffWrt - usbMidiOutBuff, 0);
+TEST_F(MidiDecoderPhase2, SendMidiUsbOutFlushesExactFullBufferAndRehomesWriter) {
+    ss_->fullState.midiConfigValue[MIDICONFIG_USB] = USBMIDI_IN_AND_OUT;
+    usbMidiOutBuffWrt = usbMidiOutBuff + 64;
     decoder_.sendMidiUsbOutIfBufferFull();
-    EXPECT_EQ(usbMidiOutBuffWrt - usbMidiOutBuff, 0)
-        << "not-full buffer must leave the writer untouched";
+    EXPECT_EQ(hostUsbMidiTransmitCount, 1u);
+    EXPECT_EQ(hostUsbMidiLastTransmitLength, 64u);
+    EXPECT_EQ(usbMidiOutBuffWrt, usbMidiOutBuff);
+
+    MidiEvent cc{};
+    cc.eventType = MIDI_CONTROL_CHANGE;
+    cc.channel = 0;
+    cc.value[0] = 1;
+    cc.value[1] = 2;
+    decoder_.writeMidiCCOut(&cc);
+    EXPECT_EQ(usbMidiOutBuffWrt - usbMidiOutBuff, 4)
+        << "a packet after an exact-full flush must be written safely";
 }
 
 // ---------------------------------------------------------------------------
@@ -1423,13 +1428,10 @@ TEST_F(MidiDecoderPhase2, NewParamValueNrpnFloatParamScalesByHundred) {
     pd.minValue = 1.0f;
     decoder_.newParamValue(0, ROW_ENGINE, ENCODER_ENGINE_ALGO, &pd, 0.0f, 4.0f);
     ASSERT_EQ(usartBufferOut.getCount(), 12);
-    for (int i = 0; i < 10; i++) (void)usartBufferOut.remove();
+    for (int i = 0; i < 7; i++) (void)usartBufferOut.remove();
+    EXPECT_EQ(usartBufferOut.remove(), 6);
+    EXPECT_EQ(usartBufferOut.remove(), 2) << "300 >> 7 is the 14-bit MSB";
+    EXPECT_EQ(usartBufferOut.remove(), 0xB0);
     EXPECT_EQ(usartBufferOut.remove(), 38);
-    // CHARACTERIZATION: (4.0-1.0)*100 == 300 is stored into a uint8_t as
-    // valueToSend and truncates (mod-256 wrap) to 44 on the wire. This is a
-    // REAL out-of-range quirk of the FLOAT display path (any param whose
-    // scaled value exceeds 255 wraps), locked here so an intentional fix
-    // (clamping) must consciously flip this golden. See deferred-work entry.
-    EXPECT_EQ(usartBufferOut.remove(), 44)  // 300 truncated to u8 (mod 256)
-        << "FLOAT display params are sent as (value-min)*100, u8-truncated";
+    EXPECT_EQ(usartBufferOut.remove(), 44) << "300 & 0x7f is the 14-bit LSB";
 }

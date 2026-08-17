@@ -24,15 +24,6 @@
 
 #include "Sequencer.h"  // firmware-under-test (host-compilable via PFM3_HOST seam)
 
-// Sequencer.cpp TU globals the fixture must reset for order-independence:
-// the Sequencer ctor re-wires only the 12 reserved sentinel entries of the
-// action list (indices 0..NUMBER_OF_TIMBRES*2-1) and leaves the 12..2047
-// tail carrying whatever a PREVIOUS test left there. Each test constructs a
-// fresh zeroed Sequencer object, but the TU-global arrays persist — zero
-// them in SetUp so no test depends on execution order. (stepNotes is fully
-// re-cleared by the ctor's own init loop, so it needs no extra reset.)
-extern SeqMidiAction actions[SEQ_ACTION_SIZE];
-
 namespace {
 
 // Serialization layout constants — must match getFullDefaultState / getFullState
@@ -346,11 +337,6 @@ protected:
         synth_.setSynthState(ss_);
         ss_->params = synth_.getTimbre(0)->getParamRaw();
 
-        // TU-global hygiene (see the extern note at the top of this file):
-        // wipe the stale action-list tail BEFORE constructing the Sequencer,
-        // so the ctor's sentinel wiring starts from a deterministic list.
-        std::memset(actions, 0, sizeof(actions));
-
         std::memset(seqBacking_, 0, sizeof(seqBacking_));
         std::memset(dispSeqBacking_, 0, sizeof(dispSeqBacking_));
         seq_ = new (seqBacking_) Sequencer();
@@ -537,7 +523,7 @@ TEST_F(SequencerPhase2, InsertNoteRequiresRunningAndRecording) {
     EXPECT_TRUE(seq_->isSeqActivated(0));
 }
 
-TEST_F(SequencerPhase2, RecordedNoteFiresOnPlaybackAndNoteOffOnWrap) {
+TEST_F(SequencerPhase2, RecordedNoteFiresOnPlaybackAcrossWraps) {
     seq_->start();
     seq_->setRecording(0, true);
     seq_->mainSequencerTic(100);      // position the transport at timer 100
@@ -606,35 +592,37 @@ TEST_F(SequencerPhase2, StepClearPartAndClearAllResetSteps) {
 // ---------------------------------------------------------------------------
 
 TEST_F(SequencerPhase2, ClearDefragsAndKeepsOtherInstruments) {
-    extern SeqMidiAction actions[SEQ_ACTION_SIZE];
     seq_->start();
     seq_->setRecording(0, true);
     seq_->setRecording(1, true);
-    for (int i = 0; i < 30; i++) {
-        seq_->insertNote(0, 60, 100);
+    seq_->mainSequencerTic(100);
+    seq_->insertNote(1, 62, 100);
+    seq_->insertNote(0, 60, 100);  // must move when instrument 1 is reclaimed
+    for (int i = 1; i < 30; i++) {
         seq_->insertNote(1, 62, 100);
     }
     ASSERT_TRUE(seq_->isSeqActivated(0));
     ASSERT_TRUE(seq_->isSeqActivated(1));
     uint8_t memBefore = seq_->getMemory();
-    ASSERT_EQ(actions[0].nextIndex, 12) << "inst0 chain head before clear";
 
-    seq_->clear(0);
-    EXPECT_FALSE(seq_->isSeqActivated(0));
-    EXPECT_TRUE(seq_->isSeqActivated(1)) << "instrument 1 must survive clear(0)";
-    EXPECT_EQ(actions[0].nextIndex, 1) << "inst0 is unlinked from its chain head";
+    seq_->clear(1);
+    EXPECT_FALSE(seq_->isSeqActivated(1));
+    EXPECT_TRUE(seq_->isSeqActivated(0)) << "instrument 0 must survive clear(1)";
+    EXPECT_LT(seq_->getMemory(), memBefore) << "clear must reclaim action capacity";
 
-    // CHARACTERIZATION (latent firmware quirk, locked as golden): clear()
-    // resets actions[instrument*2].nextIndex BEFORE reading it back as the
-    // start of the NONE-marking walk (`index = actions[0].nextIndex` == end
-    // immediately), so the walk — and the whole defrag/compaction block
-    // behind it — is DEAD CODE. The cleared instrument's action slots are
-    // never marked SEQ_ACTION_NONE and lastFreeAction_ (memory %) never
-    // shrinks from clear() alone.
-    EXPECT_EQ(actions[12].actionType, SEQ_ACTION_NOTE)
-        << "clear() does not mark the cleared instrument's slots NONE (dead walk)";
+    // Public playback behavior proves the remaining chain survived compaction.
+    seq_->rewind();
+    seq_->mainSequencerTic(0);
+    seq_->mainSequencerTic(4094);
+    seq_->mainSequencerTic(0);
+    seq_->mainSequencerTic(100);
+    EXPECT_TRUE(synth_.isPlaying())
+        << "remaining instrument action must still fire after compaction";
+
+    seq_->setRecording(1, true);
+    for (int i = 0; i < 30; i++) seq_->insertNote(1, 65, 100);
     EXPECT_EQ(seq_->getMemory(), memBefore)
-        << "clear() does not reclaim action memory (defrag is dead code)";
+        << "reclaimed action capacity must be immediately reusable";
 }
 
 TEST_F(SequencerPhase2, ClearLastInstrumentResetsActionPool) {
@@ -708,23 +696,29 @@ TEST_F(SequencerPhase2, ChangeCurrentVelocityClamps1To127) {
 // Misc: transpose, stepseq assignment, external clock, v0 name.
 // ---------------------------------------------------------------------------
 
-TEST_F(SequencerPhase2, TransposeClampsToPlusMinus47AndAppliesAtPlayback) {
-    // setTranspose accepts (-48, 48) exclusive.
-    seq_->setTranspose(0, 47);
-    seq_->setTranspose(0, -47);
-    seq_->setTranspose(0, 48);   // rejected
-    seq_->setTranspose(0, -48);  // rejected
-    // Applied at playback: record note 40, transpose +12, fire => note 52.
+TEST_F(SequencerPhase2, TransposeBoundariesAreObservedIndependentlyAtPlayback) {
     seq_->start();
     seq_->setRecording(0, true);
-    seq_->setTranspose(0, 12);
     seq_->mainSequencerTic(100);
-    seq_->insertNote(0, 40, 100);
-    seq_->mainSequencerTic(200);
-    seq_->mainSequencerTic(4095);
-    seq_->mainSequencerTic(100);  // next loop pass: the action fires
-    EXPECT_EQ(synth_.getLowerNote(0), 52)
-        << "transpose must be added to the action note at fire time";
+    seq_->insertNote(0, 60, 100);
+
+    auto wrapAndPlay = [&]() {
+        seq_->mainSequencerTic(4094);
+        seq_->mainSequencerTic(0);
+        seq_->mainSequencerTic(100);
+    };
+    seq_->setTranspose(0, 47);
+    wrapAndPlay();
+    EXPECT_EQ(synth_.getLowerNote(0), 107);
+    seq_->setTranspose(0, 48);  // rejected; +47 remains
+    wrapAndPlay();
+    EXPECT_EQ(synth_.getLowerNote(0), 107);
+    seq_->setTranspose(0, -47);
+    wrapAndPlay();
+    EXPECT_EQ(synth_.getLowerNote(0), 13);
+    seq_->setTranspose(0, -48);  // rejected; -47 remains
+    wrapAndPlay();
+    EXPECT_EQ(synth_.getLowerNote(0), 13);
 }
 
 TEST_F(SequencerPhase2, SetInstrumentStepSeqRoutesGetStepData) {
