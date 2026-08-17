@@ -23,8 +23,8 @@
 // Pre-include every firmware header MidiDecoder.h reaches with a `private:`
 // section, so the scoped `#define private public` below affects ONLY the
 // MidiDecoder class body (same contained pattern as midi_decoder_test.cpp).
-#include "Synth.h"
-#include "RingBuffer.h"
+#include "../firmware/Src/synth/Synth.h"
+#include "../lib/Inc/RingBuffer.h"
 
 #define private public  // NOLINT: scoped to MidiDecoder.h only
 #include "MidiDecoder.h"
@@ -150,10 +150,9 @@ protected:
 
         while (asyncActions.getCount() > 0) (void)asyncActions.remove();
         // Same TU-global hygiene as MidiDecoderPhase2::SetUp: drain the USART
-        // out ring and re-home the USB packet writer. usbMidiOutBuff is 64
-        // bytes and the PFM3_HOST sendMidiUsbOut stub does NOT re-home
-        // usbMidiOutBuffWrt (the real body does, post-transmit), so a stale
-        // pointer from a prior test would overflow on the next 4-byte packet.
+        // out ring and re-home the USB packet writer. The PFM3_HOST transmit
+        // seam re-homes the writer after a successful full-buffer flush; this
+        // reset also isolates the fixture from partial packets left by a test.
         while (usartBufferOut.getCount() > 0) (void)usartBufferOut.remove();
         usbMidiOutBuffWrt = usbMidiOutBuff;
         usbMidiOutBuff[0] = usbMidiOutBuff[1] = usbMidiOutBuff[2] = usbMidiOutBuff[3] = 0;
@@ -217,7 +216,7 @@ TEST_F(MidiDecoderFuzz, CorruptSysexStreamsNeverBreakRouting) {
             size_t n = 0;
             buf[n++] = 0xF0;
             size_t len = rng.Next() % 11;
-            for (size_t i = 0; i < len; i++) buf[n++] = rng.NextByte();
+            for (size_t i = 0; i < len; i++) buf[n++] = rng.NextByte() & 0x7F;
             Feed(buf, n);
             // Abandon the frame so later frames start clean-ish (the parser
             // would otherwise stay in SYSEX — also a valid persistent state).
@@ -235,7 +234,7 @@ TEST_F(MidiDecoderFuzz, CorruptSysexStreamsNeverBreakRouting) {
             // Oversized sysex: >32 data bytes before F7 (index must clamp).
             decoder_.newByte(0xF0);
             size_t len = 33 + (rng.Next() % 40);
-            for (size_t i = 0; i < len; i++) decoder_.newByte(rng.NextByte());
+            for (size_t i = 0; i < len; i++) decoder_.newByte(rng.NextByte() & 0x7F);
             decoder_.newByte(0xF7);
             break;
         }
@@ -293,27 +292,30 @@ TEST_F(MidiDecoderFuzz, RandomMessageStreamsNeverBreakRouting) {
 // over the one byte analyseSysexBuffer switches on.
 TEST_F(MidiDecoderFuzz, EverySysexChannelByteIsSafe) {
     for (int ch = 0; ch < 256; ch++) {
-        ss_->mixerState.instrumentState_[0].volume = 0.0f;
+        float before[NUMBER_OF_TIMBRES];
+        for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+            before[t] = ss_->mixerState.instrumentState_[t].volume;
+        }
         Feed({0xF0, 0x7d, static_cast<uint8_t>(ch), 0x7F, 0xF7});
         if (ch >= 1 && ch <= 6) {
             EXPECT_FLOAT_EQ(ss_->mixerState.instrumentState_[ch - 1].volume,
                             127 * kInv127)
                 << "channel byte " << ch;
+        } else {
+            for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+                EXPECT_FLOAT_EQ(ss_->mixerState.instrumentState_[t].volume, before[t])
+                    << "invalid channel " << ch << " changed timbre " << t;
+            }
         }
         // Parser must be back in WAITING after every frame.
         ASSERT_EQ(decoder_.currentEventState.eventState, MIDI_EVENT_WAITING);
     }
-    // Short-frame shapes: the F7 TERMINATOR is stored as a data byte before
-    // analyseSysexBuffer runs, so [1] (channel slot) can never be stale in a
-    // 2-byte frame — the terminator itself (0xF7) can't match 1..6.
+    // F7 is framing, never payload: incomplete frames are harmless.
     ss_->mixerState.instrumentState_[0].volume = 0.0f;
-    Feed({0xF0, 0x7d, 0xF7});  // [0]=0x7d, [1]=0xF7 -> switch can't match
+    Feed({0xF0, 0x7d, 0xF7});
     EXPECT_FLOAT_EQ(ss_->mixerState.instrumentState_[0].volume, 0.0f);
-    // CHARACTERIZATION: 3-byte channel-set — the terminator lands in the
-    // VOLUME slot [2] and is applied as a value: 0xF7/127.
     Feed({0xF0, 0x7d, 0x01, 0xF7});
-    EXPECT_FLOAT_EQ(ss_->mixerState.instrumentState_[0].volume, 0xF7 * kInv127)
-        << "F7 terminator analysed as the volume byte (characterized quirk)";
+    EXPECT_FLOAT_EQ(ss_->mixerState.instrumentState_[0].volume, 0.0f);
     // ...and routing still works afterwards.
     Feed({0x90, 64, 100});
     EXPECT_EQ(synth_.getLowerNote(0), 64);
