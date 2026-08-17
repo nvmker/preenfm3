@@ -341,6 +341,148 @@ void GoldenHarness::setTimbreAlgo(int timbre, Algorithm algo) {
     synth_->afterNewParamsLoad(timbre);
 }
 
+void GoldenHarness::setTimbreModulationIndices(int timbre, const float im[4],
+                                               float feedback) {
+    // Same proven pattern as setTimbreAlgo: patch the flat params_ fields, then
+    // run the production-faithful re-init. Field map (Common.h EngineIm1/
+    // EngineIm2/EngineIm3, Common.h:328-350): IM1/IM2 live in engineIm1, IM3/IM4
+    // in engineIm2, feedback IS engineIm3.modulationIndex6 (no separate field;
+    // updateAllModulationIndexes clamps it to [0,1], the other IMs to >=0 —
+    // Voice.h:125-158). Defensive validation in the harness style of
+    // setMatrixRow: an invalid timbre OOBs timbres_[]; a non-finite IM/feedback
+    // poisons the render (NaN bypasses the <0 clamps — NaN comparisons are
+    // false — and propagates into the int32 mix as UB).
+    if (timbre < 0 || timbre >= NUMBER_OF_TIMBRES) {
+        std::cerr << "golden: setTimbreModulationIndices timbre=" << timbre
+                  << " out of range [0," << NUMBER_OF_TIMBRES
+                  << ") — would OOB timbres_[].\n";
+        std::abort();
+    }
+    for (int i = 0; i < 4; i++) {
+        if (!std::isfinite(im[i])) {
+            std::cerr << "golden: setTimbreModulationIndices im[" << i
+                      << "] is non-finite (" << im[i]
+                      << ") — would poison the render.\n";
+            std::abort();
+        }
+    }
+    if (!std::isfinite(feedback)) {
+        std::cerr << "golden: setTimbreModulationIndices feedback is non-finite ("
+                  << feedback << ") — would poison the render.\n";
+        std::abort();
+    }
+    OneSynthParams* p = synth_->getTimbre(timbre)->getParamRaw();
+    p->engineIm1.modulationIndex1 = im[0];
+    p->engineIm1.modulationIndex2 = im[1];
+    p->engineIm2.modulationIndex3 = im[2];
+    p->engineIm2.modulationIndex4 = im[3];
+    p->engineIm3.modulationIndex6 = feedback;
+
+    // Fast-attack the MODULATOR envelopes (env3..env6; env1/env2 drive the
+    // carriers and keep the preset ADSR). Why: the default preset's env3..6
+    // rows are time {.1,1,.5,.6} / level {0,.6,4,0} — attackLevel=0 with
+    // attackTime=0.1 (~150 blocks @ 48 kHz). For the sweep's 48-block window
+    // the modulator envs sit at ~0 amplitude, so Osc::getNextBlock-
+    // WithFeedbackAndEnveloppe's `sample * env * freq` output is zero and NO
+    // modulation-index value has any audible effect — routing-distinct
+    // algorithms collapsed into byte-identical render groups (caught by
+    // FmAlgoSweep's pairwise-distinct check: 9 groups incl. ALGO2==ALGO4,
+    // ALGO1==ALGO5). With fast attacks all 32 algorithms render pairwise
+    // distinct (verified empirically; no genuine duplicate topologies).
+    // Explicit named fields (no offset arithmetic on &env3Time).
+    for (EnvelopeTimeMemory* t : {&p->env3Time, &p->env4Time, &p->env5Time,
+                                  &p->env6Time}) {
+        t->attackTime = 0; t->decayTime = 1;
+        t->sustainTime = 100; t->releaseTime = 1;
+    }
+    for (EnvelopeLevelMemory* l : {&p->env3Level, &p->env4Level, &p->env5Level,
+                                   &p->env6Level}) {
+        l->attackLevel = 1; l->decayLevel = 1;
+        l->sustainLevel = 1; l->releaseLevel = 0;
+    }
+    synth_->afterNewParamsLoad(timbre);
+}
+
+void GoldenHarness::setTimbreFx(int timbre, int type, float param1,
+                                float param2, float param3) {
+    // Patch params_.effect1.{type,param1,param2,param3} (Common.h EffectRowParams)
+    // + afterNewParamsLoad. Verified read paths (see golden_harness.h): the
+    // sounding-path FX reads type/param1/param2 LIVE each block in
+    // Voice::fxAfterBlock (Voice.cpp:4124+), AND afterNewParamsLoad reaches
+    // Voice::setNewEffectParam via Timbre::afterNewParamsLoad (Timbre.cpp:2603-
+    // 2605), which resets the per-type filter state so a voice that STARTS with
+    // this FX matches one switched to it. Validation: invalid timbre OOBs
+    // timbres_[]; an out-of-range type falls into fxAfterBlock's default
+    // pass-through arm (benign) but would silently make a golden silent —
+    // reject it so a sweep typo fails loudly; non-finite params poison the
+    // render. param3 is the FX gain (clamp(param3,0,16) -> mixerGain,
+    // Voice.cpp:4125-4126; 0 attenuates the output to silence).
+    if (timbre < 0 || timbre >= NUMBER_OF_TIMBRES) {
+        std::cerr << "golden: setTimbreFx timbre=" << timbre << " out of range [0,"
+                  << NUMBER_OF_TIMBRES << ") — would OOB timbres_[].\n";
+        std::abort();
+    }
+    if (type < FILTER_OFF || type >= FILTER_LAST) {
+        std::cerr << "golden: setTimbreFx type=" << type << " out of range ["
+                  << FILTER_OFF << "," << FILTER_LAST
+                  << ") — fxAfterBlock would fall to the default pass-through arm "
+                     "and a golden would silently lock nothing.\n";
+        std::abort();
+    }
+    if (!std::isfinite(param1) || !std::isfinite(param2) ||
+        !std::isfinite(param3)) {
+        std::cerr << "golden: setTimbreFx(" << timbre << ",type=" << type
+                  << ") has a non-finite param (" << param1 << "/" << param2
+                  << "/" << param3 << ") — would poison the render.\n";
+        std::abort();
+    }
+    OneSynthParams* p = synth_->getTimbre(timbre)->getParamRaw();
+    p->effect1.type   = static_cast<float>(type);
+    p->effect1.param1 = param1;
+    p->effect1.param2 = param2;
+    p->effect1.param3 = param3;
+    synth_->afterNewParamsLoad(timbre);
+}
+
+void GoldenHarness::setTimbreFx2(int timbre, int type, float param1,
+                                 float param2, float param3) {
+    // Patch params_.effect2.{type,param1,param2,param3}. NO afterNewParamsLoad:
+    // Timbre::fxAfterBlock reads all four fields LIVE every block (Timbre.cpp:
+    // 752-762; call site Synth.cpp:354), and the anti-click type-change block
+    // (Timbre.cpp:764-771) zeroes the delay/feedback state on the first block
+    // with the new type — so a state reset via afterNewParamsLoad is neither
+    // required (unlike effect1's Voice::setNewEffectParam) nor desired (it
+    // would also reset the arpeggiator, an unrelated surface). Validation in
+    // the setTimbreFx style: invalid timbre OOBs timbres_[]; out-of-range type
+    // falls to the switch default (bypass) and would silently lock nothing;
+    // non-finite params poison the render. param3 is the wet gain
+    // (clamp(param3,0,16) -> mixerGain_, Timbre.cpp:762).
+    if (timbre < 0 || timbre >= NUMBER_OF_TIMBRES) {
+        std::cerr << "golden: setTimbreFx2 timbre=" << timbre << " out of range [0,"
+                  << NUMBER_OF_TIMBRES << ") — would OOB timbres_[].\n";
+        std::abort();
+    }
+    if (type < FILTER2_OFF || type >= FILTER2_LAST) {
+        std::cerr << "golden: setTimbreFx2 type=" << type << " out of range ["
+                  << FILTER2_OFF << "," << FILTER2_LAST
+                  << ") — Timbre::fxAfterBlock would fall to the switch default "
+                     "and a golden would silently lock nothing.\n";
+        std::abort();
+    }
+    if (!std::isfinite(param1) || !std::isfinite(param2) ||
+        !std::isfinite(param3)) {
+        std::cerr << "golden: setTimbreFx2(" << timbre << ",type=" << type
+                  << ") has a non-finite param (" << param1 << "/" << param2
+                  << "/" << param3 << ") — would poison the render.\n";
+        std::abort();
+    }
+    OneSynthParams* p = synth_->getTimbre(timbre)->getParamRaw();
+    p->effect2.type   = static_cast<float>(type);
+    p->effect2.param1 = param1;
+    p->effect2.param2 = param2;
+    p->effect2.param3 = param3;
+}
+
 void GoldenHarness::setMatrixRow(int timbre, int rowIdx, int source, float mul,
                                  int dest1, int dest2) {
     // Overwrite one matrix row's {source, mul, dest1, dest2} fields. The rows

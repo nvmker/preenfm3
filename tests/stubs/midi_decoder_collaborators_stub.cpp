@@ -122,5 +122,14 @@ struct AllParameterRowsDisplay allParameterRows = []{
     // G3's matrix/LFO rows). Only ROW_ARPEGGIATOR1 is overridden — the golden
     // drives no other arp row. See spec-golden-master-phase-g4.md Design Notes.
     a.row[ROW_ARPEGGIATOR1] = &permissiveParamRow;
+    // Phase 3 synth-core state-machine tests (tests/synth_core_test.cpp): the
+    // LATCH encoder lives on ROW_ARPEGGIATOR2 (ENCODER_ARPEGGIATOR_LATCH=3,
+    // SynthState.h:62). Same G3/G4 pattern: on the zeroed dummy, latch=1
+    // clamps to maxValue=0, the flat write is a no-op, and setLatchMode never
+    // runs — the latched-arp test becomes byte-identical to the unlatched
+    // control (zero-signal trap). Only ROW_ARPEGGIATOR2's LATCH encoder is
+    // driven by the tests; permissive bounds accept latch 0/1 identically to
+    // the real [0,1] display bound.
+    a.row[ROW_ARPEGGIATOR2] = &permissiveParamRow;
     return a;
 }();

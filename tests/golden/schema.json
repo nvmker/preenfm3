@@ -1,323 +1,565 @@
 {
-  "schemaVersion": 4,
-  "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp. The full render is byte-stable per (libm-class), NOT per compiler: ubuntu gcc and ubuntu clang both link glibc and produce byte-identical renders, while macOS clang links libsystem and differs. The discriminator is the platform/libm; tests/golden_master_test.cpp selects by __APPLE__. FM feedback amplifies the ~1-ULP libm-driven table differences (Osc::init/Env::init precompute via sinf/expf/logf), so cross-libm renders diverge by >1 audio-LSB within ~1 block. v4: compare tolerance is 256 stored units (= 1 audio-LSB; the firmware clamps to 24-bit then <<8), and the hash is diagnostic-only (goldenCompare is authoritative). Fixture bytes are UNCHANGED from v3.",
-  "comparison": {
-    "artifactType": "int32_t DAC-format render (3 buffers x 64 stereo per block = 192 int32/block); stored value = (24-bit clamped sample) << 8",
-    "authoritativeGate": "goldenCompare, ±256 stored int32 units = ±1 audio-LSB (the firmware's final <<8 puts the 24-bit audio in the top 24 bits; a bare ±1 would only cover always-zero padding). Absorbs benign within-platform drift.",
-    "hashRole": "DIAGNOSTIC ONLY — FNV-1a 64-bit + splitmix64 over a tolerance-1-normalized buffer; a mismatch is printed to stderr but never fails the test (normalization bucket boundaries can flip under benign drift; making it authoritative would defeat the tolerance). goldenCompare is the sole pass/fail gate.",
-    "bufferLayoutPerBlock": "[buffer1(64) buffer2(64) buffer3(64)] = out1/2, out3/4, out5/6",
-    "buildFlag": "-ffp-contract=off (tests/CMakeLists.txt) — strict IEEE mul/add, no FMA contraction, for best per-variant reproducibility (does NOT close the cross-libm gap, which is libm-driven)"
+ "schemaVersion": 4,
+ "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp. The full render is byte-stable per (libm-class), NOT per compiler: ubuntu gcc and ubuntu clang both link glibc and produce byte-identical renders, while macOS clang links libsystem and differs. The discriminator is the platform/libm; tests/golden_master_test.cpp selects by __APPLE__. FM feedback amplifies the ~1-ULP libm-driven table differences (Osc::init/Env::init precompute via sinf/expf/logf), so cross-libm renders diverge by >1 audio-LSB within ~1 block. v4: compare tolerance is 256 stored units (= 1 audio-LSB; the firmware clamps to 24-bit then <<8), and the hash is diagnostic-only (goldenCompare is authoritative). Fixture bytes are UNCHANGED from v3. v4-era Phase 3 additions (spec-test-coverage-phase3): 5 nonzero-IM algo goldens + 2 FX goldens; _linux variants pending the regenerate-linux-goldens workflow dispatch.",
+ "comparison": {
+  "artifactType": "int32_t DAC-format render (3 buffers x 64 stereo per block = 192 int32/block); stored value = (24-bit clamped sample) << 8",
+  "authoritativeGate": "goldenCompare, \u00b1256 stored int32 units = \u00b11 audio-LSB (the firmware's final <<8 puts the 24-bit audio in the top 24 bits; a bare \u00b11 would only cover always-zero padding). Absorbs benign within-platform drift.",
+  "hashRole": "DIAGNOSTIC ONLY \u2014 FNV-1a 64-bit + splitmix64 over a tolerance-1-normalized buffer; a mismatch is printed to stderr but never fails the test (normalization bucket boundaries can flip under benign drift; making it authoritative would defeat the tolerance). goldenCompare is the sole pass/fail gate.",
+  "bufferLayoutPerBlock": "[buffer1(64) buffer2(64) buffer3(64)] = out1/2, out3/4, out5/6",
+  "buildFlag": "-ffp-contract=off (tests/CMakeLists.txt) \u2014 strict IEEE mul/add, no FMA contraction, for best per-variant reproducibility (does NOT close the cross-libm gap, which is libm-driven)"
+ },
+ "determinism": {
+  "scope": "per (libm-class): macOS-libsystem and linux-glibc renders differ by >1 LSB within ~1 block (libm-driven table differences amplified by FM feedback); ubuntu gcc and ubuntu clang (both glibc) are byte-identical",
+  "discriminator": "__APPLE__ (macOS -> _macos variant) vs else (linux/glibc -> _linux variant)",
+  "rng": "HAL_RNG gated to seed 0 under PFM3_HOST (Synth.cpp:285); downstream noise[] fill loop shared host/firmware",
+  "selfCheck": "GoldenMaster.DeterminismSelfCheck renders twice in-process and asserts byte-exact equality (per-variant)"
+ },
+ "variants": [
+  {
+   "id": "macos",
+   "select": "__APPLE__ defined",
+   "libm": "libsystem",
+   "use": "local dev (macOS Apple clang)"
   },
-  "determinism": {
-    "scope": "per (libm-class): macOS-libsystem and linux-glibc renders differ by >1 LSB within ~1 block (libm-driven table differences amplified by FM feedback); ubuntu gcc and ubuntu clang (both glibc) are byte-identical",
-    "discriminator": "__APPLE__ (macOS -> _macos variant) vs else (linux/glibc -> _linux variant)",
-    "rng": "HAL_RNG gated to seed 0 under PFM3_HOST (Synth.cpp:285); downstream noise[] fill loop shared host/firmware",
-    "selfCheck": "GoldenMaster.DeterminismSelfCheck renders twice in-process and asserts byte-exact equality (per-variant)"
+  {
+   "id": "linux",
+   "select": "__APPLE__ undefined",
+   "libm": "glibc",
+   "use": "CI ubuntu gcc (Host unit tests) + ubuntu clang (Coverage leg)"
+  }
+ ],
+ "fixtures": [
+  {
+   "id": "a4_default_sustain_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (copied by Synth::init into timbre 0)",
+   "noteSequence": "noteOn(timbre=0, note=69 [A4], velocity=100) before block 0; no note-off",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "7455c83076f0ffaa",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "a4_default_sustain_macos.bin",
+    "a4_default_sustain_macos.xxh",
+    "a4_default_sustain_macos.diff.txt"
+   ],
+   "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on macOS/libsystem"
   },
-  "variants": [
-    { "id": "macos", "select": "__APPLE__ defined", "libm": "libsystem", "use": "local dev (macOS Apple clang)" },
-    { "id": "linux", "select": "__APPLE__ undefined", "libm": "glibc", "use": "CI ubuntu gcc (Host unit tests) + ubuntu clang (Coverage leg)" }
-  ],
-  "fixtures": [
-    {
-      "id": "a4_default_sustain_macos",
-      "variant": "macos",
-      "preset": "default preenMainPreset (copied by Synth::init into timbre 0)",
-      "noteSequence": "noteOn(timbre=0, note=69 [A4], velocity=100) before block 0; no note-off",
-      "nBlocks": 200,
-      "samplesPerBlock": 192,
-      "totalSamples": 38400,
-      "hash": "7455c83076f0ffaa",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
-      "files": ["a4_default_sustain_macos.bin", "a4_default_sustain_macos.xxh", "a4_default_sustain_macos.diff.txt"],
-      "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on macOS/libsystem"
-    },
-    {
-      "id": "a4_default_sustain_linux",
-      "variant": "linux",
-      "preset": "default preenMainPreset (copied by Synth::init into timbre 0)",
-      "noteSequence": "noteOn(timbre=0, note=69 [A4], velocity=100) before block 0; no note-off",
-      "nBlocks": 200,
-      "samplesPerBlock": 192,
-      "totalSamples": 38400,
-      "hash": "8f8766fe3e1ceff3",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
-      "files": ["a4_default_sustain_linux.bin", "a4_default_sustain_linux.xxh", "a4_default_sustain_linux.diff.txt"],
-      "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on linux/glibc (CI ubuntu gcc + ubuntu clang-coverage)"
-    },
-    {
-      "id": "envelope_adsr_full_macos",
-      "variant": "macos",
-      "preset": "default preenMainPreset (timbre 0)",
-      "noteSequence": "noteOn(0,69,100)@block0; noteOff(0,69)@block300",
-      "nBlocks": 600,
-      "samplesPerBlock": 192,
-      "totalSamples": 115200,
-      "hash": "e873d1dd67184295",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10) + Env release tail (blocks 300-599)",
-      "files": ["envelope_adsr_full_macos.bin", "envelope_adsr_full_macos.xxh", "envelope_adsr_full_macos.diff.txt"],
-      "guards": "Env stage transitions (attack/decay/sustain) + release tail on noteOff — G0's sustain-only golden never exercises noteOff/release"
-    },
-    {
-      "id": "envelope_adsr_full_linux",
-      "variant": "linux",
-      "preset": "default preenMainPreset (timbre 0)",
-      "noteSequence": "noteOn(0,69,100)@block0; noteOff(0,69)@block300",
-      "nBlocks": 600,
-      "samplesPerBlock": 192,
-      "totalSamples": 115200,
-      "hash": "0e40387715ce6a5a",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10) + Env release tail (blocks 300-599)",
-      "files": ["envelope_adsr_full_linux.bin", "envelope_adsr_full_linux.xxh", "envelope_adsr_full_linux.diff.txt"],
-      "guards": "Env stage transitions (attack/decay/sustain) + release tail on noteOff — G0's sustain-only golden never exercises noteOff/release"
-    },
-    {
-      "id": "fm_algo2_macos",
-      "variant": "macos",
-      "preset": "default preenMainPreset, timbre 0 engine1.algo overridden to ALGO2",
-      "noteSequence": "setTimbreAlgo(0, ALGO2) + afterNewParamsLoad(0); noteOn(0,69,100)@block0; no note-off",
-      "nBlocks": 200,
-      "samplesPerBlock": 192,
-      "totalSamples": 38400,
-      "hash": "713eab8fc66121f7",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10)",
-      "files": ["fm_algo2_macos.bin", "fm_algo2_macos.xxh", "fm_algo2_macos.diff.txt"],
-      "guards": "ALGO2 ({1,1,2,0,0,0}) = 2 carriers + 1 modulator — the multi-carrier output summing path the default ALGO1 (1 carrier) never exercises"
-    },
-    {
-      "id": "fm_algo2_linux",
-      "variant": "linux",
-      "preset": "default preenMainPreset, timbre 0 engine1.algo overridden to ALGO2",
-      "noteSequence": "setTimbreAlgo(0, ALGO2) + afterNewParamsLoad(0); noteOn(0,69,100)@block0; no note-off",
-      "nBlocks": 200,
-      "samplesPerBlock": 192,
-      "totalSamples": 38400,
-      "hash": "e6eb29e6882e3e37",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10)",
-      "files": ["fm_algo2_linux.bin", "fm_algo2_linux.xxh", "fm_algo2_linux.diff.txt"],
-      "guards": "ALGO2 ({1,1,2,0,0,0}) = 2 carriers + 1 modulator — the multi-carrier output summing path the default ALGO1 (1 carrier) never exercises"
-    },
-    {
-      "id": "fm_algo27_6carrier_macos",
-      "variant": "macos",
-      "preset": "default preenMainPreset, timbre 0 engine1.algo overridden to ALG27",
-      "noteSequence": "setTimbreAlgo(0, ALG27) + afterNewParamsLoad(0); noteOn(0,69,100)@block0; no note-off",
-      "nBlocks": 200,
-      "samplesPerBlock": 192,
-      "totalSamples": 38400,
-      "hash": "686bac6da3937528",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10)",
-      "files": ["fm_algo27_6carrier_macos.bin", "fm_algo27_6carrier_macos.xxh", "fm_algo27_6carrier_macos.diff.txt"],
-      "guards": "ALG27 ({1,1,1,1,1,1}) = all 6 carriers, additive — the maximal carrier-topology departure from ALGO1; exercises the full 6-carrier summing path. (Chosen over ALG17, which renders byte-identical to G0 under the zero-IM default preset — see spec Design Notes.)"
-    },
-    {
-      "id": "fm_algo27_6carrier_linux",
-      "variant": "linux",
-      "preset": "default preenMainPreset, timbre 0 engine1.algo overridden to ALG27",
-      "noteSequence": "setTimbreAlgo(0, ALG27) + afterNewParamsLoad(0); noteOn(0,69,100)@block0; no note-off",
-      "nBlocks": 200,
-      "samplesPerBlock": 192,
-      "totalSamples": 38400,
-      "hash": "0814ade1448fb2bb",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10)",
-      "files": ["fm_algo27_6carrier_linux.bin", "fm_algo27_6carrier_linux.xxh", "fm_algo27_6carrier_linux.diff.txt"],
-      "guards": "ALG27 ({1,1,1,1,1,1}) = all 6 carriers, additive — the maximal carrier-topology departure from ALGO1; exercises the full 6-carrier summing path. (Chosen over ALG17, which renders byte-identical to G0 under the zero-IM default preset — see spec Design Notes.)"
-    },
-    {
-      "id": "multi_timbre_mix_macos",
-      "variant": "macos",
-      "preset": "default preenMainPreset (timbres 0 + 1)",
-      "noteSequence": "noteOn(0,69,100) + noteOn(1,72,100)@block0; no note-off",
-      "nBlocks": 200,
-      "samplesPerBlock": 192,
-      "totalSamples": 38400,
-      "hash": "d8f72fbd66ea49bf",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 200 blocks incl. per-timbre smoothVolume_/smoothPan_ transient (~blocks 0-10)",
-      "files": ["multi_timbre_mix_macos.bin", "multi_timbre_mix_macos.xxh", "multi_timbre_mix_macos.diff.txt"],
-      "guards": "voicesToTimbre multi-timbre mix + per-timbre smoothVolume_/smoothPan_ + fxBus->mixAdd — timbres 0+1 (6+6=12 <= MAX_NUMBER_OF_VOICES 16) summing into the 6 outputs"
-    },
-    {
-      "id": "multi_timbre_mix_linux",
-      "variant": "linux",
-      "preset": "default preenMainPreset (timbres 0 + 1)",
-      "noteSequence": "noteOn(0,69,100) + noteOn(1,72,100)@block0; no note-off",
-      "nBlocks": 200,
-      "samplesPerBlock": 192,
-      "totalSamples": 38400,
-      "hash": "48ad9f3e5afc2d0c",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 200 blocks incl. per-timbre smoothVolume_/smoothPan_ transient (~blocks 0-10)",
-      "files": ["multi_timbre_mix_linux.bin", "multi_timbre_mix_linux.xxh", "multi_timbre_mix_linux.diff.txt"],
-      "guards": "voicesToTimbre multi-timbre mix + per-timbre smoothVolume_/smoothPan_ + fxBus->mixAdd — timbres 0+1 (6+6=12 <= MAX_NUMBER_OF_VOICES 16) summing into the 6 outputs"
-    },
-    {
-      "id": "live_lfo_pitch_modulation_macos",
-      "variant": "macos",
-      "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.5, OSC1_FREQ, NONE}",
-      "noteSequence": "setMatrixRow(0,7,LFO1,0.5,OSC1_FREQ); noteOn(0,69,100)@0; no note-off; no PARAM_CHANGE (LFO auto-modulates)",
-      "nBlocks": 400,
-      "samplesPerBlock": 192,
-      "totalSamples": 76800,
-      "hash": "845498ada76c269e",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 400 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); captures ~1.2 LFO1 cycles (default lfoOsc1 freq 4.5; 400 blocks = 12.8k samples = ~267 ms)",
-      "files": ["live_lfo_pitch_modulation_macos.bin", "live_lfo_pitch_modulation_macos.xxh", "live_lfo_pitch_modulation_macos.diff.txt"],
-      "guards": "Phase G3: steady LFO1->matrix->OSC1_FREQ->Voice pitch routing end-to-end. Locks the matrix-routing path under a sounding voice (the setMatrixRow field-patch + afterNewParamsLoad path)."
-    },
-    {
-      "id": "live_lfo_pitch_modulation_linux",
-      "variant": "linux",
-      "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.5, OSC1_FREQ, NONE}",
-      "noteSequence": "setMatrixRow(0,7,LFO1,0.5,OSC1_FREQ); noteOn(0,69,100)@0; no note-off; no PARAM_CHANGE",
-      "nBlocks": 400,
-      "samplesPerBlock": 192,
-      "totalSamples": 76800,
-      "hash": "d433df1b5237b62a",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 400 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); captures ~1.2 LFO1 cycles (default lfoOsc1 freq 4.5; 400 blocks = 12.8k samples = ~267 ms)",
-      "files": ["live_lfo_pitch_modulation_linux.bin", "live_lfo_pitch_modulation_linux.xxh", "live_lfo_pitch_modulation_linux.diff.txt"],
-      "guards": "Phase G3 (linux/glibc variant): steady LFO1->matrix->OSC1_FREQ->Voice pitch routing. Generated by the regenerate-linux-goldens workflow."
-    },
-    {
-      "id": "live_matrix_mul_change_macos",
-      "variant": "macos",
-      "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.0(initial), OSC1_FREQ, NONE}",
-      "noteSequence": "setMatrixRow(0,7,LFO1,0.0,OSC1_FREQ); noteOn(0,69,100)@0; setNewValueFromMidi(0,ROW_MATRIX8,ENCODER_MATRIX_MUL,0.6)@blk80 (turns modulation ON mid-note)",
-      "nBlocks": 200,
-      "samplesPerBlock": 192,
-      "totalSamples": 38400,
-      "hash": "ecf93146a65b92b2",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); blocks 0-79 unmodulated, blocks 80-199 pitch-wobble (modulation on)",
-      "files": ["live_matrix_mul_change_macos.bin", "live_matrix_mul_change_macos.xxh", "live_matrix_mul_change_macos.diff.txt"],
-      "guards": "Phase G3: live CC->matrix-mul->Voice path. A mid-render setNewValueFromMidi on ROW_MATRIX8/ENCODER_MATRIX_MUL changes rows[r].mul (read live by Matrix::computeAllDestinations); pitch wobble kicks in from block 80. Locks the 'stuck/wrong CC routing' bug class."
-    },
-    {
-      "id": "live_matrix_mul_change_linux",
-      "variant": "linux",
-      "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.0(initial), OSC1_FREQ, NONE}",
-      "noteSequence": "setMatrixRow(0,7,LFO1,0.0,OSC1_FREQ); noteOn(0,69,100)@0; setNewValueFromMidi(0,ROW_MATRIX8,ENCODER_MATRIX_MUL,0.6)@blk80",
-      "nBlocks": 200,
-      "samplesPerBlock": 192,
-      "totalSamples": 38400,
-      "hash": "088671fa28e60f5a",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); blocks 0-79 unmodulated, blocks 80-199 pitch-wobble",
-      "files": ["live_matrix_mul_change_linux.bin", "live_matrix_mul_change_linux.xxh", "live_matrix_mul_change_linux.diff.txt"],
-      "guards": "Phase G3 (linux/glibc variant): live CC->matrix-mul->Voice path. Generated by the regenerate-linux-goldens workflow."
-    },
-    {
-      "id": "live_lfo_freq_change_macos",
-      "variant": "macos",
-      "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.5, MIX_OSC1, NONE}",
-      "noteSequence": "setMatrixRow(0,7,LFO1,0.5,MIX_OSC1); noteOn(0,69,100)@0; setNewValueFromMidi(0,ROW_LFOOSC1,ENCODER_LFO_FREQ,9.0)@blk100 (doubles the LFO speed from default 4.5, doubling the tremolo rate)",
-      "nBlocks": 300,
-      "samplesPerBlock": 192,
-      "totalSamples": 57600,
-      "hash": "528e8128e6d2770f",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 300 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); blocks 0-99 tremolo at LFO 4.5 Hz, blocks 100-299 tremolo at 9.0 Hz",
-      "files": ["live_lfo_freq_change_macos.bin", "live_lfo_freq_change_macos.xxh", "live_lfo_freq_change_macos.diff.txt"],
-      "guards": "Phase G3: live LFO-freq CC update + a non-pitch (amplitude/tremolo) matrix destination. A mid-render setNewValueFromMidi on ROW_LFOOSC1/ENCODER_LFO_FREQ writes lfoOsc1.freq (read live by LfoOsc); the LFO1->MIX_OSC1 tremolo rate doubles from block 100. (Originally specified LFO1->ALL_ENV_DECAY; changed to MIX_OSC1 after ALL_ENV_DECAY was found inaudible on a sustained note — see spec Spec Change Log.)"
-    },
-    {
-      "id": "live_lfo_freq_change_linux",
-      "variant": "linux",
-      "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.5, MIX_OSC1, NONE}",
-      "noteSequence": "setMatrixRow(0,7,LFO1,0.5,MIX_OSC1); noteOn(0,69,100)@0; setNewValueFromMidi(0,ROW_LFOOSC1,ENCODER_LFO_FREQ,9.0)@blk100",
-      "nBlocks": 300,
-      "samplesPerBlock": 192,
-      "totalSamples": 57600,
-      "hash": "613b80b4a1d299ac",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 300 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); blocks 0-99 tremolo at LFO 4.5 Hz, blocks 100-299 tremolo at 9.0 Hz",
-      "files": ["live_lfo_freq_change_linux.bin", "live_lfo_freq_change_linux.xxh", "live_lfo_freq_change_linux.diff.txt"],
-      "guards": "Phase G3 (linux/glibc variant): live LFO-freq CC + non-pitch destination. Generated by the regenerate-linux-goldens workflow."
-    },
-    {
-      "id": "arp_triad_up_macos",
-      "variant": "macos",
-      "preset": "default preenMainPreset (timbre 0); arpeggiator enabled out-of-band via enableArpeggiator(0, bpm=120, UP, 2 octaves)",
-      "noteSequence": "enableArpeggiator(0,120,UP,2); noteOn(0,60,100)+noteOn(0,64,100)+noteOn(0,67,100)@block0; no note-off",
-      "nBlocks": 300,
-      "samplesPerBlock": 192,
-      "totalSamples": 57600,
-      "hash": "658e3d0a97388d45",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 300 blocks; blocks 0-~31 silent (arp waits for its first internal-clock Tick at ~block 32, faithful characterization), blocks 32-299 arp cycling (3 notes x 2 oct = 6-note cycle, ~1.5 cycles)",
-      "files": ["arp_triad_up_macos.bin", "arp_triad_up_macos.xxh", "arp_triad_up_macos.diff.txt"],
-      "guards": "Phase G4: arpeggiator note-cycling path. The arp clock is a pure sample-block counter (Timbre::updateArpegiatorInternalClock, advanced inside buildNewSampleBlock) — no MIDI clock / HAL shim. Locks arp note-stack rotation + octave-shift + voice-realloc, the regression class G0-G3 never reach."
-    },
-    {
-      "id": "arp_triad_up_linux",
-      "variant": "linux",
-      "preset": "default preenMainPreset (timbre 0); arpeggiator enabled out-of-band via enableArpeggiator(0, bpm=120, UP, 2 octaves)",
-      "noteSequence": "enableArpeggiator(0,120,UP,2); noteOn(0,60,100)+noteOn(0,64,100)+noteOn(0,67,100)@block0; no note-off",
-      "nBlocks": 300,
-      "samplesPerBlock": 192,
-      "totalSamples": 57600,
-      "hash": "cd8d40b072030ec4",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 300 blocks; blocks 0-~31 silent (arp first-Tick latency), blocks 32-299 arp cycling",
-      "files": ["arp_triad_up_linux.bin", "arp_triad_up_linux.xxh", "arp_triad_up_linux.diff.txt"],
-      "guards": "Phase G4 (linux/glibc variant): arpeggiator note-cycling path. Generated by the regenerate-linux-goldens workflow."
-    },
-    {
-      "id": "seq_external_playback_macos",
-      "variant": "macos",
-      "preset": "default preenMainPreset (timbre 0); sequencer loaded out-of-band via setupSequencerTriadPlayback (stepNotes[0]: C4/E4/G4 at step indices 0/32/64) + armed external-sync",
-      "noteSequence": "setupSequencerTriadPlayback(); MIDI_BYTE(0xFA)@block0; 4xMIDI_BYTE(0xF8)@blocks1..96 (384 MIDI clocks = 1 bar @ default tempo)",
-      "nBlocks": 97,
-      "samplesPerBlock": 192,
-      "totalSamples": 18624,
-      "hash": "29cc5d102e0aaf77",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 97 blocks; block 0 silent (0xFA start, first clocks at block 1), blocks 1-96 capture the 3 step notes (C4/E4/G4) firing via noteOnFromSequencer as the MIDI clock advances the sequencer through 1 bar",
-      "files": ["seq_external_playback_macos.bin", "seq_external_playback_macos.xxh", "seq_external_playback_macos.diff.txt"],
-      "guards": "Phase G4: sequencer external-MIDI-clock playback path. MIDI_BYTE events feed raw clock bytes through the real MidiDecoder::newByte -> synth->midiTick/midiClockStart -> sequencer->onMidiClock -> step advance -> noteOnFromSequencer. Locks the MidiDecoder clock-byte parse + Synth->Sequencer->noteOnFromSequencer chain — the regression class G0-G3 + the arp golden never reach (their notes enter via Synth::noteOn directly)."
-    },
-    {
-      "id": "seq_external_playback_linux",
-      "variant": "linux",
-      "preset": "default preenMainPreset (timbre 0); sequencer loaded out-of-band via setupSequencerTriadPlayback + armed external-sync",
-      "noteSequence": "setupSequencerTriadPlayback(); MIDI_BYTE(0xFA)@block0; 4xMIDI_BYTE(0xF8)@blocks1..96",
-      "nBlocks": 97,
-      "samplesPerBlock": 192,
-      "totalSamples": 18624,
-      "hash": "9473964e12078027",
-      "compareLsbTolerance": 256,
-      "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
-      "warmStart": "all 97 blocks; block 0 silent, blocks 1-96 capture the 3 step notes firing via noteOnFromSequencer",
-      "files": ["seq_external_playback_linux.bin", "seq_external_playback_linux.xxh", "seq_external_playback_linux.diff.txt"],
-      "guards": "Phase G4 (linux/glibc variant): sequencer external-MIDI-clock playback path. Generated by the regenerate-linux-goldens workflow."
-    }
-  ]
+  {
+   "id": "a4_default_sustain_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (copied by Synth::init into timbre 0)",
+   "noteSequence": "noteOn(timbre=0, note=69 [A4], velocity=100) before block 0; no note-off",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "8f8766fe3e1ceff3",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "a4_default_sustain_linux.bin",
+    "a4_default_sustain_linux.xxh",
+    "a4_default_sustain_linux.diff.txt"
+   ],
+   "guards": "the entire Synth -> Timbre -> Voice -> Matrix -> FxBus -> int32 mix chain on linux/glibc (CI ubuntu gcc + ubuntu clang-coverage)"
+  },
+  {
+   "id": "envelope_adsr_full_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0)",
+   "noteSequence": "noteOn(0,69,100)@block0; noteOff(0,69)@block300",
+   "nBlocks": 600,
+   "samplesPerBlock": 192,
+   "totalSamples": 115200,
+   "hash": "e873d1dd67184295",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10) + Env release tail (blocks 300-599)",
+   "files": [
+    "envelope_adsr_full_macos.bin",
+    "envelope_adsr_full_macos.xxh",
+    "envelope_adsr_full_macos.diff.txt"
+   ],
+   "guards": "Env stage transitions (attack/decay/sustain) + release tail on noteOff \u2014 G0's sustain-only golden never exercises noteOff/release"
+  },
+  {
+   "id": "envelope_adsr_full_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0)",
+   "noteSequence": "noteOn(0,69,100)@block0; noteOff(0,69)@block300",
+   "nBlocks": 600,
+   "samplesPerBlock": 192,
+   "totalSamples": 115200,
+   "hash": "0e40387715ce6a5a",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10) + Env release tail (blocks 300-599)",
+   "files": [
+    "envelope_adsr_full_linux.bin",
+    "envelope_adsr_full_linux.xxh",
+    "envelope_adsr_full_linux.diff.txt"
+   ],
+   "guards": "Env stage transitions (attack/decay/sustain) + release tail on noteOff \u2014 G0's sustain-only golden never exercises noteOff/release"
+  },
+  {
+   "id": "fm_algo2_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset, timbre 0 engine1.algo overridden to ALGO2",
+   "noteSequence": "setTimbreAlgo(0, ALGO2) + afterNewParamsLoad(0); noteOn(0,69,100)@block0; no note-off",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "713eab8fc66121f7",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10)",
+   "files": [
+    "fm_algo2_macos.bin",
+    "fm_algo2_macos.xxh",
+    "fm_algo2_macos.diff.txt"
+   ],
+   "guards": "ALGO2 ({1,1,2,0,0,0}) = 2 carriers + 1 modulator \u2014 the multi-carrier output summing path the default ALGO1 (1 carrier) never exercises"
+  },
+  {
+   "id": "fm_algo2_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset, timbre 0 engine1.algo overridden to ALGO2",
+   "noteSequence": "setTimbreAlgo(0, ALGO2) + afterNewParamsLoad(0); noteOn(0,69,100)@block0; no note-off",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "e6eb29e6882e3e37",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10)",
+   "files": [
+    "fm_algo2_linux.bin",
+    "fm_algo2_linux.xxh",
+    "fm_algo2_linux.diff.txt"
+   ],
+   "guards": "ALGO2 ({1,1,2,0,0,0}) = 2 carriers + 1 modulator \u2014 the multi-carrier output summing path the default ALGO1 (1 carrier) never exercises"
+  },
+  {
+   "id": "fm_algo27_6carrier_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset, timbre 0 engine1.algo overridden to ALG27",
+   "noteSequence": "setTimbreAlgo(0, ALG27) + afterNewParamsLoad(0); noteOn(0,69,100)@block0; no note-off",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "686bac6da3937528",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10)",
+   "files": [
+    "fm_algo27_6carrier_macos.bin",
+    "fm_algo27_6carrier_macos.xxh",
+    "fm_algo27_6carrier_macos.diff.txt"
+   ],
+   "guards": "ALG27 ({1,1,1,1,1,1}) = all 6 carriers, additive \u2014 the maximal carrier-topology departure from ALGO1; exercises the full 6-carrier summing path. (Chosen over ALG17, which renders byte-identical to G0 under the zero-IM default preset \u2014 see spec Design Notes.)"
+  },
+  {
+   "id": "fm_algo27_6carrier_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset, timbre 0 engine1.algo overridden to ALG27",
+   "noteSequence": "setTimbreAlgo(0, ALG27) + afterNewParamsLoad(0); noteOn(0,69,100)@block0; no note-off",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "0814ade1448fb2bb",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10)",
+   "files": [
+    "fm_algo27_6carrier_linux.bin",
+    "fm_algo27_6carrier_linux.xxh",
+    "fm_algo27_6carrier_linux.diff.txt"
+   ],
+   "guards": "ALG27 ({1,1,1,1,1,1}) = all 6 carriers, additive \u2014 the maximal carrier-topology departure from ALGO1; exercises the full 6-carrier summing path. (Chosen over ALG17, which renders byte-identical to G0 under the zero-IM default preset \u2014 see spec Design Notes.)"
+  },
+  {
+   "id": "multi_timbre_mix_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbres 0 + 1)",
+   "noteSequence": "noteOn(0,69,100) + noteOn(1,72,100)@block0; no note-off",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "d8f72fbd66ea49bf",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks incl. per-timbre smoothVolume_/smoothPan_ transient (~blocks 0-10)",
+   "files": [
+    "multi_timbre_mix_macos.bin",
+    "multi_timbre_mix_macos.xxh",
+    "multi_timbre_mix_macos.diff.txt"
+   ],
+   "guards": "voicesToTimbre multi-timbre mix + per-timbre smoothVolume_/smoothPan_ + fxBus->mixAdd \u2014 timbres 0+1 (6+6=12 <= MAX_NUMBER_OF_VOICES 16) summing into the 6 outputs"
+  },
+  {
+   "id": "multi_timbre_mix_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbres 0 + 1)",
+   "noteSequence": "noteOn(0,69,100) + noteOn(1,72,100)@block0; no note-off",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "48ad9f3e5afc2d0c",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks incl. per-timbre smoothVolume_/smoothPan_ transient (~blocks 0-10)",
+   "files": [
+    "multi_timbre_mix_linux.bin",
+    "multi_timbre_mix_linux.xxh",
+    "multi_timbre_mix_linux.diff.txt"
+   ],
+   "guards": "voicesToTimbre multi-timbre mix + per-timbre smoothVolume_/smoothPan_ + fxBus->mixAdd \u2014 timbres 0+1 (6+6=12 <= MAX_NUMBER_OF_VOICES 16) summing into the 6 outputs"
+  },
+  {
+   "id": "live_lfo_pitch_modulation_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.5, OSC1_FREQ, NONE}",
+   "noteSequence": "setMatrixRow(0,7,LFO1,0.5,OSC1_FREQ); noteOn(0,69,100)@0; no note-off; no PARAM_CHANGE (LFO auto-modulates)",
+   "nBlocks": 400,
+   "samplesPerBlock": 192,
+   "totalSamples": 76800,
+   "hash": "845498ada76c269e",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 400 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); captures ~1.2 LFO1 cycles (default lfoOsc1 freq 4.5; 400 blocks = 12.8k samples = ~267 ms)",
+   "files": [
+    "live_lfo_pitch_modulation_macos.bin",
+    "live_lfo_pitch_modulation_macos.xxh",
+    "live_lfo_pitch_modulation_macos.diff.txt"
+   ],
+   "guards": "Phase G3: steady LFO1->matrix->OSC1_FREQ->Voice pitch routing end-to-end. Locks the matrix-routing path under a sounding voice (the setMatrixRow field-patch + afterNewParamsLoad path)."
+  },
+  {
+   "id": "live_lfo_pitch_modulation_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.5, OSC1_FREQ, NONE}",
+   "noteSequence": "setMatrixRow(0,7,LFO1,0.5,OSC1_FREQ); noteOn(0,69,100)@0; no note-off; no PARAM_CHANGE",
+   "nBlocks": 400,
+   "samplesPerBlock": 192,
+   "totalSamples": 76800,
+   "hash": "d433df1b5237b62a",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 400 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); captures ~1.2 LFO1 cycles (default lfoOsc1 freq 4.5; 400 blocks = 12.8k samples = ~267 ms)",
+   "files": [
+    "live_lfo_pitch_modulation_linux.bin",
+    "live_lfo_pitch_modulation_linux.xxh",
+    "live_lfo_pitch_modulation_linux.diff.txt"
+   ],
+   "guards": "Phase G3 (linux/glibc variant): steady LFO1->matrix->OSC1_FREQ->Voice pitch routing. Generated by the regenerate-linux-goldens workflow."
+  },
+  {
+   "id": "live_matrix_mul_change_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.0(initial), OSC1_FREQ, NONE}",
+   "noteSequence": "setMatrixRow(0,7,LFO1,0.0,OSC1_FREQ); noteOn(0,69,100)@0; setNewValueFromMidi(0,ROW_MATRIX8,ENCODER_MATRIX_MUL,0.6)@blk80 (turns modulation ON mid-note)",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "ecf93146a65b92b2",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); blocks 0-79 unmodulated, blocks 80-199 pitch-wobble (modulation on)",
+   "files": [
+    "live_matrix_mul_change_macos.bin",
+    "live_matrix_mul_change_macos.xxh",
+    "live_matrix_mul_change_macos.diff.txt"
+   ],
+   "guards": "Phase G3: live CC->matrix-mul->Voice path. A mid-render setNewValueFromMidi on ROW_MATRIX8/ENCODER_MATRIX_MUL changes rows[r].mul (read live by Matrix::computeAllDestinations); pitch wobble kicks in from block 80. Locks the 'stuck/wrong CC routing' bug class."
+  },
+  {
+   "id": "live_matrix_mul_change_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.0(initial), OSC1_FREQ, NONE}",
+   "noteSequence": "setMatrixRow(0,7,LFO1,0.0,OSC1_FREQ); noteOn(0,69,100)@0; setNewValueFromMidi(0,ROW_MATRIX8,ENCODER_MATRIX_MUL,0.6)@blk80",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "088671fa28e60f5a",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); blocks 0-79 unmodulated, blocks 80-199 pitch-wobble",
+   "files": [
+    "live_matrix_mul_change_linux.bin",
+    "live_matrix_mul_change_linux.xxh",
+    "live_matrix_mul_change_linux.diff.txt"
+   ],
+   "guards": "Phase G3 (linux/glibc variant): live CC->matrix-mul->Voice path. Generated by the regenerate-linux-goldens workflow."
+  },
+  {
+   "id": "live_lfo_freq_change_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.5, MIX_OSC1, NONE}",
+   "noteSequence": "setMatrixRow(0,7,LFO1,0.5,MIX_OSC1); noteOn(0,69,100)@0; setNewValueFromMidi(0,ROW_LFOOSC1,ENCODER_LFO_FREQ,9.0)@blk100 (doubles the LFO speed from default 4.5, doubling the tremolo rate)",
+   "nBlocks": 300,
+   "samplesPerBlock": 192,
+   "totalSamples": 57600,
+   "hash": "528e8128e6d2770f",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 300 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); blocks 0-99 tremolo at LFO 4.5 Hz, blocks 100-299 tremolo at 9.0 Hz",
+   "files": [
+    "live_lfo_freq_change_macos.bin",
+    "live_lfo_freq_change_macos.xxh",
+    "live_lfo_freq_change_macos.diff.txt"
+   ],
+   "guards": "Phase G3: live LFO-freq CC update + a non-pitch (amplitude/tremolo) matrix destination. A mid-render setNewValueFromMidi on ROW_LFOOSC1/ENCODER_LFO_FREQ writes lfoOsc1.freq (read live by LfoOsc); the LFO1->MIX_OSC1 tremolo rate doubles from block 100. (Originally specified LFO1->ALL_ENV_DECAY; changed to MIX_OSC1 after ALL_ENV_DECAY was found inaudible on a sustained note \u2014 see spec Spec Change Log.)"
+  },
+  {
+   "id": "live_lfo_freq_change_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + matrixRowState8 overridden to {LFO1, 0.5, MIX_OSC1, NONE}",
+   "noteSequence": "setMatrixRow(0,7,LFO1,0.5,MIX_OSC1); noteOn(0,69,100)@0; setNewValueFromMidi(0,ROW_LFOOSC1,ENCODER_LFO_FREQ,9.0)@blk100",
+   "nBlocks": 300,
+   "samplesPerBlock": 192,
+   "totalSamples": 57600,
+   "hash": "613b80b4a1d299ac",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 300 blocks incl. smoothVolume_/smoothPan_ transient (~blocks 0-10); blocks 0-99 tremolo at LFO 4.5 Hz, blocks 100-299 tremolo at 9.0 Hz",
+   "files": [
+    "live_lfo_freq_change_linux.bin",
+    "live_lfo_freq_change_linux.xxh",
+    "live_lfo_freq_change_linux.diff.txt"
+   ],
+   "guards": "Phase G3 (linux/glibc variant): live LFO-freq CC + non-pitch destination. Generated by the regenerate-linux-goldens workflow."
+  },
+  {
+   "id": "arp_triad_up_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0); arpeggiator enabled out-of-band via enableArpeggiator(0, bpm=120, UP, 2 octaves)",
+   "noteSequence": "enableArpeggiator(0,120,UP,2); noteOn(0,60,100)+noteOn(0,64,100)+noteOn(0,67,100)@block0; no note-off",
+   "nBlocks": 300,
+   "samplesPerBlock": 192,
+   "totalSamples": 57600,
+   "hash": "658e3d0a97388d45",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 300 blocks; blocks 0-~31 silent (arp waits for its first internal-clock Tick at ~block 32, faithful characterization), blocks 32-299 arp cycling (3 notes x 2 oct = 6-note cycle, ~1.5 cycles)",
+   "files": [
+    "arp_triad_up_macos.bin",
+    "arp_triad_up_macos.xxh",
+    "arp_triad_up_macos.diff.txt"
+   ],
+   "guards": "Phase G4: arpeggiator note-cycling path. The arp clock is a pure sample-block counter (Timbre::updateArpegiatorInternalClock, advanced inside buildNewSampleBlock) \u2014 no MIDI clock / HAL shim. Locks arp note-stack rotation + octave-shift + voice-realloc, the regression class G0-G3 never reach."
+  },
+  {
+   "id": "arp_triad_up_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0); arpeggiator enabled out-of-band via enableArpeggiator(0, bpm=120, UP, 2 octaves)",
+   "noteSequence": "enableArpeggiator(0,120,UP,2); noteOn(0,60,100)+noteOn(0,64,100)+noteOn(0,67,100)@block0; no note-off",
+   "nBlocks": 300,
+   "samplesPerBlock": 192,
+   "totalSamples": 57600,
+   "hash": "cd8d40b072030ec4",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 300 blocks; blocks 0-~31 silent (arp first-Tick latency), blocks 32-299 arp cycling",
+   "files": [
+    "arp_triad_up_linux.bin",
+    "arp_triad_up_linux.xxh",
+    "arp_triad_up_linux.diff.txt"
+   ],
+   "guards": "Phase G4 (linux/glibc variant): arpeggiator note-cycling path. Generated by the regenerate-linux-goldens workflow."
+  },
+  {
+   "id": "seq_external_playback_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0); sequencer loaded out-of-band via setupSequencerTriadPlayback (stepNotes[0]: C4/E4/G4 at step indices 0/32/64) + armed external-sync",
+   "noteSequence": "setupSequencerTriadPlayback(); MIDI_BYTE(0xFA)@block0; 4xMIDI_BYTE(0xF8)@blocks1..96 (384 MIDI clocks = 1 bar @ default tempo)",
+   "nBlocks": 97,
+   "samplesPerBlock": 192,
+   "totalSamples": 18624,
+   "hash": "29cc5d102e0aaf77",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 97 blocks; block 0 silent (0xFA start, first clocks at block 1), blocks 1-96 capture the 3 step notes (C4/E4/G4) firing via noteOnFromSequencer as the MIDI clock advances the sequencer through 1 bar",
+   "files": [
+    "seq_external_playback_macos.bin",
+    "seq_external_playback_macos.xxh",
+    "seq_external_playback_macos.diff.txt"
+   ],
+   "guards": "Phase G4: sequencer external-MIDI-clock playback path. MIDI_BYTE events feed raw clock bytes through the real MidiDecoder::newByte -> synth->midiTick/midiClockStart -> sequencer->onMidiClock -> step advance -> noteOnFromSequencer. Locks the MidiDecoder clock-byte parse + Synth->Sequencer->noteOnFromSequencer chain \u2014 the regression class G0-G3 + the arp golden never reach (their notes enter via Synth::noteOn directly)."
+  },
+  {
+   "id": "seq_external_playback_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0); sequencer loaded out-of-band via setupSequencerTriadPlayback + armed external-sync",
+   "noteSequence": "setupSequencerTriadPlayback(); MIDI_BYTE(0xFA)@block0; 4xMIDI_BYTE(0xF8)@blocks1..96",
+   "nBlocks": 97,
+   "samplesPerBlock": 192,
+   "totalSamples": 18624,
+   "hash": "9473964e12078027",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 97 blocks; block 0 silent, blocks 1-96 capture the 3 step notes firing via noteOnFromSequencer",
+   "files": [
+    "seq_external_playback_linux.bin",
+    "seq_external_playback_linux.xxh",
+    "seq_external_playback_linux.diff.txt"
+   ],
+   "guards": "Phase G4 (linux/glibc variant): sequencer external-MIDI-clock playback path. Generated by the regenerate-linux-goldens workflow."
+  },
+  {
+   "id": "fm_algo1_mod_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 + fast-attack env3..env6 (helper)",
+   "noteSequence": "setTimbreAlgo(0, ALGO1) + IM patch; noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "cefc3c27d64a1daa",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fm_algo1_mod_macos.bin",
+    "fm_algo1_mod_macos.xxh",
+    "fm_algo1_mod_macos.diff.txt"
+   ],
+   "guards": "ALGO1 {1,2,2} 2-mod-1-car FM stack with NON-ZERO modulation indices (closes the G1 all-zero-IM gap: modulator routing is now audible)"
+  },
+  {
+   "id": "fm_algo6_mod_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.6 + fast-attack env3..env6 (helper)",
+   "noteSequence": "setTimbreAlgo(0, ALGO6) + IM/feedback patch; noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "4c62144157a3b5d6",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fm_algo6_mod_macos.bin",
+    "fm_algo6_mod_macos.xxh",
+    "fm_algo6_mod_macos.diff.txt"
+   ],
+   "guards": "ALGO6 {1,1,1,2} 3-carrier + shared-mod + strong feedback (0.6) topology"
+  },
+  {
+   "id": "fm_algo16_mod_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "noteSequence": "setTimbreAlgo(0, ALG16) + IM patch; noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "6c0b4e5607bb8ee2",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fm_algo16_mod_macos.bin",
+    "fm_algo16_mod_macos.xxh",
+    "fm_algo16_mod_macos.diff.txt"
+   ],
+   "guards": "ALG16 {1,2,1,2,2,2} 4-car/2-mod interleaved tree with nonzero IMs"
+  },
+  {
+   "id": "fm_algo22_mod_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "noteSequence": "setTimbreAlgo(0, ALG22) + IM patch; noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "9c8b2dce1e2f2846",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fm_algo22_mod_macos.bin",
+    "fm_algo22_mod_macos.xxh",
+    "fm_algo22_mod_macos.diff.txt"
+   ],
+   "guards": "ALG22 {1,2,1,1,1,2} alternate 4-car/2-mod tree \u2014 distinct render from ALG16 at equal op counts, the distinction the IM patch makes visible"
+  },
+  {
+   "id": "fm_algo28_mod_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "noteSequence": "setTimbreAlgo(0, ALG28) + IM patch; noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "22b5387a42004bbd",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fm_algo28_mod_macos.bin",
+    "fm_algo28_mod_macos.xxh",
+    "fm_algo28_mod_macos.diff.txt"
+   ],
+   "guards": "ALG28 {1,1,1,1,1,2} additive-with-PM (5 carriers + 1 shared mod; ALG27 was rejected: zero modulators -> IM patch inaudible, byte-identical to fm_algo27_6carrier)"
+  },
+  {
+   "id": "fx_lowpass_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreFx(FILTER_LP, 0.6, 0.55, gain 0.6)",
+   "noteSequence": "setTimbreFx + noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "45b38bd762c08ede",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fx_lowpass_macos.bin",
+    "fx_lowpass_macos.xxh",
+    "fx_lowpass_macos.diff.txt"
+   ],
+   "guards": "Voice::fxAfterBlock FILTER_LP arm (Voice.cpp:4129) \u2014 per-voice low-pass sounding path incl. setNewEffectParam state reset via afterNewParamsLoad"
+  },
+  {
+   "id": "fx_crusher_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreFx(FILTER_CRUSHER, 0.6, 0.55, gain 0.6)",
+   "noteSequence": "setTimbreFx + noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "e17a9cc97e6b1706",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fx_crusher_macos.bin",
+    "fx_crusher_macos.xxh",
+    "fx_crusher_macos.diff.txt"
+   ],
+   "guards": "Voice::fxAfterBlock FILTER_CRUSHER arm \u2014 non-linear bit-crusher waveshaper sounding path"
+  },
+  {
+   "id": "fx2_chorus_macos",
+   "variant": "macos",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreFx2(FILTER2_CHORUS, 0.6, 0.55, gain 1.0)",
+   "noteSequence": "setTimbreFx2 + noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "dff0b9103f3aeb5a",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fx2_chorus_macos.bin",
+    "fx2_chorus_macos.xxh",
+    "fx2_chorus_macos.diff.txt"
+   ],
+   "guards": "Timbre::fxAfterBlock FILTER2_CHORUS arm (Timbre.cpp:751+) \u2014 the per-TIMBRE delay-buffer FX bus (distinct from the per-voice effect1 FILTER_TYPE chain): wet-path gain ramp past the anti-click zeroing + chorus LFO delay modulation"
+  }
+ ]
 }

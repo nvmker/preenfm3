@@ -78,6 +78,15 @@ this directory.
 | `live_lfo_freq_change` | setMatrixRow(LFO1→MIX_OSC1@0.5), noteOn@0, setNewValueFromMidi(ROW_LFOOSC1,ENCODER_LFO_FREQ,9.0)@100 | 300 | live LFO-freq CC + non-pitch (amplitude/tremolo) destination | ✅ | ✅ |
 | `arp_triad_up` | enableArpeggiator(0, bpm=120, UP, 2 oct) + noteOn(60/64/67)@0 | 300 | **G4**: arpeggiator note-cycling across octaves (internal block-counter clock, no shim) | ✅ | ✅ |
 | `seq_external_playback` | setupSequencerTriadPlayback (C4/E4/G4 steps) + MIDI_BYTE 0xFA@0 + 4×0xF8@1..96 | 97 | **G4**: MidiDecoder clock-byte → Synth → Sequencer → noteOnFromSequencer (external MIDI clock) | ✅ | ✅ |
+| `fm_algo1_mod` | setTimbreAlgo(0,ALGO1)+setTimbreModulationIndices(im={1.0,0.7,0.8,0.5},fb=0.3), noteOn(0,69,100)@0 | 200 | **Phase 3**: ALGO1 2-mod-1-car FM stack with NON-ZERO IMs (closes the G1 all-zero-IM gap) | ✅ | pending |
+| `fm_algo6_mod` | setTimbreAlgo(0,ALGO6)+IMs {1.2,0.7,0.8,0.5}, fb=0.6 | 200 | **Phase 3**: ALGO6 3-carrier+shared-mod+strong-feedback topology | ✅ | pending |
+| `fm_algo16_mod` | setTimbreAlgo(0,ALG16)+IMs {1.0,0.7,0.8,0.5}, fb=0.3 | 200 | **Phase 3**: ALG16 4-car/2-mod interleaved tree | ✅ | pending |
+| `fm_algo22_mod` | setTimbreAlgo(0,ALG22)+IMs {1.0,0.7,0.8,0.5}, fb=0.3 | 200 | **Phase 3**: ALG22 alternate tree — distinct from ALG16 at equal op counts (the distinction nonzero IMs expose) | ✅ | pending |
+| `fm_algo28_mod` | setTimbreAlgo(0,ALG28)+IMs {1.0,0.7,0.8,0.5}, fb=0.3 | 200 | **Phase 3**: ALG28 additive-with-PM (ALG27 rejected: zero modulators — IM patch inaudible) | ✅ | pending |
+| *(the 5 `fm_algo*_mod` fixtures also fast-attack env3..env6 via the helper — see `setTimbreModulationIndices`; all-distinct IM values so IM-swap routing pairs stay distinguishable)* | | | | | |
+| `fx_lowpass` | setTimbreFx(0,FILTER_LP,0.6,0.55,gain 0.6), noteOn(0,69,100)@0 | 200 | **Phase 3**: `fxAfterBlock` FILTER_LP arm (per-voice low-pass sounding path) | ✅ | pending |
+| `fx_crusher` | setTimbreFx(0,FILTER_CRUSHER,0.6,0.55,gain 0.6), noteOn(0,69,100)@0 | 200 | **Phase 3**: `fxAfterBlock` FILTER_CRUSHER bit-crusher arm | ✅ | pending |
+| `fx2_chorus` | setTimbreFx2(0,FILTER2_CHORUS,0.6,0.55,gain 1.0), noteOn(0,69,100)@0 | 200 | **Phase 3**: `Timbre::fxAfterBlock` FILTER2_CHORUS arm — the per-Timbre delay-buffer FX bus (distinct from per-voice effect1) | ✅ | pending |
 
 **Phase G3 — live mid-render param changes (the "stuck/wrong CC routing" bug
 class):** G0/G1 lock the render under *static* params (noteOn/noteOff +
@@ -186,6 +195,23 @@ logic still needs a deterministic tick source. A real host time seam
 (`tests/host_shims/`) is broader blast radius (`tests/SEAM.md` territory) and
 internal-clock seq is rarely the regression source. Documented in
 `deferred-work.md` with a concrete pointer.
+
+**Phase 3 — nonzero-IM + FX goldens and sweeps (spec-test-coverage-phase3):**
+the G1 "algorithm note" gap is closed: `GoldenHarness::setTimbreModulationIndices`
+patches `params_.engineIm1/2.modulationIndex1..4` + the FM feedback
+(`engineIm3.modulationIndex6` — there is no separate feedback field;
+`updateAllModulationIndexes`, Voice.h:122, re-reads them every block) so
+modulator *routing*, not just carrier count, drives the render.
+`GoldenHarness::setTimbreFx` patches `params_.effect1.{type,param1..3}` — read
+live each block by `Voice::fxAfterBlock` (Voice.cpp:4124) **and** re-initialized
+via `afterNewParamsLoad -> Timbre::afterNewParamsLoad -> Voice::setNewEffectParam`
+(Timbre.cpp:2603-2605), so both paths are exercised. Two fixture-less sweeps
+(`FmAlgoSweep`, `FxSweep`) assert finite/non-silent/deterministic across all 32
+algorithms and all `FILTER_TYPE` values — **zero exemptions** were needed:
+every algo is audible under the nonzero-IM patch, and every FX type (including
+`FILTER_OFF`, which passes the dry voice through) is non-silent. The new
+goldens' `_linux` triples are pending the `regenerate-linux-goldens` workflow
+dispatch (usable post-merge from master, same as prior phases).
 
 ## Comparison model
 
