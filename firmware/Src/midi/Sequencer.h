@@ -19,7 +19,7 @@
 
 
 #include <stdint.h>
-#include "Common.h"
+#include "../synth/Common.h"
 
 class Synth;
 class FMDisplaySequencer;

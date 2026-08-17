@@ -3100,6 +3100,18 @@ void Timbre::setMatrixSource(enum SourceEnum source, float newValue) {
     }
 }
 
+#ifdef PFM3_HOST
+float Timbre::hostMaxMatrixSource(SourceEnum source) {
+    float maximum = 0.0f;
+    for (int k = 0; k < numberOfVoices_; k++) {
+        float value = voices_[voiceNumber_[k]]->hostMatrixSource(source);
+        if (value < 0.0f) value = -value;
+        if (value > maximum) maximum = value;
+    }
+    return maximum;
+}
+#endif
+
 void Timbre::setMatrixSourceMPE(uint8_t channel, enum SourceEnum source, float newValue) {
     int voiceToUse = voiceNumber_[channel -1];
 

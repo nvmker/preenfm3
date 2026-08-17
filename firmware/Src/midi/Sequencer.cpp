@@ -15,7 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <Sequencer.h>
+#include "Sequencer.h"
 #include <RingBuffer.h>
 #include "Synth.h"
 #include "FMDisplaySequencer.h"
@@ -44,6 +44,15 @@ __attribute__((section(".ram_d3")))
 #endif
 StepSeqValue stepNotes[NUMBER_OF_STEP_SEQUENCES][256];
 
+static uint16_t compactedActionIndex(uint16_t oldIndex, uint16_t oldLastFreeAction) {
+    const uint16_t firstDynamic = NUMBER_OF_TIMBRES * 2;
+    if (oldIndex < firstDynamic || oldIndex >= oldLastFreeAction) return oldIndex;
+    uint16_t newIndex = firstDynamic;
+    for (uint16_t i = firstDynamic; i < oldIndex; i++) {
+        if (actions[i].actionType != SEQ_ACTION_NONE) newIndex++;
+    }
+    return newIndex;
+}
 
 Sequencer::Sequencer() {
     uint32_t stateSize;
@@ -469,13 +478,19 @@ void Sequencer::clear(uint8_t instrument) {
         return;
     }
 
-    // Clear instrument
+    // Reclaim this instrument's dynamic actions before unlinking its sentinel.
+    uint16_t index = actions[instrument * 2].nextIndex;
+    const uint16_t end = instrument * 2 + 1;
+    while (index != end) {
+        const uint16_t next = actions[index].nextIndex;
+        actions[index].actionType = SEQ_ACTION_NONE;
+        index = next;
+    }
+
     seqActivated_[instrument] = false;
-
-    nextActionIndex_[instrument] = instrument * 2 + 1;
+    nextActionIndex_[instrument] = end;
     previousActionIndex_[instrument] = instrument * 2;
-
-    actions[instrument * 2].nextIndex = instrument * 2 + 1;
+    actions[instrument * 2].nextIndex = end;
 
     bool allInactive = true;
     for (int i = 0; i < NUMBER_OF_TIMBRES; i++) {
@@ -484,68 +499,39 @@ void Sequencer::clear(uint8_t instrument) {
         }
     }
     if (allInactive) {
-        // Nothing to do
         lastFreeAction_ = NUMBER_OF_TIMBRES * 2;
+        synth_->allNoteOff(instrument);
         return;
     }
 
-    uint16_t index = actions[instrument * 2].nextIndex;
-    uint16_t end = instrument * 2 + 1;
-
-    while (index != end) {
-        actions[index].actionType = SEQ_ACTION_NONE;
-        index = actions[index].nextIndex;
-    }
-
-    for (int i = (NUMBER_OF_TIMBRES * 2); i < lastFreeAction_; i++) {
-        if (actions[i].actionType == SEQ_ACTION_NONE) {
-            // Move next one to this index : i
-            int movedFromIndex = 0;
-            for (int j = lastFreeAction_ - 1; j > i; j--) {
-                if (actions[j].actionType != SEQ_ACTION_NONE) {
-                    // move j to i
-                    actions[i].when = actions[j].when;
-                    actions[i].actionType = actions[j].actionType;
-                    actions[i].param1 = actions[j].param1;
-                    actions[i].param2 = actions[j].param2;
-                    actions[i].nextIndex = actions[j].nextIndex;
-                    movedFromIndex = j;
-                    actions[j].actionType = SEQ_ACTION_NONE;
-                    break;
-                }
-            }
-            if (movedFromIndex == 0) {
-                // only SEQ_ACTION_CLEAR so we can finished
-                break;
-            } else {
-                // Update nextActionIndex if needed
-                for (int instrument = 0; instrument < NUMBER_OF_TIMBRES; instrument ++) {
-                    if (nextActionIndex_[instrument] == movedFromIndex) {
-                        nextActionIndex_[instrument] = i;
-                        break;
-                    }
-                }
-                // Update previous index
-                // Can be in the first indexes !
-                for (int j = 0; j < lastFreeAction_; j++) {
-                    if (actions[j].nextIndex == movedFromIndex) {
-                        // update index
-                        actions[j].nextIndex = i;
-                        break;
-                    }
-                }
-            }
+    // Compute every repaired link from the untouched sparse layout first;
+    // then stable-compact. This avoids a moved action overwriting a source
+    // whose links have not yet been translated.
+    const uint16_t firstDynamic = NUMBER_OF_TIMBRES * 2;
+    const uint16_t oldLastFreeAction = lastFreeAction_;
+    for (uint16_t i = 0; i < oldLastFreeAction; i++) {
+        if (i < firstDynamic || actions[i].actionType != SEQ_ACTION_NONE) {
+            actions[i].nextIndex = compactedActionIndex(actions[i].nextIndex, oldLastFreeAction);
         }
     }
-    for (int i = (NUMBER_OF_TIMBRES * 2); i < lastFreeAction_; i++) {
-        if (actions[i].actionType == SEQ_ACTION_NONE) {
-            lastFreeAction_ = i;
-            break;
+    for (int i = 0; i < NUMBER_OF_TIMBRES; i++) {
+        nextActionIndex_[i] = compactedActionIndex(nextActionIndex_[i], oldLastFreeAction);
+        previousActionIndex_[i] = compactedActionIndex(previousActionIndex_[i], oldLastFreeAction);
+    }
+
+    uint16_t writeIndex = firstDynamic;
+    for (uint16_t readIndex = firstDynamic; readIndex < oldLastFreeAction; readIndex++) {
+        if (actions[readIndex].actionType != SEQ_ACTION_NONE) {
+            if (writeIndex != readIndex) actions[writeIndex] = actions[readIndex];
+            writeIndex++;
         }
     }
+    for (uint16_t i = writeIndex; i < oldLastFreeAction; i++) {
+        actions[i].actionType = SEQ_ACTION_NONE;
+    }
+    lastFreeAction_ = writeIndex;
 
     synth_->allNoteOff(instrument);
-
 }
 
 
