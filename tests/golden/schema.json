@@ -560,6 +560,158 @@
     "fx2_chorus_macos.diff.txt"
    ],
    "guards": "Timbre::fxAfterBlock FILTER2_CHORUS arm (Timbre.cpp:751+) \u2014 the per-TIMBRE delay-buffer FX bus (distinct from the per-voice effect1 FILTER_TYPE chain): wet-path gain ramp past the anti-click zeroing + chorus LFO delay modulation"
+  },
+  {
+   "id": "fm_algo1_mod_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 + fast-attack env3..env6 (helper)",
+   "noteSequence": "setTimbreAlgo(0, ALGO1) + IM patch; noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "3fde3e5e7e1a452f",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fm_algo1_mod_linux.bin",
+    "fm_algo1_mod_linux.xxh",
+    "fm_algo1_mod_linux.diff.txt"
+   ],
+   "guards": "ALGO1 {1,2,2} 2-mod-1-car FM stack with NON-ZERO modulation indices (closes the G1 all-zero-IM gap: modulator routing is now audible)"
+  },
+  {
+   "id": "fm_algo6_mod_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.6 + fast-attack env3..env6 (helper)",
+   "noteSequence": "setTimbreAlgo(0, ALGO6) + IM/feedback patch; noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "a7f1991b7995af0b",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fm_algo6_mod_linux.bin",
+    "fm_algo6_mod_linux.xxh",
+    "fm_algo6_mod_linux.diff.txt"
+   ],
+   "guards": "ALGO6 {1,1,1,2} 3-carrier + shared-mod + strong feedback (0.6) topology"
+  },
+  {
+   "id": "fm_algo16_mod_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "noteSequence": "setTimbreAlgo(0, ALG16) + IM patch; noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "71b36135c66aba2d",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fm_algo16_mod_linux.bin",
+    "fm_algo16_mod_linux.xxh",
+    "fm_algo16_mod_linux.diff.txt"
+   ],
+   "guards": "ALG16 {1,2,1,2,2,2} 4-car/2-mod interleaved tree with nonzero IMs"
+  },
+  {
+   "id": "fm_algo22_mod_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "noteSequence": "setTimbreAlgo(0, ALG22) + IM patch; noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "8738e7943b9b3ada",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fm_algo22_mod_linux.bin",
+    "fm_algo22_mod_linux.xxh",
+    "fm_algo22_mod_linux.diff.txt"
+   ],
+   "guards": "ALG22 {1,2,1,1,1,2} alternate 4-car/2-mod tree \u2014 distinct render from ALG16 at equal op counts, the distinction the IM patch makes visible"
+  },
+  {
+   "id": "fm_algo28_mod_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "noteSequence": "setTimbreAlgo(0, ALG28) + IM patch; noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "4cf7344102c7d14f",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fm_algo28_mod_linux.bin",
+    "fm_algo28_mod_linux.xxh",
+    "fm_algo28_mod_linux.diff.txt"
+   ],
+   "guards": "ALG28 {1,1,1,1,1,2} additive-with-PM (5 carriers + 1 shared mod; ALG27 was rejected: zero modulators -> IM patch inaudible, byte-identical to fm_algo27_6carrier)"
+  },
+  {
+   "id": "fx_lowpass_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreFx(FILTER_LP, 0.6, 0.55, gain 0.6)",
+   "noteSequence": "setTimbreFx + noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "8f26a9bdc50367d6",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fx_lowpass_linux.bin",
+    "fx_lowpass_linux.xxh",
+    "fx_lowpass_linux.diff.txt"
+   ],
+   "guards": "Voice::fxAfterBlock FILTER_LP arm (Voice.cpp:4129) \u2014 per-voice low-pass sounding path incl. setNewEffectParam state reset via afterNewParamsLoad"
+  },
+  {
+   "id": "fx_crusher_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreFx(FILTER_CRUSHER, 0.6, 0.55, gain 0.6)",
+   "noteSequence": "setTimbreFx + noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "dc9e436aed9efd40",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fx_crusher_linux.bin",
+    "fx_crusher_linux.xxh",
+    "fx_crusher_linux.diff.txt"
+   ],
+   "guards": "Voice::fxAfterBlock FILTER_CRUSHER arm \u2014 non-linear bit-crusher waveshaper sounding path"
+  },
+  {
+   "id": "fx2_chorus_linux",
+   "variant": "linux",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreFx2(FILTER2_CHORUS, 0.6, 0.55, gain 1.0)",
+   "noteSequence": "setTimbreFx2 + noteOn(0,69,100)@0; sustain",
+   "nBlocks": 200,
+   "samplesPerBlock": 192,
+   "totalSamples": 38400,
+   "hash": "2d0f399acb67045f",
+   "compareLsbTolerance": 256,
+   "compareLsbToleranceUnits": "stored int32 (= 1 audio-LSB; firmware clamps 24-bit then <<8)",
+   "warmStart": "all 200 blocks captured incl. smoothVolume_/smoothPan_ one-pole transient (~blocks 0-10)",
+   "files": [
+    "fx2_chorus_linux.bin",
+    "fx2_chorus_linux.xxh",
+    "fx2_chorus_linux.diff.txt"
+   ],
+   "guards": "Timbre::fxAfterBlock FILTER2_CHORUS arm (Timbre.cpp:751+) \u2014 the per-TIMBRE delay-buffer FX bus (distinct from the per-voice effect1 FILTER_TYPE chain): wet-path gain ramp past the anti-click zeroing + chorus LFO delay modulation"
   }
  ]
 }
