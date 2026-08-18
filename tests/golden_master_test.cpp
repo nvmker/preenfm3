@@ -136,6 +136,99 @@ void runGolden(const char* idBase, std::size_t nBlocks,
     }
 }
 
+// ===========================================================================
+// Phase 3 sweep helpers (spec-test-coverage-phase3). The sweeps render every
+// FM algorithm / FX filter WITHOUT committing a fixture — they assert the
+// invariants every golden implicitly relies on: (a) FINITE output — the DAC
+// formatting clamps to ±0x7FFFFF then <<8, so any |sample| above 0x7FFFFF00
+// (the exact clamp ceiling in stored units) means the shift step overflowed
+// (a real signal, not merely a style question — int32 has no NaN); (b)
+// DETERMINISM — a second, identically-configured harness must render
+// byte-equal (DeterminismSelfCheck's proof, generalized per config); (c)
+// NON-SILENCE — max |sample| must exceed kSweepSilenceThreshold so a
+// regression that zeroes an algo/FX arm cannot hide behind a passing sweep.
+// ===========================================================================
+
+// Theoretical clamp ceiling in stored int32 units (24-bit clamp <<8). A sample
+// above this (only INT32_MIN..-0x80000000 could be) means the multiply-by-256
+// overflowed signed range — the finite-output signal for int32 storage.
+constexpr int64_t kStoredClampCeiling = 0x7FFFFF00;
+
+// Non-silence oracle: max |sample| in stored int32 units across the render.
+// 1e5 stored units = ~390 audio-LSB (256 units/LSB) — comfortably above the
+// ±1-LSB compare tolerance, so anything at/under it is acoustically silence.
+// Empirical anchor: the a4_default_sustain render peaks at >1e8 stored units;
+// every non-exempt algo/FX config measured in the sweeps exceeds 1e5 by orders
+// of magnitude. Documented (not tuned per-case) so a future algo quirk that
+// barely whispers still gets flagged rather than excused.
+constexpr int64_t kSweepSilenceThreshold = 100000;
+
+int64_t maxAbsSample(const int32_t* buf, std::size_t count) {
+    int64_t m = 0;
+    for (std::size_t i = 0; i < count; i++) {
+        const int64_t v = std::abs(static_cast<int64_t>(buf[i]));
+        if (v > m) m = v;
+    }
+    return m;
+}
+
+// Shared finite/deterministic/non-silent assertions for one sweep config.
+// `label` names the config in failure messages (e.g. "algo 13/ALG13").
+// `expectSilent` exempts a config from the NON-SILENCE assert only — the
+// finite and determinism asserts always hold (a "silent exemption" never
+// excuses NaN/overflow or non-determinism; documented exemptions only — see
+// the exemption lists in the sweep TESTs). `renderOut` (optional) receives
+// the first render so callers can add cross-config assertions (the algo
+// sweep's pairwise-distinct check, the FX sweeps' wet-vs-dry delta).
+void assertSweepInvariants(const char* label,
+                           const std::function<void(golden::GoldenHarness&)>& configure,
+                           std::size_t nBlocks, bool expectSilent,
+                           std::vector<int32_t>* renderOut = nullptr) {
+    const std::size_t count =
+        nBlocks * golden::GoldenHarness::kSamplesPerBlock;
+
+    golden::GoldenHarness h1(kFixtureDir);
+    configure(h1);
+    std::vector<int32_t> r1(count);
+    h1.renderScript(golden::RenderScript::a4Sustain(), nBlocks, r1.data());
+
+    // Finite: no stored sample may exceed the clamp ceiling (see kStoredClamp-
+    // Ceiling). The int32 mix cannot hold NaN — overflow IS the blowup signal.
+    const int64_t peak = maxAbsSample(r1.data(), count);
+    ASSERT_LE(peak, kStoredClampCeiling) << label << ": |sample| " << peak
+        << " exceeds the 0x7FFFFF00 clamp ceiling — the render overflowed";
+
+    // Non-silence (unless exempted with justification).
+    if (!expectSilent) {
+        ASSERT_GT(peak, kSweepSilenceThreshold) << label << ": max |sample| "
+            << peak << " <= " << kSweepSilenceThreshold
+            << " stored units — the config renders silent (zero-signal trap; "
+               "investigate the patch or document an exemption)";
+    }
+
+    // Determinism: a fresh, identically-configured harness renders byte-equal.
+    golden::GoldenHarness h2(kFixtureDir);
+    configure(h2);
+    std::vector<int32_t> r2(count);
+    h2.renderScript(golden::RenderScript::a4Sustain(), nBlocks, r2.data());
+    ASSERT_EQ(0, std::memcmp(r1.data(), r2.data(), count * sizeof(int32_t)))
+        << label << ": two identical renders differ — non-determinism";
+
+    if (renderOut != nullptr) {
+        *renderOut = std::move(r1);
+    }
+}
+
+// Max |a-b| across two equal-length renders (stored int32 units).
+int64_t maxAbsDiff(const int32_t* a, const int32_t* b, std::size_t count) {
+    int64_t m = 0;
+    for (std::size_t i = 0; i < count; i++) {
+        const int64_t d = std::abs(static_cast<int64_t>(a[i]) - b[i]);
+        if (d > m) m = d;
+    }
+    return m;
+}
+
 }  // namespace
 
 // ===========================================================================
@@ -434,5 +527,277 @@ TEST(GoldenMaster, SeqExternalPlayback) {
               /*algoTimbre=*/-1, ALGO1,
               /*preRender=*/[](golden::GoldenHarness& h) {
                   h.setupSequencerTriadPlayback();
+              });
+}
+
+// ===========================================================================
+// Phase 3 (spec-test-coverage-phase3) — FM-algorithm sweep. All 32 algorithms
+// (Algorithm enum ALGO1..ALG32, Common.h:747-780; ALGO_END is the count) under
+// the NON-ZERO modulation-index patch (setTimbreModulationIndices), which the
+// G1 goldens could not exercise (default preset IMs are all 0 — only carrier
+// count distinguished algos). Moderate IMs {1.0, 1.0, 0.8, 0.5} + feedback 0.3
+// keep every topology audible without DAC-clamp flattening. NO fixture: this
+// asserts the invariants (finite / non-silent / deterministic) per algo; the
+// committed per-algo goldens below lock byte-exact topologies.
+// ===========================================================================
+TEST(GoldenMaster, FmAlgoSweep) {
+    if (regenMode()) {
+        GTEST_SKIP() << "sweep asserts invariants only; nothing to regenerate";
+    }
+    // Pairwise-distinct: under the nonzero-IM patch, two different FM
+    // topologies must produce different renders. Without this check a wiring
+    // regression (e.g. algoOpInformation flattening two algos to the same
+    // carrier/modulator routing) would silently render byte-identical —
+    // exactly the distinction the IM patch exists to expose (the G1 goldens
+    // were byte-identical under all-zero IMs, so non-silence alone cannot
+    // catch it). If a legitimate duplicate topology is ever found, document
+    // it as an exemption here rather than weakening the check for all.
+    std::vector<std::vector<int32_t>> renders;
+    for (int a = ALGO1; a < ALGO_END; a++) {
+        const std::string label = "algo " + std::to_string(a) + "/" +
+                                  std::to_string(ALGO_END);
+        SCOPED_TRACE(label);
+        std::vector<int32_t> render;
+        ASSERT_NO_FATAL_FAILURE(assertSweepInvariants(label.c_str(),
+            [a](golden::GoldenHarness& h) {
+                h.setTimbreAlgo(0, static_cast<Algorithm>(a));
+                const float im[4] = {1.0f, 0.7f, 0.8f, 0.5f};
+                h.setTimbreModulationIndices(0, im, 0.3f);
+            },
+            48, /*expectSilent=*/false, &render));
+        for (std::size_t prev = 0; prev < renders.size(); prev++) {
+            ASSERT_NE(0, std::memcmp(renders[prev].data(), render.data(),
+                                     render.size() * sizeof(int32_t)))
+                << "algo " << prev << " and algo " << a
+                << " render byte-identical under the nonzero-IM patch — a "
+                   "modulator-routing regression (or a duplicate topology "
+                   "needing a documented exemption)";
+        }
+        renders.push_back(std::move(render));
+    }
+}
+
+// ===========================================================================
+// Phase 3 — FX-filter sweep. Every FILTER_TYPE value (SynthState.h:262
+// FILTER_OFF..FILTER_LAST-1, ~50 arms of Voice::fxAfterBlock) with
+// param1=0.6 / param2=0.55 / param3=0.6 (gain — the default-preset random
+// gen's value; 0 would attenuate to silence). Exemptions (documented, not
+// silently passed): FILTER_OFF — the pass-through arm; fxAfterBlock has no
+// FILTER_OFF case (Voice.cpp:4128 switch starts at FILTER_LP), so the block
+// is a no-op pass-through of the dry signal... which for timbre 0 output is
+// the DRY VOICE ITSELF — NOT silent. Confirmed empirically on first run: no
+// FILTER_TYPE needed an exemption under this patch (all non-silent, finite,
+// deterministic). The exemption mechanism is kept for a future quirk.
+// ===========================================================================
+TEST(GoldenMaster, FxSweep) {
+    if (regenMode()) {
+        GTEST_SKIP() << "sweep asserts invariants only; nothing to regenerate";
+    }
+    // Dry baseline: FILTER_OFF passes the voice through untouched (the
+    // fxAfterBlock switch has no FILTER_OFF case — Voice.cpp:4128). Every
+    // OTHER type must move the render away from this baseline by more than
+    // 1 audio-LSB (256 stored units): a dead wet path (regression zeroing an
+    // arm) leaves the dry signal intact and non-silent, which the plain
+    // non-silence assert above cannot distinguish — this delta check can.
+    // A type that legitimately shifts <1 LSB at these params is functionally
+    // transparent and gets a documented exemption, not a silent pass.
+    constexpr int64_t kFxDeltaFloor = 256;
+    std::vector<int32_t> dry;
+    ASSERT_NO_FATAL_FAILURE(assertSweepInvariants("fx FILTER_OFF dry baseline",
+        [](golden::GoldenHarness& h) {
+            h.setTimbreFx(0, FILTER_OFF, 0.6f, 0.55f);
+        },
+        48, /*expectSilent=*/false, &dry));
+    for (int t = FILTER_OFF; t < FILTER_LAST; t++) {
+        const std::string label = "fx type " + std::to_string(t) + "/" +
+                                  std::to_string(FILTER_LAST);
+        SCOPED_TRACE(label);
+        std::vector<int32_t> render;
+        ASSERT_NO_FATAL_FAILURE(assertSweepInvariants(label.c_str(),
+            [t](golden::GoldenHarness& h) {
+                h.setTimbreFx(0, t, 0.6f, 0.55f);
+            },
+            48, /*expectSilent=*/false, &render));
+        if (t != FILTER_OFF) {
+            ASSERT_GT(maxAbsDiff(dry.data(), render.data(), render.size()),
+                      kFxDeltaFloor)
+                << label << ": render is within 1 audio-LSB of the FILTER_OFF "
+                   "dry baseline — the wet path is (near-)dead; investigate "
+                   "or document an exemption";
+        }
+    }
+}
+
+// ===========================================================================
+// Phase 3 — nonzero-IM FM-algo goldens. Each pairs setTimbreAlgo +
+// setTimbreModulationIndices before renderScript(a4Sustain()) — same shape as
+// the G1 FM goldens but now the MODULATOR routing (not just carrier count)
+// drives the output, closing the G1 deferred gap. Topology diversity
+// (algoOpInformation, Common.cpp:56-88: {im, mix, carriers} per algo):
+//   ALGO1  {1,2,2}      — 1 car, 2 stacked mods (the classic 2-op->1 stack).
+//   ALGO6  {1,1,1,2}    — 3 carriers + 1 shared mod + feedback patch.
+//   ALG16  {1,2,1,2,2,2}— 4-car/2-mod interleaved tree.
+//   ALG22  {1,2,1,1,1,2}— 4-car/2-mod alternate tree (different wire order
+//                          than ALG16 -> different render even at equal op
+//                          counts, the exact distinction the nonzero IMs make
+//                          visible).
+//   ALG28  {1,1,1,1,1,2}— 5 carriers + 1 shared mod: additive-with-PM. Chosen
+//                          over the spec's ALG27 sketch ({1,1,1,1,1,1} — six
+//                          carriers, ZERO modulators): under any IM patch
+//                          ALG27 renders byte-identical to the committed
+//                          fm_algo27_6carrier, a duplicate fixture; ALG28 is
+//                          the additive family member where the IM patch is
+//                          actually audible.
+// ===========================================================================
+TEST(GoldenMaster, FmAlgo1Mod) {
+    runGolden("fm_algo1_mod", 200, golden::RenderScript::a4Sustain(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/0, ALGO1,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  const float im[4] = {1.0f, 0.7f, 0.8f, 0.5f};
+                  h.setTimbreModulationIndices(0, im, 0.3f);
+              });
+}
+
+TEST(GoldenMaster, FmAlgo6Mod) {
+    runGolden("fm_algo6_mod", 200, golden::RenderScript::a4Sustain(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/0, ALGO6,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  const float im[4] = {1.2f, 0.7f, 0.8f, 0.5f};
+                  h.setTimbreModulationIndices(0, im, 0.6f);
+              });
+}
+
+TEST(GoldenMaster, FmAlgo16Mod) {
+    runGolden("fm_algo16_mod", 200, golden::RenderScript::a4Sustain(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/0, ALG16,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  const float im[4] = {1.0f, 0.7f, 0.8f, 0.5f};
+                  h.setTimbreModulationIndices(0, im, 0.3f);
+              });
+}
+
+TEST(GoldenMaster, FmAlgo22Mod) {
+    runGolden("fm_algo22_mod", 200, golden::RenderScript::a4Sustain(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/0, ALG22,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  const float im[4] = {1.0f, 0.7f, 0.8f, 0.5f};
+                  h.setTimbreModulationIndices(0, im, 0.3f);
+              });
+}
+
+TEST(GoldenMaster, FmAlgo28Mod) {
+    runGolden("fm_algo28_mod", 200, golden::RenderScript::a4Sustain(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/0, ALG28,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  const float im[4] = {1.0f, 0.7f, 0.8f, 0.5f};
+                  h.setTimbreModulationIndices(0, im, 0.3f);
+              });
+}
+
+// ===========================================================================
+// Phase 3 — FX goldens. Two committed fixtures on the per-voice FX path
+// (Voice::fxAfterBlock): a low-pass sweep (FILTER_LP, the first and most-
+// used filter arm) and the bit-crusher (FILTER_CRUSHER, a non-linear waveshaper
+// arm). Both verified audible (sweep non-silence) and deterministic before
+// committing. param3 (gain) = 0.6.
+// ===========================================================================
+TEST(GoldenMaster, FxLowpass) {
+    runGolden("fx_lowpass", 200, golden::RenderScript::a4Sustain(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/-1, ALGO1,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  h.setTimbreFx(0, FILTER_LP, 0.6f, 0.55f);
+              });
+}
+
+TEST(GoldenMaster, FxCrusher) {
+    runGolden("fx_crusher", 200, golden::RenderScript::a4Sustain(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/-1, ALGO1,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  h.setTimbreFx(0, FILTER_CRUSHER, 0.6f, 0.55f);
+              });
+}
+
+// ===========================================================================
+// Phase 3 coverage follow-up — TIMBRE-level FX2 sweep (spec-test-coverage-
+// phase3, Timbre.cpp coverage gap). Timbre::fxAfterBlock (Timbre.cpp:751+,
+// ~1254 lines) is a DIFFERENT surface from the Voice-level FILTER_TYPE sweep
+// above: it switches on params_.effect2.type (SynthState.h FILTER2_TYPE:
+// flange/dimension/chorus/wide/doubler/tripler/bode/delaycrunch/pingpong/
+// diffuser/grain1/grain2) and uses Timbre::delayBuffer_. All fields are read
+// LIVE each block (call site Synth::buildNewSampleBlock -> Timbre::fxAfterBlock,
+// Synth.cpp:354), and param3 drives the wet gain (mixerGain_, Timbre.cpp:762),
+// so setTimbreFx2's field patch alone reaches the DSP. TWO param passes per
+// type: delay-based FX have internal branches selected by param ranges (e.g.
+// FLANGE's feedback branch signs at Timbre.cpp:808-810, ORYX-style quadrant
+// logic at Timbre.cpp:1170-1175); a low-param pass (p1=0.15, p2=0.9) and a
+// mid pass (p1=0.6, p2=0.55) exercise different arms while keeping runtime
+// bounded. 96 blocks (not 48): the delay FX need runway for the wet path to
+// build past the non-silence threshold after the anti-click zeroing
+// (Timbre.cpp:764-771).
+// ===========================================================================
+TEST(GoldenMaster, Fx2Sweep) {
+    if (regenMode()) {
+        GTEST_SKIP() << "sweep asserts invariants only; nothing to regenerate";
+    }
+    // Wet-vs-dry delta vs FILTER2_OFF, same rationale as FxSweep: Timbre::
+    // fxAfterBlock's switch has no FILTER2_OFF case, so the OFF render IS the
+    // dry timbre mix. Each param pass gets its own baseline (the smoothing
+    // state differs per pass).
+    constexpr int64_t kFx2DeltaFloor = 256;
+    struct ParamSet { float p1, p2; const char* tag; };
+    const ParamSet passes[] = {
+        {0.6f, 0.55f, "mid"},
+        {0.15f, 0.9f, "low"},
+    };
+    for (const auto& ps : passes) {
+        std::vector<int32_t> dry;
+        ASSERT_NO_FATAL_FAILURE(assertSweepInvariants(
+            (std::string("fx2 FILTER2_OFF dry baseline (") + ps.tag + ")").c_str(),
+            [ps](golden::GoldenHarness& h) {
+                h.setTimbreFx2(0, FILTER2_OFF, ps.p1, ps.p2, 1.0f);
+            },
+            96, /*expectSilent=*/false, &dry));
+        for (int t = FILTER2_OFF; t < FILTER2_LAST; t++) {
+            const std::string label = "fx2 type " + std::to_string(t) + "/"
+                                    + std::to_string(FILTER2_LAST)
+                                    + " (" + ps.tag + " params)";
+            SCOPED_TRACE(label);
+            std::vector<int32_t> render;
+            ASSERT_NO_FATAL_FAILURE(assertSweepInvariants(label.c_str(),
+                [t, ps](golden::GoldenHarness& h) {
+                    h.setTimbreFx2(0, t, ps.p1, ps.p2, 1.0f);
+                },
+                /*nBlocks=*/96, /*expectSilent=*/false, &render));
+            if (t != FILTER2_OFF) {
+                ASSERT_GT(maxAbsDiff(dry.data(), render.data(), render.size()),
+                          kFx2DeltaFloor)
+                    << label << ": render is within 1 audio-LSB of the "
+                       "FILTER2_OFF dry baseline — the wet path is (near-)dead; "
+                       "investigate or document an exemption";
+            }
+        }
+    }
+}
+
+// ===========================================================================
+// Phase 3 coverage follow-up — ONE fx2 golden (spec budget cap: 8 new goldens
+// total). FILTER2_CHORUS: a delay-modulated wet path that is clearly audible
+// on a sustained note and representative of the delay-buffer family. 200
+// blocks capture the chorus LFO sweep + wet-path ramp past the anti-click
+// transient. Both macOS and Linux fixture triples are committed.
+// ===========================================================================
+TEST(GoldenMaster, Fx2Chorus) {
+    runGolden("fx2_chorus", 200, golden::RenderScript::a4Sustain(),
+              golden::TimbreSetup::g0Default(),
+              /*algoTimbre=*/-1, ALGO1,
+              /*preRender=*/[](golden::GoldenHarness& h) {
+                  h.setTimbreFx2(0, FILTER2_CHORUS, 0.6f, 0.55f, 1.0f);
               });
 }

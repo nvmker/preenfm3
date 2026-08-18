@@ -150,6 +150,14 @@ public:
         return instrumentCompressor_[t];
     }
 
+#ifdef PFM3_HOST
+    // Test-only introspection for state-machine assertions. The host suite uses
+    // Timbre::voiceNumber_ to resolve a timbre-local slot to this global pool.
+    Voice& hostVoice(int index) {
+        return voices_[index];
+    }
+#endif
+
 private:
     // Called by setSynthState
     void init(SynthState *synthState);
