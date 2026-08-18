@@ -558,13 +558,13 @@ TEST(GoldenMaster, FmAlgoSweep) {
                                   std::to_string(ALGO_END);
         SCOPED_TRACE(label);
         std::vector<int32_t> render;
-        assertSweepInvariants(label.c_str(),
+        ASSERT_NO_FATAL_FAILURE(assertSweepInvariants(label.c_str(),
             [a](golden::GoldenHarness& h) {
                 h.setTimbreAlgo(0, static_cast<Algorithm>(a));
                 const float im[4] = {1.0f, 0.7f, 0.8f, 0.5f};
                 h.setTimbreModulationIndices(0, im, 0.3f);
             },
-            48, /*expectSilent=*/false, &render);
+            48, /*expectSilent=*/false, &render));
         for (std::size_t prev = 0; prev < renders.size(); prev++) {
             ASSERT_NE(0, std::memcmp(renders[prev].data(), render.data(),
                                      render.size() * sizeof(int32_t)))
@@ -603,21 +603,21 @@ TEST(GoldenMaster, FxSweep) {
     // transparent and gets a documented exemption, not a silent pass.
     constexpr int64_t kFxDeltaFloor = 256;
     std::vector<int32_t> dry;
-    assertSweepInvariants("fx FILTER_OFF dry baseline",
+    ASSERT_NO_FATAL_FAILURE(assertSweepInvariants("fx FILTER_OFF dry baseline",
         [](golden::GoldenHarness& h) {
             h.setTimbreFx(0, FILTER_OFF, 0.6f, 0.55f);
         },
-        48, /*expectSilent=*/false, &dry);
+        48, /*expectSilent=*/false, &dry));
     for (int t = FILTER_OFF; t < FILTER_LAST; t++) {
         const std::string label = "fx type " + std::to_string(t) + "/" +
                                   std::to_string(FILTER_LAST);
         SCOPED_TRACE(label);
         std::vector<int32_t> render;
-        assertSweepInvariants(label.c_str(),
+        ASSERT_NO_FATAL_FAILURE(assertSweepInvariants(label.c_str(),
             [t](golden::GoldenHarness& h) {
                 h.setTimbreFx(0, t, 0.6f, 0.55f);
             },
-            48, /*expectSilent=*/false, &render);
+            48, /*expectSilent=*/false, &render));
         if (t != FILTER_OFF) {
             ASSERT_GT(maxAbsDiff(dry.data(), render.data(), render.size()),
                       kFxDeltaFloor)
@@ -758,23 +758,23 @@ TEST(GoldenMaster, Fx2Sweep) {
     };
     for (const auto& ps : passes) {
         std::vector<int32_t> dry;
-        assertSweepInvariants((std::string("fx2 FILTER2_OFF dry baseline (")
-                               + ps.tag + ")").c_str(),
+        ASSERT_NO_FATAL_FAILURE(assertSweepInvariants(
+            (std::string("fx2 FILTER2_OFF dry baseline (") + ps.tag + ")").c_str(),
             [ps](golden::GoldenHarness& h) {
                 h.setTimbreFx2(0, FILTER2_OFF, ps.p1, ps.p2, 1.0f);
             },
-            96, /*expectSilent=*/false, &dry);
+            96, /*expectSilent=*/false, &dry));
         for (int t = FILTER2_OFF; t < FILTER2_LAST; t++) {
             const std::string label = "fx2 type " + std::to_string(t) + "/"
                                     + std::to_string(FILTER2_LAST)
                                     + " (" + ps.tag + " params)";
             SCOPED_TRACE(label);
             std::vector<int32_t> render;
-            assertSweepInvariants(label.c_str(),
+            ASSERT_NO_FATAL_FAILURE(assertSweepInvariants(label.c_str(),
                 [t, ps](golden::GoldenHarness& h) {
                     h.setTimbreFx2(0, t, ps.p1, ps.p2, 1.0f);
                 },
-                /*nBlocks=*/96, /*expectSilent=*/false, &render);
+                /*nBlocks=*/96, /*expectSilent=*/false, &render));
             if (t != FILTER2_OFF) {
                 ASSERT_GT(maxAbsDiff(dry.data(), render.data(), render.size()),
                           kFx2DeltaFloor)
@@ -791,7 +791,7 @@ TEST(GoldenMaster, Fx2Sweep) {
 // total). FILTER2_CHORUS: a delay-modulated wet path that is clearly audible
 // on a sustained note and representative of the delay-buffer family. 200
 // blocks capture the chorus LFO sweep + wet-path ramp past the anti-click
-// transient. _linux triple pending the regenerate-linux-goldens workflow.
+// transient. Both macOS and Linux fixture triples are committed.
 // ===========================================================================
 TEST(GoldenMaster, Fx2Chorus) {
     runGolden("fx2_chorus", 200, golden::RenderScript::a4Sustain(),
