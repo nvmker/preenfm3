@@ -220,6 +220,76 @@ public:
     // G0 + multi-timbre goldens never call this.
     void setTimbreAlgo(int timbre, Algorithm algo);
 
+    // Override the timbre's modulation indices + FM feedback AFTER construction
+    // and BEFORE the first noteOn (Phase 3 / spec-test-coverage-phase3). The
+    // default preenMainPreset has ALL-ZERO modulation indices, so under it only
+    // the carrier COUNT distinguishes algorithms (tests/golden/README.md -> G1
+    // algorithm note). This helper closes that gap: it writes
+    // params_.engineIm1.modulationIndex1/2 + params_.engineIm2.modulationIndex3/4
+    // (Common.h:328/337 EngineIm1/EngineIm2) and the FM feedback,
+    // params_.engineIm3.modulationIndex6 (Common.h:347 — there is NO separate
+    // "engine1.feedback" field; osc self-feedback IS modulationIndex6, range
+    // [0,1] vs [0,16] for the others, Voice.h:125-132 updateAllModulationIndexes
+    // clamps it). The voice copies these into its per-voice modulationIndex1..4/
+    // feedbackModulation via updateAllModulationIndexes (Voice.h:122), which is
+    // re-run EVERY BLOCK from the per-block matrix update (call site Voice.h:350)
+    // — so the field write is read live, exactly like engine1.algo.
+    // afterNewParamsLoad then re-runs the production re-init (resetting the
+    // matrix sources/destinations caches via Voice::afterNewParamsLoad) so the
+    // patch is in effect from block 0. Call BEFORE noteOn per the setTimbreAlgo
+    // precedent (kept uniform even though the read is live). Keep values moderate (0.5-2.0 IMs,
+    // feedback <= 1) — huge indices flatten against the DAC clamp and the
+    // fixture stops distinguishing topology. modulationIndex5 is left at its
+    // preset default (some deep algos read it; im[4] deliberately covers only
+    // IM1..IM4, matching the spec).
+    // Override the timbre's FM modulation indices (+ fast-attack modulator
+    // envelopes) AFTER construction and BEFORE the first render (Phase 3).
+    // Writes engineIm1/2 + engineIm3.modulationIndex6 (feedback), then — see
+    // the .cpp — ALSO fast-attacks env3..env6 so the modulators are audible
+    // from block 0. Use all-distinct im[] values: routing pairs that differ
+    // only by an IM swap render identically under equal indices.
+    void setTimbreModulationIndices(int timbre, const float im[4], float feedback);
+
+    // Override the timbre's per-voice FX filter AFTER construction and BEFORE
+    // the first render (Phase 3). Writes params_.effect1.{type,param1,param2,
+    // param3} (Common.h EffectRowParams — Common.h:545 in OneSynthParams), then
+    // calls afterNewParamsLoad. TWO read paths make this work: (1) the type/
+    // params are read LIVE every block by Voice::fxAfterBlock (Voice.cpp:4124
+    // `int effectType = currentTimbre->params_.effect1.type;` and every case's
+    // `params_.effect1.param1/param2`), so the patch alone reaches the
+    // sounding-path FX; AND (2) afterNewParamsLoad DOES reach Voice::setNewEffect-
+    // Param (Synth.cpp:569 -> Timbre::afterNewParamsLoad, Timbre.cpp:2603-2605
+    // loops setNewEffecParam(k) -> Voice::setNewEffectParam, Voice.cpp:7897)
+    // which resets per-type filter state (fxParamA1/A2/B2, v0L..v8R, BP
+    // recompute markers) — needed so the filter state matches a voice that
+    // STARTED with this FX rather than carrying default-preset leftovers.
+    // param3 is the FX gain (fxAfterBlock Voice.cpp:4125 clamp(param3,0,16) ->
+    // mixerGain; 0 would attenuate the output to silence) — defaults to 0.6
+    // (the value SynthState.cpp:723 random preset gen also uses).
+    void setTimbreFx(int timbre, int type, float param1, float param2,
+                     float param3 = 0.6f);
+
+    // Override the TIMBRE-level FX bus AFTER construction and BEFORE the first
+    // render (Phase 3 coverage follow-up). This is a DIFFERENT surface from
+    // setTimbreFx: effect1 is the per-VOICE FILTER_TYPE chain (Voice::
+    // fxAfterBlock); effect2 is the per-TIMBRE FILTER2_TYPE bus (Timbre::
+    // fxAfterBlock, Timbre.cpp:751+) — flange/dimension/chorus/wide/doubler/
+    // tripler/bode/delaycrunch/pingpong/diffuser/grain1/grain2 — using
+    // Timbre::delayBuffer_. Writes params_.effect2.{type,param1,param2,param3}
+    // (Common.h EffectRowParams). NO afterNewParamsLoad is needed here —
+    // VERIFIED read paths: (1) Timbre::fxAfterBlock reads effect2.{type,param1,
+    // param2} LIVE each block (Timbre.cpp:752-753 and per-case uses); (2) the
+    // type-change detection `prevFx2Type != fx2Type` (Timbre.cpp:764-771)
+    // zeroes mixerGain_/feedback/delayBuffer_ on the first block with the new
+    // type, replacing the state-reset role Voice::setNewEffectParam plays for
+    // effect1; (3) param3 drives the wet-path gain via
+    // gainTmp = clamp(param3 + matrixFilterAmp, 0, 16) -> mixerGain_
+    // (Timbre.cpp:762; param3=0 would ramp the wet gain to silence). The call
+    // site is Synth::buildNewSampleBlock -> Timbre::fxAfterBlock
+    // (Synth.cpp:354), unconditionally every block per timbre.
+    void setTimbreFx2(int timbre, int type, float param1, float param2,
+                      float param3);
+
     // Override a single modulation-matrix row AFTER construction and BEFORE the
     // first render (Phase G3). Writes params_.matrixRowState{rowIdx}
     // {source, mul, dest1, dest2} (Common.h:491/574) — the rows are bound to the
