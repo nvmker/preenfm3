@@ -1,6 +1,6 @@
 {
  "schemaVersion": 4,
- "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp. The full render is byte-stable per (libm-class), NOT per compiler: ubuntu gcc and ubuntu clang both link glibc and produce byte-identical renders, while macOS clang links libsystem and differs. The discriminator is the platform/libm; tests/golden_master_test.cpp selects by __APPLE__. FM feedback amplifies the ~1-ULP libm-driven table differences (Osc::init/Env::init precompute via sinf/expf/logf), so cross-libm renders diverge by >1 audio-LSB within ~1 block. v4: compare tolerance is 256 stored units (= 1 audio-LSB; the firmware clamps to 24-bit then <<8), and the hash is diagnostic-only (goldenCompare is authoritative). Fixture bytes are UNCHANGED from v3. v4-era Phase 3 additions (spec-test-coverage-phase3): 5 nonzero-IM algo goldens + 2 FX goldens; _linux variants pending the regenerate-linux-goldens workflow dispatch.",
+ "description": "Manifest for the preenfm3 full-render golden-master fixtures. See tests/golden/README.md and _bmad-output/planning-artifacts/golden-master-test-plan.md. Each entry corresponds to one TEST in tests/golden_master_test.cpp. The full render is byte-stable per (libm-class), NOT per compiler: ubuntu gcc and ubuntu clang both link glibc and produce byte-identical renders, while macOS clang links libsystem and differs. The discriminator is the platform/libm; tests/golden_master_test.cpp selects by __APPLE__. FM feedback amplifies the ~1-ULP libm-driven table differences (Osc::init/Env::init precompute via sinf/expf/logf), so cross-libm renders diverge by >1 audio-LSB within ~1 block. v4: compare tolerance is 256 stored units (= 1 audio-LSB; the firmware clamps to 24-bit then <<8), and the hash is diagnostic-only (goldenCompare is authoritative). Fixture bytes are UNCHANGED from v3. v4-era Phase 3 additions (spec-test-coverage-phase3): 5 nonzero-IM algo goldens + 3 FX goldens; macOS and Linux variants are committed.",
  "comparison": {
   "artifactType": "int32_t DAC-format render (3 buffers x 64 stereo per block = 192 int32/block); stored value = (24-bit clamped sample) << 8",
   "authoritativeGate": "goldenCompare, \u00b1256 stored int32 units = \u00b11 audio-LSB (the firmware's final <<8 puts the 24-bit audio in the top 24 bits; a bare \u00b11 would only cover always-zero padding). Absorbs benign within-platform drift.",
@@ -431,7 +431,7 @@
   {
    "id": "fm_algo6_mod_macos",
    "variant": "macos",
-   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.6 + fast-attack env3..env6 (helper)",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.2,0.7,0.8,0.5} feedback=0.6 + fast-attack env3..env6 (helper)",
    "noteSequence": "setTimbreAlgo(0, ALGO6) + IM/feedback patch; noteOn(0,69,100)@0; sustain",
    "nBlocks": 200,
    "samplesPerBlock": 192,
@@ -450,7 +450,7 @@
   {
    "id": "fm_algo16_mod_macos",
    "variant": "macos",
-   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.2,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
    "noteSequence": "setTimbreAlgo(0, ALG16) + IM patch; noteOn(0,69,100)@0; sustain",
    "nBlocks": 200,
    "samplesPerBlock": 192,
@@ -469,7 +469,7 @@
   {
    "id": "fm_algo22_mod_macos",
    "variant": "macos",
-   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.2,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
    "noteSequence": "setTimbreAlgo(0, ALG22) + IM patch; noteOn(0,69,100)@0; sustain",
    "nBlocks": 200,
    "samplesPerBlock": 192,
@@ -488,7 +488,7 @@
   {
    "id": "fm_algo28_mod_macos",
    "variant": "macos",
-   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.2,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
    "noteSequence": "setTimbreAlgo(0, ALG28) + IM patch; noteOn(0,69,100)@0; sustain",
    "nBlocks": 200,
    "samplesPerBlock": 192,
@@ -583,7 +583,7 @@
   {
    "id": "fm_algo6_mod_linux",
    "variant": "linux",
-   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.6 + fast-attack env3..env6 (helper)",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.2,0.7,0.8,0.5} feedback=0.6 + fast-attack env3..env6 (helper)",
    "noteSequence": "setTimbreAlgo(0, ALGO6) + IM/feedback patch; noteOn(0,69,100)@0; sustain",
    "nBlocks": 200,
    "samplesPerBlock": 192,
@@ -602,7 +602,7 @@
   {
    "id": "fm_algo16_mod_linux",
    "variant": "linux",
-   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.2,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
    "noteSequence": "setTimbreAlgo(0, ALG16) + IM patch; noteOn(0,69,100)@0; sustain",
    "nBlocks": 200,
    "samplesPerBlock": 192,
@@ -621,7 +621,7 @@
   {
    "id": "fm_algo22_mod_linux",
    "variant": "linux",
-   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.2,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
    "noteSequence": "setTimbreAlgo(0, ALG22) + IM patch; noteOn(0,69,100)@0; sustain",
    "nBlocks": 200,
    "samplesPerBlock": 192,
@@ -640,7 +640,7 @@
   {
    "id": "fm_algo28_mod_linux",
    "variant": "linux",
-   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.0,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
+   "preset": "default preenMainPreset (timbre 0) + setTimbreModulationIndices im={1.0,0.7,0.8,0.5} feedback=0.3 (fm_algo6_mod uses im={1.2,0.7,0.8,0.5} feedback=0.6) + fast-attack env3..env6 (helper)",
    "noteSequence": "setTimbreAlgo(0, ALG28) + IM patch; noteOn(0,69,100)@0; sustain",
    "nBlocks": 200,
    "samplesPerBlock": 192,

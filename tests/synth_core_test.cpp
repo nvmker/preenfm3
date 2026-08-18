@@ -61,9 +61,9 @@ protected:
         synth().buildNewSampleBlock(b1_, b2_, b3_);
         int64_t m = 0;
         for (int i = 0; i < 64; i++) {
-            m = std::max(m, (int64_t) std::abs(b1_[i]));
-            m = std::max(m, (int64_t) std::abs(b2_[i]));
-            m = std::max(m, (int64_t) std::abs(b3_[i]));
+            m = std::max(m, std::abs(static_cast<int64_t>(b1_[i])));
+            m = std::max(m, std::abs(static_cast<int64_t>(b2_[i])));
+            m = std::max(m, std::abs(static_cast<int64_t>(b3_[i])));
         }
         return m;
     }
@@ -94,6 +94,15 @@ protected:
     }
 
     uint8_t playCount() { return synth().getNumberOfPlayingVoices(); }
+
+    int voiceForSlot(int slot) {
+        const int8_t voice = synth().getTimbre(0)->voiceNumber_[slot];
+        if (voice < 0) {
+            ADD_FAILURE() << "voice slot " << slot << " is unassigned";
+            return 0;  // Safe fallback prevents a failed assertion from OOB access.
+        }
+        return static_cast<int>(static_cast<uint8_t>(voice));
+    }
 
     std::unique_ptr<golden::GoldenHarness> harness_;
     int32_t b1_[64], b2_[64], b3_[64];
@@ -127,13 +136,17 @@ TEST_F(SynthCore, SeventhNoteOnStealsOldestPlayingVoiceNotASeventh) {
     synth().noteOn(0, 84, 100);   // 7th — must steal, not exceed
     renderBlocks(2);
     EXPECT_EQ(playCount(), 6) << "7th noteOn exceeded the timbre's 6-voice allocation";
+    const int oldestVoice = voiceForSlot(0);
+    EXPECT_EQ(static_cast<int>(static_cast<uint8_t>(
+                  synth().hostVoice(oldestVoice).getNote())), 84)
+        << "the oldest voice slot was not selected for the seventh note";
     EXPECT_GT(renderBlocks(4), kSilenceThreshold) << "newest note must keep sounding";
 }
 
 TEST_F(SynthCore, StolenOldestNoteIsGoneNoteOffsOfSoundingNotesDrainAll) {
     // After the steal, note 60 is gone (its voice was quick-killed). NoteOffs
-    // for the six SOUNDING notes drain every voice to silence; the extra
-    // noteOff(60) for the already-stolen note is a harmless no-op.
+    // for only the six expected SOUNDING notes must drain every voice; omitting
+    // noteOff(60) makes the selected steal victim observable.
     for (int n = 0; n < 6; n++) {
         synth().noteOn(0, 60 + n * 4, 100);
         renderBlocks(3);
@@ -142,7 +155,8 @@ TEST_F(SynthCore, StolenOldestNoteIsGoneNoteOffsOfSoundingNotesDrainAll) {
     renderBlocks(2);
     for (int n = 1; n < 6; n++) synth().noteOff(0, 60 + n * 4);
     synth().noteOff(0, 84);
-    synth().noteOff(0, 60);   // already stolen — no-op
+    // Deliberately do NOT send noteOff(60): reaching silence proves note 60
+    // really was the stolen victim rather than merely draining every note ID.
     const std::size_t drained = renderUntilSilent(2200);
     ASSERT_LT(drained, 2200) << "release never completed within the budget "
                                 "(regression: both releases stopped decaying)";
@@ -153,6 +167,8 @@ TEST_F(SynthCore, StolenOldestNoteIsGoneNoteOffsOfSoundingNotesDrainAll) {
     // `playing` flag is never cleared, even after the render decays to
     // silence. No stuck AUDIO (render is silent) and the voice is recoverable:
     // a fresh noteOn steals it back and sounds normally.
+    EXPECT_TRUE(synth().isPlaying())
+        << "characterized stuck-playing flag unexpectedly cleared";
     synth().noteOn(0, 88, 100);
     renderBlocks(3);
     EXPECT_GT(renderBlocks(4), kSilenceThreshold) << "stuck-flag voice is stealable (no audible stuck note)";
@@ -161,18 +177,30 @@ TEST_F(SynthCore, StolenOldestNoteIsGoneNoteOffsOfSoundingNotesDrainAll) {
 TEST_F(SynthCore, ReleasedVoiceIsReusedByNextNoteOn) {
     // 6 notes on, then noteOff one -> that voice enters release (still playing
     // its tail). A new noteOn must reuse it (NEW_NOTE_RELEASE, preferred over
-    // stealing a playing voice) — aggregate: count stays 6, render continues.
+    // stealing a playing voice). Inspect the assigned host voice directly so
+    // an implementation that steals the oldest active voice cannot pass on
+    // aggregate count alone.
     for (int n = 0; n < 6; n++) {
         synth().noteOn(0, 60 + n * 4, 100);
         renderBlocks(3);
     }
     ASSERT_EQ(playCount(), 6);
+    Timbre* timbre = synth().getTimbre(0);
+    const int releasedVoice = voiceForSlot(0);
     synth().noteOff(0, 60);
     renderBlocks(5);                  // release tail: still playing
-    ASSERT_EQ(playCount(), 6);
-    synth().noteOn(0, 90, 100);       // reuses the released voice
+    ASSERT_TRUE(synth().hostVoice(releasedVoice).isReleased());
+    synth().noteOn(0, 90, 100);       // must reuse the released voice
     renderBlocks(2);
     EXPECT_EQ(playCount(), 6);
+    EXPECT_EQ(static_cast<int>(static_cast<uint8_t>(
+                  synth().hostVoice(releasedVoice).getNote())), 90);
+    for (int slot = 1; slot < 6; slot++) {
+        EXPECT_EQ(static_cast<int>(static_cast<uint8_t>(
+                      synth().hostVoice(voiceForSlot(slot)).getNote())),
+                  60 + slot * 4)
+            << "active voice slot " << slot << " was stolen instead";
+    }
     EXPECT_GT(renderBlocks(4), kSilenceThreshold);
 }
 
@@ -183,9 +211,18 @@ TEST_F(SynthCore, SameNoteRetriggerUsesSameVoice) {
     synth().noteOn(0, 69, 100);
     renderBlocks(3);
     ASSERT_EQ(playCount(), 1);
+    Timbre* timbre = synth().getTimbre(0);
+    const int originalVoice = voiceForSlot(0);
     synth().noteOn(0, 69, 100);
     renderBlocks(2);
     EXPECT_EQ(playCount(), 1) << "same-note retrigger allocated a second voice";
+    EXPECT_TRUE(synth().hostVoice(originalVoice).isPlaying());
+    EXPECT_EQ(static_cast<int>(static_cast<uint8_t>(
+                  synth().hostVoice(originalVoice).getNote())), 69);
+    for (int slot = 1; slot < 6; slot++) {
+        EXPECT_FALSE(synth().hostVoice(voiceForSlot(slot)).isPlaying())
+            << "same-note retrigger moved to voice slot " << slot;
+    }
 }
 
 // ===========================================================================
@@ -276,10 +313,39 @@ TEST_F(SynthCore, MonoOverlapGlideChangesTheRenderVersusNoGlide) {
     // Both non-silent, both on ONE voice (mono legato), but the glide changes
     // the waveform (frequency transition vs hard switch).
     int64_t m = 0;
-    for (int32_t s : withGlide) m = std::max(m, (int64_t) std::abs(s));
+    for (int32_t s : withGlide) {
+        m = std::max(m, std::abs(static_cast<int64_t>(s)));
+    }
     EXPECT_GT(m, kSilenceThreshold);
     EXPECT_NE(std::memcmp(withGlide.data(), noGlide.data(), withGlide.size() * sizeof(int32_t)), 0)
         << "glide ON rendered byte-identically to glide OFF — glide path not taken";
+}
+
+TEST_F(SynthCore, GlideSpeedControlsTransitionDuration) {
+    auto isGlidingAfter = [](float glideSpeed, std::size_t blocks) {
+        golden::GoldenHarness h(PFM3_GOLDEN_DIR);
+        auto* p = h.synth().getTimbre(0)->getParamRaw();
+        p->engine1.playMode = PLAY_MODE_MONO;
+        p->engine2.glideType = GLIDE_TYPE_OVERLAP;
+        p->engine1.glideSpeed = glideSpeed;
+        int32_t b1[64], b2[64], b3[64];
+        h.synth().noteOn(0, 60, 100);
+        for (int i = 0; i < 3; i++) h.synth().buildNewSampleBlock(b1, b2, b3);
+        const int voice = static_cast<int>(static_cast<uint8_t>(
+            h.synth().getTimbre(0)->voiceNumber_[0]));
+        h.synth().noteOn(0, 72, 100);
+        for (std::size_t i = 0; i < blocks; i++) {
+            h.synth().buildNewSampleBlock(b1, b2, b3);
+        }
+        return h.synth().hostVoice(voice).isGliding();
+    };
+
+    EXPECT_FALSE(isGlidingAfter(0.0f, 2))
+        << "fastest glide should complete in two blocks";
+    EXPECT_TRUE(isGlidingAfter(12.0f, 100))
+        << "slowest glide completed far earlier than its 2700-block budget";
+    EXPECT_FALSE(isGlidingAfter(12.0f, 2800))
+        << "slowest glide did not complete within its expected budget";
 }
 
 TEST_F(SynthCore, GlideFirstNoteOffKeepsGlideTargetSounding) {
@@ -398,14 +464,20 @@ TEST_F(SynthCore, AllNoteOffQuickIsNotSlowerThanAllNoteOff) {
             h.synth().buildNewSampleBlock(b1, b2, b3);
             n++;
             int64_t m = 0;
-            for (int i = 0; i < 64; i++)
-                m = std::max({m, (int64_t) std::abs(b1[i]), (int64_t) std::abs(b2[i]), (int64_t) std::abs(b3[i])});
+            for (int i = 0; i < 64; i++) {
+                m = std::max({m,
+                    std::abs(static_cast<int64_t>(b1[i])),
+                    std::abs(static_cast<int64_t>(b2[i])),
+                    std::abs(static_cast<int64_t>(b3[i]))});
+            }
             if (m <= kSilenceThreshold && n > 4) break;
         }
         return n;
     };
     std::size_t full = measure(0);
     std::size_t quick = measure(1);
+    ASSERT_LT(full, 2200U) << "allNoteOff never reached silence";
+    ASSERT_LT(quick, 2200U) << "allNoteOffQuick never reached silence";
     EXPECT_LE(quick, full) << "allNoteOffQuick (" << quick << " blocks) slower than allNoteOff (" << full << ")";
 }
 
@@ -597,11 +669,29 @@ TEST_F(SynthCore, SetNewValueFromMidiRoutesThroughClampAndDispatch) {
 }
 
 TEST_F(SynthCore, NewMixerValueCompressorAndMpeSettingArms) {
-    // MIXER_VALUE_COMPRESSOR 0..3 -> SimpleComp re-config (getCompInstrument
-    // is public); MIXER_VALUE_GLOBAL_SETTINGS_1 with setting 0 ->
-    // Timbre::setMPESetting (getMPESetting public round-trip).
+    // MIXER_VALUE_COMPRESSOR 0..3 -> SimpleComp re-config, asserted through
+    // its public parameter getters. GLOBAL_SETTINGS_1 setting 0 updates MPE.
+    struct ExpectedComp {
+        float ratio;
+        float threshold;
+        float attack;
+        float release;
+    };
+    const ExpectedComp expected[] = {
+        {1.0f, 1000.0f, 10.0f, 100.0f},
+        {0.33f, -12.0f, 100.0f, 1000.0f},
+        {0.33f, -12.0f, 8.0f, 200.0f},
+        {0.33f, -12.0f, 1.0f, 50.0f},
+    };
     for (int v = 0; v <= 3; v++) {
-        synth().newMixerValue(MIXER_VALUE_COMPRESSOR, 0, 0.0f, (float) v);
+        SCOPED_TRACE("compressor preset " + std::to_string(v));
+        synth().newMixerValue(MIXER_VALUE_COMPRESSOR, 0, 0.0f,
+                              static_cast<float>(v));
+        const auto& comp = synth().getCompInstrument(0);
+        EXPECT_FLOAT_EQ(comp.getRatio(), expected[v].ratio);
+        EXPECT_FLOAT_EQ(comp.getThresh(), expected[v].threshold);
+        EXPECT_FLOAT_EQ(comp.getAttack(), expected[v].attack);
+        EXPECT_FLOAT_EQ(comp.getRelease(), expected[v].release);
     }
     synth().newMixerValue(MIXER_VALUE_GLOBAL_SETTINGS_1, 0, 0.0f, 3.0f);
     EXPECT_EQ(synth().getTimbre(0)->getMPESetting(), 3);
@@ -625,6 +715,31 @@ TEST_F(SynthCore, NewMixerValueNumberOfVoicesEqualValuesIsNoOp) {
     synth().newMixerValue(MIXER_VALUE_NUMBER_OF_VOICES, 0, 6.0f, 6.0f);
     renderBlocks(2);
     EXPECT_EQ(playCount(), before);
+}
+
+TEST_F(SynthCore, NewMixerValueNumberOfVoicesIncreaseAndDecreaseReassignsSlots) {
+    Timbre* timbre = synth().getTimbre(0);
+    ASSERT_EQ(timbre->voiceNumber_[6], -1);
+    synth().newMixerValue(MIXER_VALUE_NUMBER_OF_VOICES, 0, 6.0f, 7.0f);
+    EXPECT_GE(timbre->voiceNumber_[6], 0);
+    EXPECT_FLOAT_EQ(timbre->getNumberOfVoiceInverse(), 1.0f / 7.0f);
+
+    synth().newMixerValue(MIXER_VALUE_NUMBER_OF_VOICES, 0, 7.0f, 4.0f);
+    for (int slot = 4; slot <= 6; slot++) {
+        EXPECT_EQ(timbre->voiceNumber_[slot], -1)
+            << "removed voice slot " << slot << " remained assigned";
+    }
+    EXPECT_FLOAT_EQ(timbre->getNumberOfVoiceInverse(), 0.25f);
+}
+
+TEST_F(SynthCore, NewMixerValueGlobalFxSettingsArmsComplete) {
+    // FxBus has no public coefficient introspection; executing each branch on
+    // the real initialized bus is the strongest non-invasive host oracle.
+    synth().newMixerValue(MIXER_VALUE_GLOBAL_SETTINGS_3, 0, 0.0f, 1.0f);
+    synth().newMixerValue(MIXER_VALUE_GLOBAL_SETTINGS_3, 3, 0.0f, 1.0f);
+    synth().newMixerValue(MIXER_VALUE_GLOBAL_SETTINGS_4, 0, 0.0f, 1.0f);
+    synth().newMixerValue(MIXER_VALUE_GLOBAL_SETTINGS_5, 0, 0.0f, 1.0f);
+    SUCCEED() << "global FX settings dispatched on the real FxBus";
 }
 
 // ===========================================================================
