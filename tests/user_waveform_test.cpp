@@ -37,8 +37,12 @@ protected:
         fsu_ = new FileSystemUtils;
         uw_.setFileSystemUtils(fsu_);
         memset(userWaveform, 0, sizeof(userWaveform));
+        for (int i = 0; i < 6; i++) priorShapeNames_[i] = oscShapeNames[8 + i];
     }
-    void TearDown() override { delete fsu_; }
+    void TearDown() override {
+        for (int i = 0; i < 6; i++) oscShapeNames[8 + i] = priorShapeNames_[i];
+        delete fsu_;
+    }
 
     // "NAME 64\n" + count floats, one digit after the point
     std::string MakeTxt(const char* name, int count, float start, float step) {
@@ -53,6 +57,7 @@ protected:
     }
     UserWaveform uw_;
     FileSystemUtils* fsu_;
+    const char* priorShapeNames_[6];
 };
 
 TEST_F(UserWaveformTest, NoFilesLeavesWaveformSilent) {
