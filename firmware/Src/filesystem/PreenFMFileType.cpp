@@ -17,8 +17,14 @@
 
 #include "PreenFMFileType.h"
 
-__attribute__((section(".ram_d2b"))) char storageBuffer[PROPERTY_FILE_SIZE];
-__attribute__((section(".ram_d2b"))) static FIL file;
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+char storageBuffer[PROPERTY_FILE_SIZE];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+static FIL file;
 
 PreenFMFileType::PreenFMFileType() {
     isInitialized_ = false;

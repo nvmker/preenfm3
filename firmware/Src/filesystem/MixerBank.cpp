@@ -25,8 +25,14 @@
 
 extern TftDisplay tft;
 
-__attribute__((section(".ram_d2b"))) struct PFM3File preenFMMixerAlloc[NUMBEROFPREENFMMIXERS];
-__attribute__((section(".ram_d2b"))) static FIL mixerFile;
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+struct PFM3File preenFMMixerAlloc[NUMBEROFPREENFMMIXERS];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+static FIL mixerFile;
 
 
 MixerBank::MixerBank() {

@@ -1,5 +1,6 @@
 # CMake build output (any name: build/, build-debug/, etc.)
 /build*/
+/Testing/
 
 # Legacy STM32CubeIDE artifacts (kept for reference; build is now CMake-only)
 **/DebugLQFP*

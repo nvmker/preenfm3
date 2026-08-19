@@ -20,8 +20,14 @@
 #include "MixerState.h"
 
 // store scalaScaleFrequencies in ITCMRAM
-__attribute__((section(".instruction_ram")))  float scalaFrequency[6][128];
-__attribute__((section(".ram_d2b"))) struct PFM3File scalaScaleFileAlloc[NUMBEROFSCALASCALEFILES];
+#ifndef PFM3_HOST
+__attribute__((section(".instruction_ram")))
+#endif
+float scalaFrequency[6][128];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+struct PFM3File scalaScaleFileAlloc[NUMBEROFSCALASCALEFILES];
 
 
 extern char lineBuffer[512];
