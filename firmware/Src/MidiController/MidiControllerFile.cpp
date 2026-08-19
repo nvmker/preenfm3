@@ -139,7 +139,11 @@ void MidiControllerFile::saveConfig(MidiControllerState* midiControllerState) {
     // has no data-loss window. A leftover temp (failed save) is harmless:
     // the next save unlinks and rewrites it.
     f_unlink(MIDI_CONTROLLER_STATE_TMP);
-    if (save(MIDI_CONTROLLER_STATE_TMP, 0, reachableProperties, size) == size) {
+    if (save(MIDI_CONTROLLER_STATE_TMP, 0, reachableProperties, size) == size
+            && checkSize(MIDI_CONTROLLER_STATE_TMP) == size) {
+        // checkSize guards the no-truncate hole: save() opens FA_OPEN_ALWAYS,
+        // so if a longer stale tmp somehow survived the unlink (e.g. a
+        // write-protected volume), a wrong-size tmp must NOT be promoted.
         f_rename(MIDI_CONTROLLER_STATE_TMP, MIDI_CONTROLLER_STATE_NAME);
     }
 }
