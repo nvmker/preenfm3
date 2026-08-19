@@ -15,12 +15,16 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef PFM3_HOST
 #include "stm32h7xx_hal.h"
+#endif
 #include "MidiControllerState.h"
 #include "RingBuffer.h"
 
 extern RingBuffer<uint8_t, 64> usartBufferOut;
+#ifndef PFM3_HOST
 extern UART_HandleTypeDef huart1;
+#endif
 
 
 MidiControllerState::MidiControllerState() {
@@ -117,7 +121,9 @@ void MidiControllerState::strcpy(char* dest, const char *src, int len) {
 }
 
 void MidiControllerState::sendMidiDin5Out() {
+#ifndef PFM3_HOST
     // Enable interupt to send Midi buffer :
     SET_BIT(huart1.Instance->CR1, USART_CR1_TXEIE_TXFNFIE);
+#endif
 }
 
