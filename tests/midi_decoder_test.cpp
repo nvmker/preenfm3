@@ -1242,17 +1242,35 @@ TEST_F(MidiDecoderPhase2, UserCcSlotsShortCircuitIndependently) {
         << "unhijacked CC_BANK_SELECT must reach the CC table";
 }
 
-TEST_F(MidiDecoderPhase2, UnisonSpreadFallsThroughToSeqStartAll) {
-    // CHARACTERIZATION: the CC_UNISON_SPREAD arm has NO break — it falls
-    // through into CC_SEQ_START_ALL, so one CC14 (value>0) both sets the
-    // spread param AND starts the sequencer. Locked as golden; adding the
-    // break flips this test.
+TEST_F(MidiDecoderPhase2, UnisonSpreadDoesNotStartSequencer) {
+    // Fixed (was UnisonSpreadFallsThroughToSeqStartAll): the CC_UNISON_SPREAD
+    // arm now breaks — one CC14 sets ONLY the spread param. Pure-spread
+    // semantics: any value (incl. 0) leaves sequencer state untouched.
+    const int spreadIndex = ROW_ENGINE2 * NUMBER_OF_ENCODERS_PFM2 + ENCODER_ENGINE2_UNISON_SPREAD;
+    // CC path (timbre 0) vs direct API call (timbre 1): the CC arm must drive
+    // setNewValueFromMidi with identical arguments — the stubbed param table's
+    // display quantization then applies equally to both slots.
+    synth_.setNewValueFromMidi(1, ROW_ENGINE2, ENCODER_ENGINE2_UNISON_SPREAD, 100.0f * kInv127);
+    const float expected = ((const float*) synth_.getTimbre(1)->getParamRaw())[spreadIndex];
+    ASSERT_NE(expected, 0.5f) << "direct setNewValueFromMidi must move the spread off its default";
     ASSERT_FALSE(seq_->isRunning());
     FeedCC(CC_UNISON_SPREAD, 100);
+    EXPECT_FALSE(seq_->isRunning())
+        << "CC_UNISON_SPREAD must not start the sequencer (break restored)";
+    const float after = ((const float*) synth_.getTimbre(0)->getParamRaw())[spreadIndex];
+    EXPECT_FLOAT_EQ(after, expected)
+        << "CC14=100 must set the spread exactly like a direct setNewValueFromMidi";
+}
+
+TEST_F(MidiDecoderPhase2, UnisonSpreadValueZeroDoesNotStopSequencer) {
+    // Regression for the CC14=0 edge: the old fall-through forwarded the value
+    // to SEQ_VALUE_PLAY_ALL (start only when >0), so value 0 never stopped
+    // anything — pinned so the fix doesn't accidentally change that.
+    FeedCC(CC_SEQ_START_ALL, 1);
+    ASSERT_TRUE(seq_->isRunning());
+    FeedCC(CC_UNISON_SPREAD, 0);
     EXPECT_TRUE(seq_->isRunning())
-        << "CC_UNISON_SPREAD falls through to CC_SEQ_START_ALL (missing break)";
-    FeedCC(CC_SEQ_START_ALL, 0);  // stop
-    EXPECT_FALSE(seq_->isRunning());
+        << "CC14=0 sets spread only; it must not stop the sequencer";
 }
 
 TEST_F(MidiDecoderPhase2, AllNotesOffAndAllSoundOffHaveDistinctEffects) {
