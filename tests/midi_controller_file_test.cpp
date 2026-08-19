@@ -166,6 +166,59 @@ TEST_F(MidiControllerFileTest, SaveOverwritesExistingConfiguration) {
     expectEqual(second.state, restored.state);
 }
 
+TEST_F(MidiControllerFileTest, WriteFailureDuringSaveLeavesOriginalIntact) {
+    // Fixed (bugfix-phase1 item 1.4): saveConfig writes a temp file first and
+    // only renames it over the real config on full success. A mid-write I/O
+    // failure must leave the last valid config loadable (the old
+    // remove()-then-save() destroyed it).
+    ZeroedController good;
+    ZeroedController next;
+    ZeroedController restored;
+    differentiate(good.state, 3);
+    differentiate(next.state, 7);
+    file_.saveConfig(good.state);
+    std::vector<uint8_t> before;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, before));
+
+    fatfsShimFailNext("f_write", FR_DENIED);  // the tmp write fails mid-save
+    file_.saveConfig(next.state);
+
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, after));
+    EXPECT_EQ(after, before) << "failed save must not touch the stored config";
+    file_.loadConfig(restored.state);
+    expectEqual(good.state, restored.state);  // last good config still loads
+    // leftover tmp is an accepted orphan; a subsequent successful save reuses it
+    file_.saveConfig(next.state);
+    file_.loadConfig(restored.state);
+    expectEqual(next.state, restored.state);
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/MidiCtl1.tmp"));
+}
+
+TEST_F(MidiControllerFileTest, RenameFailureDuringSaveLeavesOriginalIntact) {
+    // The final swap (f_rename) failing must equally leave the original
+    // untouched — the data-loss window is closed on BOTH legs of the swap.
+    ZeroedController good;
+    ZeroedController next;
+    ZeroedController restored;
+    differentiate(good.state, 13);
+    differentiate(next.state, 17);
+    file_.saveConfig(good.state);
+    std::vector<uint8_t> before;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, before));
+
+    fatfsShimFailNext("f_rename", FR_DENIED);
+    file_.saveConfig(next.state);
+
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, after));
+    EXPECT_EQ(after, before);
+    file_.loadConfig(restored.state);
+    expectEqual(good.state, restored.state);
+    EXPECT_TRUE(fatfsShimFileExists("0:/pfm3/MidiCtl1.tmp"))
+        << "failed rename may leave the tmp orphan (acceptable)";
+}
+
 TEST_F(MidiControllerFileTest, MissingFileLeavesStateUnchanged) {
     ZeroedController expected;
     ZeroedController actual;
