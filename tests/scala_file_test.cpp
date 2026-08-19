@@ -162,7 +162,7 @@ TEST_F(ScalaFileTest, TruncatedFileFallsBackToDiatonic) {
     float* freq = scala_.loadScalaScale(&ms_, 0);
     extern float diatonicScaleFrequency[];
     EXPECT_EQ(freq, diatonicScaleFrequency);
-    for (int n = 0; n <= 127; n++) {
+    for (int n = 0; n < 127; n++) {  // table is float[127] (0..126)
         EXPECT_TRUE(std::isfinite(freq[n])) << "note " << n;
     }
 }
