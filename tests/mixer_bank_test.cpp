@@ -102,17 +102,26 @@ TEST_F(MixerBankTest, LoadDefaultMixerMissingFileReturnsFalse) {
     EXPECT_FALSE(bank_.loadDefaultMixer());
 }
 
-TEST_F(MixerBankTest, SaveDefaultMixerRewritesInPlaceWithoutTruncation) {
-    // QUIRK GOLDEN: pre-seed a LONGER default file; the rewrite from 0 keeps
-    // the stale tail (no truncate on open).
+TEST_F(MixerBankTest, SaveDefaultMixerTruncatesStaleTail) {
+    // Fixed (was SaveDefaultMixerRewritesInPlaceWithoutTruncation):
+    // FA_CREATE_ALWAYS truncates on open, so a previously longer mix.dfl
+    // can no longer keep stale bytes past the new mixer's content.
     std::vector<uint8_t> big(FULL_MIXER_SIZE + 128, 0xEE);
     fatfsShimInjectBytes("0:/pfm3/mix.dfl", big.data(), big.size());
     ASSERT_TRUE(bank_.saveDefaultMixer());
-    EXPECT_EQ(fatfsShimFileSize("0:/pfm3/mix.dfl"),
-              FULL_MIXER_SIZE + 128u);  // not truncated
+    EXPECT_EQ(fatfsShimFileSize("0:/pfm3/mix.dfl"), FULL_MIXER_SIZE);  // truncated
     std::vector<uint8_t> now;
     ASSERT_TRUE(fatfsShimExtract("0:/pfm3/mix.dfl", now));
-    EXPECT_EQ(now[FULL_MIXER_SIZE + 127], 0xEE);  // stale tail survives
+    EXPECT_NE(now[FULL_MIXER_SIZE - 1], 0xEE);  // content is the saved mixer, not the seed
+}
+
+TEST_F(MixerBankTest, SaveDefaultMixerCreatesWhenAbsent) {
+    // The create-or-open path must still work when mix.dfl does not exist
+    // (first boot): FA_CREATE_ALWAYS creates it at exactly FULL_MIXER_SIZE.
+    fatfsShimMkdir("0:/pfm3");
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/mix.dfl"));
+    ASSERT_TRUE(bank_.saveDefaultMixer());
+    EXPECT_EQ(fatfsShimFileSize("0:/pfm3/mix.dfl"), FULL_MIXER_SIZE);
 }
 
 TEST_F(MixerBankTest, CreateMixerBankWrites32SlotsAndLoads) {
