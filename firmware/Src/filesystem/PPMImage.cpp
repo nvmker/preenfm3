@@ -24,8 +24,14 @@
 
 extern TftDisplay tft;
 
-__attribute__((section(".ram_d2"))) char imagePPM[6400 * 3];
-__attribute__((section(".ram_d2b"))) static FIL imageFile;
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2")))
+#endif
+char imagePPM[6400 * 3];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+static FIL imageFile;
 extern uint16_t tftMemory[240 * 320];
 
 

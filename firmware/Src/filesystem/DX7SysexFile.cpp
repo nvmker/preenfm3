@@ -18,9 +18,18 @@
 
 #include "DX7SysexFile.h"
 
-__attribute__((section(".ram_d2b")))  uint8_t dx7PackedPatch[DX7_PACKED_PATCH_SIZED];
-__attribute__((section(".ram_d2b"))) struct PFM3File dx7BankAlloc[NUMBEROFDX7BANKS];
-__attribute__((section(".ram_d2b"))) struct PFM3File dx7SubDirAlloc[NUMBEROFDX7SUBDIRS];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+uint8_t dx7PackedPatch[DX7_PACKED_PATCH_SIZED];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+struct PFM3File dx7BankAlloc[NUMBEROFDX7BANKS];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+struct PFM3File dx7SubDirAlloc[NUMBEROFDX7SUBDIRS];
 
 
 // Copy a NUL-terminated string literal without depending on fsu_ (which is not

@@ -4,15 +4,27 @@
 # This is a REGRESSION FLOOR, not a target: coverage is expected to GROW as the
 # plan's phases land, and the floor is ratcheted UP after each phase.
 #
-# Baseline as of Phase 3 (test-coverage-plan.md synth core): 87.87% lines
-# (10996 / 12514), measured by `make test-cov` on branch test/coverage-phase3.
-# (Phase 0 was 12.45%; Phase 1 was 30.07%; Phase 2 was 38.47%; the Phase-3
-# suites — the FM-algo + per-voice FX + timbre-bus FX2 sweeps, the 8 new
-# nonzero-IM/FX goldens, and the synth-core state-machine suite — lifted
-# synth/Voice.cpp to 94.87% lines, synth/Synth.cpp to 72.55%, and
-# synth/Timbre.cpp to 86.38%.)
-# The floor is set at 86 (integer) to leave a ~2-pt buffer against benign
+# Baseline as of Phase 4 (test-coverage-plan.md filesystem parsers): 89.13%
+# lines (12990 / 14575), measured by `make test-cov` on branch
+# test/coverage-phase4.
+# (Phase 0 was 12.45%; Phase 1 was 30.07%; Phase 2 was 38.47%; Phase 3 was
+# 87.87%; the Phase-4 suites — the in-memory FatFs shim + TftDisplay stub +
+# 13 suites covering all 12 firmware/Src/filesystem TUs — came in at ~89%
+# lines on the new tier, so the TOTAL went UP despite the denominator growing
+# from 12514 to 14575 lines. The Phase-4 spec forecast the floor would move
+# DOWN (~86 -> ~83) assuming ~75% average coverage of the new tier; the
+# measured 89% beat that forecast, so the floor ratchets UP 86 -> 88 instead.)
+# The floor is set at 88 (integer) to leave a ~1-pt buffer against benign
 # line-count churn (a TU restructured at the same coverage) flapping the gate.
+#
+# Phase 4 per-TU breadcrumbs (for Phase 5 re-derivation; from
+# build/test-cov/coverage-report.txt):
+#   96-100%: ScalaFile 96.49, FileSystemUtils 99.46, DX7SysexFile 98.00,
+#            Storage 100
+#   93-96%:  UserEnvCurve 94.44, PreenFMFileType 94.36, MixerBank 95.51,
+#            SequenceBank 94.40, ConfigurationFile 94.03, PatchBank 93.02
+#   Sub-90%: UserWaveform 89.68, PPMImage 88.64
+#            (progress-display arms + init loop drag PPMImage)
 # See _bmad-output/planning-artifacts/test-coverage-plan.md.
 #
 # How CI uses this (scripts/ci/coverage-gate.sh):
@@ -31,4 +43,4 @@
 # The floor MUST be a single integer on its own line (the gate script grep-matches
 # the first line that is only digits). Comments (#) are ignored.
 
-86
+88

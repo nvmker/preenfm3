@@ -209,6 +209,30 @@ target_sources(pfm3_tests PRIVATE
     # fixture's memset+patched SynthState and the already-linked Synth graph;
     # no new firmware TUs, shims, or stubs are required. See
     # tests/golden_harness.{h,cpp} + tests/golden_master_test.cpp.
-    "${CMAKE_CURRENT_SOURCE_DIR}/golden_harness.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/golden_harness.cpp"
+    # --- Phase 4: filesystem parser tier (spec-test-coverage-phase4.md) ------
+    # In-memory FatFs implementation backing the tests/host_shims/fatfs.h shim
+    # (see the shim header comment for the fidelity contract), plus the stub
+    # for the only hardware symbols the filesystem TUs touch (TftDisplay tft,
+    # tftMemory framebuffer, HAL_Delay no-op, and the FIXTURE-DATA midiConfig
+    # table with Menu.h struct/count parity — real table lives in the
+    # unhostable hardware/Menu.cpp).
+    "${CMAKE_CURRENT_SOURCE_DIR}/host_shims/fatfs_impl.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/stubs/tft_display_stub.cpp"
+    # The 12 firmware/Src/filesystem TUs. All FatFs calls resolve to the shim;
+    # section attributes + the HAL_Delay(1) in SequenceBank.cpp are
+    # PFM3_HOST-guarded (zero firmware behavior change; see spec + SEAM.md).
+    "${PFM3_FW_ROOT}/Src/filesystem/PreenFMFileType.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/FileSystemUtils.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/Storage.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/ScalaFile.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/ConfigurationFile.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/DX7SysexFile.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/UserWaveform.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/UserEnvCurve.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/MixerBank.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/PatchBank.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/SequenceBank.cpp"
+    "${PFM3_FW_ROOT}/Src/filesystem/PPMImage.cpp")
 
 gtest_discover_tests(pfm3_tests)

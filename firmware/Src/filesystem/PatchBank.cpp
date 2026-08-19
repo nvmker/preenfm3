@@ -17,7 +17,10 @@
 
 #include "PatchBank.h"
 
-__attribute__((section(".ram_d2b"))) struct PFM3File preenFMBankAlloc[NUMBEROFPREENFMBANKS];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+struct PFM3File preenFMBankAlloc[NUMBEROFPREENFMBANKS];
 
 PatchBank::PatchBank() {
     numberOfFilesMax_ = NUMBEROFPREENFMBANKS;
@@ -116,13 +119,25 @@ const char* PatchBank::loadPatchName(const struct PFM3File *bank, int patchNumbe
     switch (version) {
         case PRESET_VERSION2: {
             OneSynthParams *version2Params = (OneSynthParams*) storageBuffer;
+#ifndef PFM3_HOST
             namePosition = (int) (((unsigned int) version2Params->presetName) - (unsigned int) version2Params);
+#else
+            // Host (64-bit): the Arm code's (unsigned int) pointer casts are a
+            // hard error on 64-bit hosts (loses information). Same offset via
+            // char* difference - bit-identical result, both pointers are
+            // members of storageBuffer.
+            namePosition = (int) (((char*) version2Params->presetName) - (char*) version2Params);
+#endif
             break;
         }
         default: {
             // VERSION 1
             FlashSynthParams *flashSynthParams = (FlashSynthParams*) storageBuffer;
+#ifndef PFM3_HOST
             namePosition = (int) (((unsigned int) flashSynthParams->presetName) - (unsigned int) flashSynthParams);
+#else
+            namePosition = (int) (((char*) flashSynthParams->presetName) - (char*) flashSynthParams);
+#endif
             break;
         }
     }

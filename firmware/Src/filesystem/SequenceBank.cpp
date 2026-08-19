@@ -57,8 +57,14 @@
 extern TftDisplay tft;
 
 
-__attribute__((section(".ram_d2b"))) struct PFM3File preenFMSequenceAlloc[NUMBEROFPREENFMSEQUENCES];
-__attribute__((section(".ram_d2b"))) static FIL sequenceFile;
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+struct PFM3File preenFMSequenceAlloc[NUMBEROFPREENFMSEQUENCES];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+static FIL sequenceFile;
 
 extern SeqMidiAction actions[SEQ_ACTION_SIZE];
 extern StepSeqValue stepNotes[NUMBER_OF_STEP_SEQUENCES][256];
@@ -257,7 +263,9 @@ void SequenceBank::createSequenceFile(const char* name) {
             UINT toWrite = numberOfZeros > 1024 ? 1024 : numberOfZeros;
             f_write(&sequenceFile, storageBuffer + 1024, toWrite, &byteWritten);
             numberOfZeros -= byteWritten;
+#ifndef PFM3_HOST
             HAL_Delay(1);
+#endif
         }
     }
     f_close(&sequenceFile);
