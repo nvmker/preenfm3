@@ -204,6 +204,47 @@ TEST_F(FatfsShimTest, RenameMovesAndChecksTarget) {
     EXPECT_EQ(fatfsShimFileSize("0:/pfm3/new.mix"), 4u);
 }
 
+TEST_F(FatfsShimTest, RenameOverwritesExistingDestinationFile) {
+    // Real-FatFs fidelity (fixed in bugfix-phase1 item 1.4): renaming onto an
+    // existing destination FILE silently replaces it (same-volume atomic
+    // swap — the primitive tmp-then-rename saves rely on). A destination
+    // DIRECTORY stays FR_EXIST, and a same-path rename stays FR_EXIST.
+    fatfsShimInjectString("0:/pfm3/a.tmp", "new-content");
+    fatfsShimInjectString("0:/pfm3/a.bin", "stale-but-longer-content");
+    fatfsShimMkdir("0:/pfm3/subdir");
+    EXPECT_EQ(f_rename("0:/pfm3/a.tmp", "0:/pfm3/subdir"), FR_EXIST);
+    ASSERT_EQ(f_rename("0:/pfm3/a.tmp", "0:/pfm3/a.bin"), FR_OK);
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/a.tmp"));
+    std::vector<uint8_t> out;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/a.bin", out));
+    EXPECT_EQ(out, std::vector<uint8_t>({'n','e','w','-','c','o','n','t','e','n','t'}));
+    EXPECT_EQ(fatfsShimFileSize("0:/pfm3/a.bin"), 11u);  // replaced, not appended
+}
+
+TEST_F(FatfsShimTest, FailNextIsOneShotAndResetClearsIt) {
+    fatfsShimInjectString("0:/pfm3/f.bin", "x");
+    fatfsShimFailNext("f_write", FR_DENIED);
+    FIL f{};
+    ASSERT_EQ(f_open(&f, "0:/pfm3/f.bin", FA_READ | FA_WRITE), FR_OK);
+    UINT bw = 99;
+    EXPECT_EQ(f_write(&f, "y", 1, &bw), FR_DENIED);
+    EXPECT_EQ(bw, 0u);
+    // one-shot: consumed above, the next write succeeds again
+    EXPECT_EQ(f_write(&f, "y", 1, &bw), FR_OK);
+    EXPECT_EQ(bw, 1u);
+    EXPECT_EQ(f_close(&f), FR_OK);
+    // reset clears pending injections
+    fatfsShimFailNext("f_unlink", FR_WRITE_PROTECTED);
+    fatfsShimReset();
+    fatfsShimInjectString("0:/pfm3/f.bin", "x");
+    EXPECT_EQ(f_unlink("0:/pfm3/f.bin"), FR_OK);
+    // open-failure injection surfaces through PreenFMFileType-style flows
+    fatfsShimFailNext("f_open", FR_NO_PATH);
+    FIL g{};
+    EXPECT_EQ(f_open(&g, "0:/pfm3/f.bin", FA_READ), FR_NO_PATH);
+    EXPECT_EQ(f_open(&g, "0:/pfm3/f.bin", FA_READ), FR_NO_FILE);  // one-shot spent
+}
+
 TEST_F(FatfsShimTest, MkdirCreatesDirAndRejectsDuplicates) {
     ASSERT_EQ(f_mkdir("0:/PPM"), FR_OK);
     EXPECT_EQ(f_mkdir("0:/PPM"), FR_EXIST);

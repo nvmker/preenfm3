@@ -18,6 +18,10 @@
 
 #include "MidiControllerFile.h"
 
+/* Temp path for crash-safe config replacement (next to the real file so the
+ * final f_rename stays a same-volume atomic dir-entry swap). */
+#define MIDI_CONTROLLER_STATE_TMP "0:/pfm3/MidiCtl1.tmp"
+
 MidiControllerFile::MidiControllerFile() {
 }
 
@@ -127,8 +131,17 @@ void MidiControllerFile::saveConfig(MidiControllerState* midiControllerState) {
 #else
     int size = ((uint32_t)p) -  ((uint32_t)reachableProperties);
 #endif
-    remove(MIDI_CONTROLLER_STATE);
-    save(MIDI_CONTROLLER_STATE, 0,  reachableProperties, size);
+    // Crash-safe replacement: write the temp file first and only swap it in
+    // when the write fully succeeded (save() returns the byte count written,
+    // 0 on any failure). The old remove()-then-save() destroyed the last
+    // valid config whenever the SD write failed mid-save. f_rename removes
+    // an existing destination file on the same volume, so the swap itself
+    // has no data-loss window. A leftover temp (failed save) is harmless:
+    // the next save unlinks and rewrites it.
+    f_unlink(MIDI_CONTROLLER_STATE_TMP);
+    if (save(MIDI_CONTROLLER_STATE_TMP, 0, reachableProperties, size) == size) {
+        f_rename(MIDI_CONTROLLER_STATE_TMP, MIDI_CONTROLLER_STATE_NAME);
+    }
 }
 
 
