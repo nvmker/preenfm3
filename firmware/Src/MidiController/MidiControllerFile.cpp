@@ -122,7 +122,11 @@ void MidiControllerFile::saveConfig(MidiControllerState* midiControllerState) {
         }
     }
 
+#ifdef PFM3_HOST
+    int size = reinterpret_cast<char*>(p) - reachableProperties;
+#else
     int size = ((uint32_t)p) -  ((uint32_t)reachableProperties);
+#endif
     remove(MIDI_CONTROLLER_STATE);
     save(MIDI_CONTROLLER_STATE, 0,  reachableProperties, size);
 }
