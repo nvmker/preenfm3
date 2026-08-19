@@ -165,8 +165,11 @@ int UserEnvCurve::fillUserEnvCurveFromTxt(int f, char* buffer, int filled, bool 
 }
 
 void UserEnvCurve::normalize(float* buffer, int numberOfSamples) {
-    float min = 0;
-    float max = 0;
+    if (numberOfSamples <= 0) {
+        return;
+    }
+    float min = buffer[0];
+    float max = buffer[0];
     float average = 0;
     for (int i=0; i < numberOfSamples; i++) {
         average += buffer[i];
@@ -177,8 +180,14 @@ void UserEnvCurve::normalize(float* buffer, int numberOfSamples) {
             max = buffer[i];
         }
     }
-	
-    float m = (max-min) == 0 ? 1 / (max-min) : 1;
+
+    if ((max - min) == 0) {
+        // Flat curve: no shape to normalize. Leave the DC level untouched —
+        // the old code computed 1/0 here and every sample became NaN.
+        return;
+    }
+
+    float m = 1 / (max - min);
 
     for (int i=0; i < numberOfSamples; i++) {
         buffer[i] -= min;

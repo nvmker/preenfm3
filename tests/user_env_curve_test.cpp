@@ -1,12 +1,11 @@
 // Host-side coverage for firmware/Src/filesystem/UserEnvCurve.cpp —
 // user envelope-curve txt/bin load + the txt->bin pipeline.
 //
-// CHARACTERIZATION suite (spec-test-coverage-phase4). Quirks pinned
-// (deferred-work.md):
-//   * normalize()'s condition is INVERTED: m = (max-min)==0 ? 1/(max-min)
-//     : 1. A FLAT curve (range 0) computes 1/0 = +inf and every sample
-//     becomes 0*inf = NaN (the clamps don't catch NaN). A non-flat curve
-//     gets m=1: shifted to 0..range but NEVER scaled into 0..1.
+// Characterization suite (spec-test-coverage-phase4). The normalize()
+// inverted-ternary quirk (NaN on flat curves, never-scaled non-flat) was
+// FIXED in bugfix-phase1 (item 1.3): min/max now seed from buffer[0], flat
+// curves early out untouched, and non-flat curves scale into 0..1.
+// Still-pinned quirks (deferred-work.md):
 //   * interpolate() reads buffer[iPos+1] one past the populated source
 //     window (same shape as UserWaveform).
 //   * the txt parser requires EXACTLY 64 samples; anything else -> '#'
@@ -129,43 +128,55 @@ TEST_F(UserEnvCurveTest, TxtWrongSampleCountMarksErrorAndSkips) {
     EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/envcurve/usr4.bin"));
 }
 
-TEST_F(UserEnvCurveTest, AllZeroCurveNormalizesToNaNQuirk) {
-    // QUIRK GOLDEN: inverted condition m = (max-min)==0 ? 1/(max-min) : 1.
-    // min/max are seeded to 0 (not buffer[0]), so range==0 only for an
-    // all-zero curve -> m = +inf -> every sample is 0*inf = NaN (the
-    // >1 / <0 clamps do not catch NaN).
+TEST_F(UserEnvCurveTest, FlatCurveIsLeftUntouchedNoNaN) {
+    // Fixed (was AllZeroCurveNormalizesToNaNQuirk): a flat curve has no
+    // shape to normalize — early-out leaves every sample finite and equal.
+    // (Old behavior: inverted ternary -> m = 1/0 = +inf -> 0*inf = NaN.)
     float buf[64];
     for (int i = 0; i < 64; i++) buf[i] = 0.0f;
     uec_.normalize(buf, 64);
     for (int i = 0; i < 64; i++) {
-        EXPECT_TRUE(std::isnan(buf[i])) << "sample " << i;
+        EXPECT_FLOAT_EQ(buf[i], 0.0f) << "sample " << i;
+        EXPECT_FALSE(std::isnan(buf[i])) << "sample " << i;
     }
 }
 
-TEST_F(UserEnvCurveTest, FlatNonZeroCurveIsLeftUntouchedByMinSeeding) {
-    // ADJACENT QUIRK: min is seeded to 0, so a constant 0.5 curve has
-    // min=0/max=0.5 -> range != 0 -> m = 1 -> values unchanged.
+TEST_F(UserEnvCurveTest, FlatNonZeroCurveIsLeftUntouched) {
+    // A constant 0.5 curve is flat: DC level preserved (now for the right
+    // reason — flat early-out — instead of the old min-seeded-to-0 quirk
+    // that coincidentally left it untouched).
     float buf[64];
     for (int i = 0; i < 64; i++) buf[i] = 0.5f;
     uec_.normalize(buf, 64);
     for (int i = 0; i < 64; i++) {
         EXPECT_FLOAT_EQ(buf[i], 0.5f);
+        EXPECT_FALSE(std::isnan(buf[i]));
     }
 }
 
-TEST_F(UserEnvCurveTest, NonFlatNormalizeNeverScalesQuirk) {
-    // m == 1 whenever range != 0 AND min is never negative-side seeded:
-    // a 2..4 ramp is never shifted (min stays 0) and clamps to 1.
+TEST_F(UserEnvCurveTest, NonFlatNormalizeScalesIntoUnitRange) {
+    // Fixed (was NonFlatNormalizeNeverScalesQuirk): min/max seed from
+    // buffer[0], m = 1/(max-min) — the curve's SHAPE maps into 0..1.
     float buf[64];
+    // 2..4 ramp -> 0..1 exactly
     for (int i = 0; i < 64; i++) buf[i] = 2.0f + 2.0f * i / 63.0f;
     uec_.normalize(buf, 64);
-    EXPECT_FLOAT_EQ(buf[0], 1.0f);   // raw 2.0 -> clamped
-    EXPECT_FLOAT_EQ(buf[63], 1.0f);  // raw 4.0 -> clamped
-    // a -1..1 ramp: min=-1, max=1, m=1 -> shifted by +1 -> 0..2, clamped 1
+    EXPECT_FLOAT_EQ(buf[0], 0.0f);
+    EXPECT_FLOAT_EQ(buf[63], 1.0f);
+    EXPECT_NEAR(buf[31], 31.0f / 63.0f, 0.001f);
+    // -1..1 ramp -> 0..1 exactly (negative side now reachable: min from
+    // buffer[0], not seeded 0)
     for (int i = 0; i < 64; i++) buf[i] = -1.0f + 2.0f * i / 63.0f;
     uec_.normalize(buf, 64);
     EXPECT_FLOAT_EQ(buf[0], 0.0f);
-    EXPECT_NEAR(buf[31], 0.984f, 0.01f);  // -1+62/63 shifted +1, unscaled
+    EXPECT_FLOAT_EQ(buf[63], 1.0f);
+    EXPECT_NEAR(buf[31], 31.0f / 63.0f, 0.001f);
+    // >1 clamps are now post-scale no-ops at the extremes only
+    for (int i = 0; i < 64; i++) buf[i] = 10.0f * i / 63.0f;  // 0..10
+    uec_.normalize(buf, 64);
+    EXPECT_FLOAT_EQ(buf[0], 0.0f);
+    EXPECT_FLOAT_EQ(buf[63], 1.0f);
+    EXPECT_NEAR(buf[6], 6.0f / 63.0f, 0.002f);
 }
 
 TEST_F(UserEnvCurveTest, InterpolateReadsOnePastPopulatedSourceQuirk) {
