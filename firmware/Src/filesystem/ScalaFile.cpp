@@ -121,11 +121,23 @@ float* ScalaFile::loadScalaScale(MixerState* mixerState, int instrumentNumber) {
     if (numberOfDegrees[instrumentNumber] == 0) {
         return diatonicScaleFrequency;
     }
+    if ((state - 2) < numberOfDegrees[instrumentNumber]) {
+        // Truncated file: declared more degrees than it provided. interval[N-1]
+        // would stay 0.0f and the octaveRatio division would produce inf/0
+        // frequencies. Fall back to diatonic and mark no scale loaded.
+        numberOfDegrees[instrumentNumber] = 0;
+        return diatonicScaleFrequency;
+    }
     return applyScalaScale(mixerState, instrumentNumber);
 }
 
 float* ScalaFile::applyScalaScale(MixerState* mixerState, int instrumentNumber) {
     if (mixerState->instrumentState_[instrumentNumber].scalaEnable == 0) {
+        return diatonicScaleFrequency;
+    }
+    if (numberOfDegrees[instrumentNumber] == 0) {
+        // No (valid) scale loaded for this instrument: interval[N-1] would read
+        // index -1 and octaveRatio would be garbage. Diatonic is the safe table.
         return diatonicScaleFrequency;
     }
 
