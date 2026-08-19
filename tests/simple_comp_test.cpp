@@ -55,6 +55,25 @@ TEST_F(SimpleCompTest, BypassPreservesDifferentiatedBlockAndReportsUnity) {
     EXPECT_FLOAT_EQ(comp_->getCurrentGainReduction(), 0.0f);
 }
 
+TEST_F(SimpleCompTest, ExactlyAtBypassThresholdStillTakesCompressorPath) {
+    // The bypass gate is strict (threshdB_ > 100.0f), so exactly 100.0f is
+    // NOT bypass: it takes the compressor path. For sub-threshold input the
+    // gain is unity and the block is untouched, but gr_ comes from the
+    // envelope/transfer branch (a denormal decay residue, measured
+    // -7.5e-26 on the host) rather than the bypass early-out's exact 0.0f.
+    // Tolerance keeps this robust on FTZ targets where the residue flushes.
+    comp_->setThresh(100.0f);
+    comp_->setRatio(0.25f);
+    float block[64];
+    for (int i = 0; i < 64; ++i) block[i] = (i - 31.0f) / 17.0f;
+    float original[64];
+    std::copy(block, block + 64, original);
+
+    EXPECT_FLOAT_EQ(comp_->processPfm3(block), 1.0f);
+    expectBlockExactlyEqual(block, original);
+    EXPECT_NEAR(comp_->getCurrentGainReduction(), 0.0f, 1e-20f);
+}
+
 TEST_F(SimpleCompTest, FastCompressionHasDeterministicSmoothedGoldenBlock) {
     comp_->setSampleRate(1000.0f);
     comp_->setAttack(1.0f);
