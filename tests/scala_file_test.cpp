@@ -167,6 +167,29 @@ TEST_F(ScalaFileTest, TruncatedFileFallsBackToDiatonic) {
     }
 }
 
+TEST_F(ScalaFileTest, DegenerateFinalIntervalFallsBackToDiatonic) {
+    // Review hardening (bugfix-phase1): a FULL-COUNT file whose final interval
+    // is degenerate must fall back to diatonic too — the same +inf/0 collapse
+    // as the truncated-file division, via a different door. Garbage ratio
+    // "x/y" parses as 0/0 = NaN; "3/0" parses as +inf. (A garbage CENTS line
+    // is NOT degenerate: stof quirk -> 0 cents -> ratio 1.0, a valid unison;
+    // a literal "0" likewise.)
+    fatfsShimInjectString(
+        "0:/pfm3/scala/nan.scl",
+        "nan\n3\n9/8\n5/4\nx/y\n");
+    float* freq = scala_.loadScalaScale(&ms_, 0);
+    extern float diatonicScaleFrequency[];
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+    fatfsShimInjectString(
+        "0:/pfm3/scala/inf.scl",
+        "inf\n3\n9/8\n5/4\n3/0\n");
+    freq = scala_.loadScalaScale(&ms_, 0);
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+    for (int n = 0; n < 127; n++) {
+        EXPECT_TRUE(std::isfinite(freq[n])) << "note " << n;
+    }
+}
+
 TEST_F(ScalaFileTest, RatioLinesParseAsFraction) {
     float f = 0; // getScalaIntervale is private; covered via full-table test
     (void)f;

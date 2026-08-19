@@ -150,13 +150,15 @@ extern "C" FRESULT f_open(FIL* fp, const TCHAR* path, BYTE mode) {
 
 extern "C" FRESULT f_close(FIL* fp) {
     if (fp == nullptr) return FR_INVALID_PARAMETER;
+    /* The handle entry is dropped exactly once, even when the close is
+     * injected to fail: a failing close must not leak an open-handle
+     * reservation that would poison later f_unlink/f_stat on the path. */
+    uint32_t id = fp->shim_id;
+    fp->shim_id = 0;
+    bool wasOpen = id != 0 && st().open.erase(id) != 0;
     FRESULT injected;
     if (consumeFail("f_close", injected)) return injected;
-    if (fp->shim_id == 0 || st().open.erase(fp->shim_id) == 0) {
-        fp->shim_id = 0;
-        return FR_INVALID_OBJECT;
-    }
-    fp->shim_id = 0;
+    if (!wasOpen) return FR_INVALID_OBJECT;
     return FR_OK;
 }
 
