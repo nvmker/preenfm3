@@ -233,6 +233,12 @@ target_sources(pfm3_tests PRIVATE
     "${PFM3_FW_ROOT}/Src/filesystem/MixerBank.cpp"
     "${PFM3_FW_ROOT}/Src/filesystem/PatchBank.cpp"
     "${PFM3_FW_ROOT}/Src/filesystem/SequenceBank.cpp"
-    "${PFM3_FW_ROOT}/Src/filesystem/PPMImage.cpp")
+    "${PFM3_FW_ROOT}/Src/filesystem/PPMImage.cpp"
+    # --- Phase 5: MIDI controller state + persistence -----------------------
+    # Real firmware TUs. MidiControllerState keeps ring-buffer writes intact
+    # and gates only the UART register kick; MidiControllerFile reuses the
+    # Phase-4 FatFs shim and PreenFMFileType implementation above.
+    "${PFM3_FW_ROOT}/Src/MidiController/MidiControllerState.cpp"
+    "${PFM3_FW_ROOT}/Src/MidiController/MidiControllerFile.cpp")
 
 gtest_discover_tests(pfm3_tests)
