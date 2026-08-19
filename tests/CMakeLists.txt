@@ -125,13 +125,6 @@ target_compile_definitions(pfm3_tests PRIVATE
 target_compile_options(pfm3_tests PRIVATE
     -Wno-attributes
     -Wno-macro-redefined
-    # PatchBank.cpp:loadPatchName computes a member offset by casting two
-    # pointers to `unsigned int` (32-bit on Arm — correct there, "loses
-    # information" hard error on a 64-bit host). Both pointers sit inside the
-    # same storageBuffer object, so the truncated-difference is still the
-    # correct small offset; downgrade to a warning in the HOST test build
-    # only. (Firmware quirk flagged for deferred work; no firmware edit.)
-    -Wno-error=pointer-to-int-cast
     # Forbid FMA contraction (a*b+c fused into one FMA instruction) so clang and
     # gcc compute float mul/add separately per IEEE. Without this the two
     # compilers' default contraction policies differ and the golden-master full

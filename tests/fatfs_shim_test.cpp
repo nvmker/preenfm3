@@ -134,6 +134,18 @@ TEST_F(FatfsShimTest, WriteToReadModeFileIsDenied) {
     EXPECT_EQ(f_close(&f), FR_OK);
 }
 
+TEST_F(FatfsShimTest, ReadFromWriteModeFileIsDenied) {
+    fatfsShimInjectString("0:/f.bin", "abc");
+    FIL f;
+    ASSERT_EQ(f_open(&f, "0:/f.bin", FA_WRITE), FR_OK);
+    char value = 0;
+    UINT br = 9;
+    EXPECT_EQ(f_read(&f, &value, 1, &br), FR_DENIED);
+    EXPECT_EQ(br, 0u);
+    EXPECT_EQ(value, 0);
+    EXPECT_EQ(f_close(&f), FR_OK);
+}
+
 TEST_F(FatfsShimTest, OperationsOnClosedFileAreInvalidObject) {
     fatfsShimInjectString("0:/f.bin", "abc");
     FIL f;

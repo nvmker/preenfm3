@@ -19,11 +19,12 @@
 #
 # Phase 4 per-TU breadcrumbs (for Phase 5 re-derivation; from
 # build/test-cov/coverage-report.txt):
-#   94-100%: ScalaFile 96.49, FileSystemUtils 99.46, DX7SysexFile 98.00,
-#            UserEnvCurve 94.44, UserWaveform 89.68, Storage 100
-#   93-95%:  PreenFMFileType 94.36, MixerBank 95.51, SequenceBank 94.40,
-#            ConfigurationFile 94.03, PatchBank 93.02
-#   Dragging: PPMImage 88.64 (progress-display arms + init loop)
+#   96-100%: ScalaFile 96.49, FileSystemUtils 99.46, DX7SysexFile 98.00,
+#            Storage 100
+#   93-96%:  UserEnvCurve 94.44, PreenFMFileType 94.36, MixerBank 95.51,
+#            SequenceBank 94.40, ConfigurationFile 94.03, PatchBank 93.02
+#   Sub-90%: UserWaveform 89.68, PPMImage 88.64
+#            (progress-display arms + init loop drag PPMImage)
 # See _bmad-output/planning-artifacts/test-coverage-plan.md.
 #
 # How CI uses this (scripts/ci/coverage-gate.sh):

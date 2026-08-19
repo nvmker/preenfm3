@@ -32,6 +32,11 @@ public:
     using SequenceBank::isReadOnly;
     const char* folder() { return getFolderName(); }
     bool correct(char* n) { return isCorrectFile(n, 0); }
+    void setListing(PFM3File* files, int cap) {
+        myFiles_ = files;
+        numberOfFilesMax_ = cap;
+        isInitialized_ = true;
+    }
 };
 
 static std::unique_ptr<Sequencer> MakeSequencer() {
@@ -89,10 +94,14 @@ TEST_F(SequenceBankTest, DefaultSequenceSaveLoadRoundTripIsByteIdentical) {
     EXPECT_EQ(actions[0].when, 0x1234);
     EXPECT_EQ(actions[0].actionType, 0x55);
     EXPECT_EQ(stepNotes[3][100].full, 0xAABBCCDDu);
+    EXPECT_EQ(strncmp(seq2->getSequenceName(), "MYSEQ      ", 11), 0);
 
+    // Re-serialize the loaded state. Comparing the second save with the first
+    // covers the complete sequencer state plus every action and step byte.
+    ASSERT_TRUE(bank2.saveDefaultSequence());
     std::vector<uint8_t> after;
     ASSERT_TRUE(fatfsShimExtract("0:/pfm3/seq.dfl", after));
-    EXPECT_EQ(before, after);  // loadDefaultSequence did not rewrite
+    EXPECT_EQ(before, after);
 }
 
 TEST_F(SequenceBankTest, SaveDefaultSequenceOpenFailReturnsFalse) {
@@ -121,7 +130,8 @@ TEST_F(SequenceBankTest, SaveSequenceWritesNamedSlotAndLoadSequenceName) {
     bank.version = 0;
 
     StampState();
-    bank_.saveSequence(&bank, 5, "FIFTHSEQ   ");
+    char sequenceName[] = "FIFTHSEQ   ";
+    bank_.saveSequence(&bank, 5, sequenceName);
     EXPECT_STREQ(bank_.loadSequenceName(&bank, 5), "FIFTHSEQ   ");
 
     // load the slot back into a fresh sequencer
@@ -224,15 +234,13 @@ TEST_F(SequenceBankTest, LoadDefaultSequenceMissingFileIsTrueNoOp) {
 }
 
 TEST_F(SequenceBankTest, CreateSequenceFileWithoutEmptySlotBails) {
-    // fill every listing slot, then createSequenceFile must return early
-    // (addEmptyFile -> 0) without writing a file.
-    struct PFM3File full[NUMBEROFPREENFMSEQUENCES];
-    memset(full, 0, sizeof(full));
+    // Pad by one entry because addEmptyFile's known/deferred condition-order
+    // quirk reads slot cap before checking k < cap.
+    struct PFM3File full[NUMBEROFPREENFMSEQUENCES + 1]{};
     for (int k = 0; k < NUMBEROFPREENFMSEQUENCES; k++) {
         full[k].fileType = FILE_OK;
     }
-    // myFiles_ is protected; drive it via the public listing instead: the
-    // shim folder is empty and initFiles() lazily re-enumerates, so this is
-    // exercised implicitly through saveSequence tests above. Guard-only.
-    SUCCEED();
+    bank_.setListing(full, NUMBEROFPREENFMSEQUENCES);
+    bank_.createSequenceFile("fullbank1234");
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/fullbank1234"));
 }

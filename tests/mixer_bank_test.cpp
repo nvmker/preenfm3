@@ -44,6 +44,10 @@ protected:
                    &timbres_[3], &timbres_[4], &timbres_[5]);
         bank_.setMixerState(&ms_);
         bank_.setScalaFile(&scala_);
+        char defaultState[PROPERTY_FILE_SIZE]{};
+        uint32_t defaultStateSize = 0;
+        ms_.getFullDefaultState(defaultState, &defaultStateSize, 0);
+        ms_.restoreFullState(defaultState);
         strcpy(ms_.mixName_, "MYMIX       ");
         ms_.instrumentState_[0].out = 3;
         ms_.instrumentState_[0].midiChannel = 2;
@@ -59,6 +63,8 @@ protected:
 
 TEST_F(MixerBankTest, DefaultMixerSaveLoadRoundTrip) {
     ASSERT_TRUE(bank_.saveDefaultMixer());
+    std::vector<uint8_t> before;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/mix.dfl", before));
 
     MixerState ms2;  // default-constructed
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
@@ -78,6 +84,13 @@ TEST_F(MixerBankTest, DefaultMixerSaveLoadRoundTrip) {
     EXPECT_EQ(ms2.instrumentState_[0].midiChannel, 2);
     EXPECT_FLOAT_EQ(ms2.instrumentState_[3].volume, 0.75f);
     EXPECT_STREQ(timbres_[0].presetName, "TIMBRE0");
+
+    // A second save serializes every loaded mixer field and all six timbre
+    // patches; byte equality catches corruption outside the spot checks.
+    ASSERT_TRUE(bank2.saveDefaultMixer());
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/mix.dfl", after));
+    EXPECT_EQ(before, after);
 }
 
 TEST_F(MixerBankTest, SaveDefaultMixerOpenFailReturnsFalse) {
@@ -131,7 +144,8 @@ TEST_F(MixerBankTest, SaveAndLoadMixerSlotRoundTrip) {
     bank.fileType = FILE_OK;
 
     strcpy(ms_.mixName_, "SLOTTHREE   "); // 12 chars: copy(12) below
-    ASSERT_TRUE(bank_.saveMixer(&bank, 3, "SLOTTHREE   "));
+    char slotName[] = "SLOTTHREE   ";
+    ASSERT_TRUE(bank_.saveMixer(&bank, 3, slotName));
     EXPECT_STREQ(ms_.mixName_, "SLOTTHREE   ");
     EXPECT_STREQ(bank_.loadMixerName(&bank, 3), "SLOTTHREE   ");
 
@@ -149,7 +163,8 @@ TEST_F(MixerBankTest, SaveMixerMissingFileReturnsFalse) {
     PFM3File bank;
     strcpy(bank.name, "nowhere");
     bank.fileType = FILE_OK;
-    EXPECT_FALSE(bank_.saveMixer(&bank, 0, "xxxxxxxxxxxx")); // 12-char: copy(12)
+    char mixerName[] = "xxxxxxxxxxxx"; // 12-char: copy(12)
+    EXPECT_FALSE(bank_.saveMixer(&bank, 0, mixerName));
 }
 
 TEST_F(MixerBankTest, LoadMixerMissingFileReturnsFalse) {

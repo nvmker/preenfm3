@@ -38,8 +38,12 @@ protected:
         fsu_ = new FileSystemUtils;
         uec_.setFileSystemUtils(fsu_);
         memset(userEnvCurves, 0, sizeof(userEnvCurves));
+        for (int i = 0; i < 4; i++) priorCurveNames_[i] = envCurveNames[3 + i];
     }
-    void TearDown() override { delete fsu_; }
+    void TearDown() override {
+        for (int i = 0; i < 4; i++) envCurveNames[3 + i] = priorCurveNames_[i];
+        delete fsu_;
+    }
 
     std::string MakeTxt(const char* name, int count, float start, float step) {
         std::string s = std::string(name) + " " + std::to_string(count) + "\n";
@@ -53,6 +57,7 @@ protected:
     }
     UserEnvCurve uec_;
     FileSystemUtils* fsu_;
+    const char* priorCurveNames_[4];
 };
 
 TEST_F(UserEnvCurveTest, NoFilesGivesLinearRamp) {
@@ -92,6 +97,18 @@ TEST_F(UserEnvCurveTest, Txt64SamplesInterpolatesNothingAndCachesBin) {
     uint16_t cnt = 0;
     memcpy(&cnt, bin.data() + 4, 2);
     EXPECT_EQ(cnt, 64);
+
+    // Clear runtime state and load again through the generated BIN path.
+    // Compare every serialized float byte, not only the endpoints.
+    memset(userEnvCurves[1], 0, sizeof(userEnvCurves[1]));
+    uec_.loadUserEnvCurves();
+    std::vector<uint8_t> loadedBytes(64 * sizeof(float));
+    memcpy(loadedBytes.data(), userEnvCurves[1], loadedBytes.size());
+    std::vector<uint8_t> savedBytes(bin.begin() + 6, bin.end());
+    EXPECT_EQ(loadedBytes, savedBytes);
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/envcurve/usr2.bin", after));
+    EXPECT_EQ(after, bin);
 }
 
 TEST_F(UserEnvCurveTest, TxtCountOtherThan64IsRejected) {

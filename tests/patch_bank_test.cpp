@@ -12,6 +12,7 @@
 
 #include "fatfs.h"
 
+#include <cstddef>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -77,6 +78,16 @@ TEST_F(PatchBankTest, SavePatchLoadPatchRoundTripVersion1) {
     EXPECT_STREQ(dst.presetName, "GOLDENPATCH ");  // 12-char truncation
     EXPECT_FLOAT_EQ(dst.osc1.shape, src.osc1.shape);
     EXPECT_FLOAT_EQ(dst.engine1.playMode, src.engine1.playMode);
+
+    // Re-save the loaded patch into a second slot and compare the complete
+    // serialized records, not only a few representative fields.
+    bank_.savePatch(&bf, 11, &dst);
+    std::vector<uint8_t> data;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/mybank123456", data));
+    ASSERT_GE(data.size(), 12u * ALIGNED_PATCH_SIZE);
+    const uint8_t* slot10 = data.data() + 10 * ALIGNED_PATCH_SIZE;
+    const uint8_t* slot11 = data.data() + 11 * ALIGNED_PATCH_SIZE;
+    EXPECT_EQ(memcmp(slot10, slot11, ALIGNED_PATCH_SIZE), 0);
 }
 
 TEST_F(PatchBankTest, LoadPatchVersion2IsDirectMemcpy) {
@@ -140,7 +151,7 @@ TEST_F(PatchBankTest, LoadPatchNameVersion2Offset) {
     memcpy(&slot[ALIGNED_PATCH_SIZE - 5], &v2, 4);
     // V2 name lookup reads at the OneSynthParams presetName offset (992) —
     // BEYOND the 936-byte flash body, from the slot padding.
-    size_t nameOff = (size_t) &((OneSynthParams*)0)->presetName;
+    size_t nameOff = offsetof(OneSynthParams, presetName);
     memcpy(&slot[nameOff], "V2NAME      ", 12);
     std::vector<uint8_t> data;
     ASSERT_TRUE(fatfsShimExtract("0:/pfm3/mybank123456", data));
