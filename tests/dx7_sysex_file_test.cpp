@@ -95,7 +95,9 @@ TEST_F(DX7SysexFileTest, Dx7LoadPatchReads128BytesAtPatchOffset) {
     EXPECT_EQ(patch[0], 'D');       // 'A' + 3
     EXPECT_EQ(patch[10], 'X');      // the marker
     EXPECT_EQ(patch[127], 'd');
-    EXPECT_EQ(dx7_.dx7LoadPatch(&bank, 31)[0], 'A' + 31);
+    uint8_t* lastPatch = dx7_.dx7LoadPatch(&bank, 31);
+    ASSERT_NE(lastPatch, nullptr);
+    EXPECT_EQ(lastPatch[0], 'A' + 31);
     EXPECT_EQ(dx7_.dx7LoadPatch(&bank, 32), nullptr);  // past the last patch
 }
 

@@ -19,6 +19,7 @@ namespace {
 
 struct OpenFile {
     std::string path;
+    bool read;
     bool write;
 };
 
@@ -122,7 +123,7 @@ extern "C" FRESULT f_open(FIL* fp, const TCHAR* path, BYTE mode) {
     }
 
     uint32_t id = st().nextId++;
-    st().open[id] = OpenFile{p, write};
+    st().open[id] = OpenFile{p, (mode & FA_READ) != 0, write};
     fp->shim_id = id;
     fp->err = 0;
     fp->fptr = ((mode & FA_OPEN_APPEND) == FA_OPEN_APPEND)
@@ -145,6 +146,10 @@ extern "C" FRESULT f_close(FIL* fp) {
 extern "C" FRESULT f_read(FIL* fp, void* buff, UINT btr, UINT* br) {
     OpenFile* of = lookup(fp);
     if (of == nullptr) return FR_INVALID_OBJECT;
+    if (!of->read) {
+        if (br) *br = 0;
+        return FR_DENIED;
+    }
     std::vector<uint8_t>& f = st().files[of->path];
     size_t avail = f.size() > fp->fptr ? f.size() - fp->fptr : 0;
     size_t n = std::min<size_t>(btr, avail);
@@ -320,8 +325,11 @@ void fatfsShimMkdir(const char* path) {
 void fatfsShimInjectBytes(const char* path, const void* data, size_t len) {
     std::string p = norm(path);
     fatfsShimMkdir(parentOf(p).c_str());
+    if (data == nullptr || len == 0) {
+        st().files[p] = {};  /* null/empty payload injects an empty file */
+        return;
+    }
     const uint8_t* b = static_cast<const uint8_t*>(data);
-    if (b == nullptr) len = 0;  /* null payload injects an empty file */
     st().files[p] = std::vector<uint8_t>(b, b + len);
 }
 
