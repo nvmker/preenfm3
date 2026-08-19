@@ -172,6 +172,12 @@ void UserEnvCurve::normalize(float* buffer, int numberOfSamples) {
     float max = buffer[0];
     float average = 0;
     for (int i=0; i < numberOfSamples; i++) {
+        if (!isfinite(buffer[i])) {
+            // A non-finite sample (parser garbage) would poison min/max and
+            // survive into the output. Zero it; the output loop then
+            // normalizes it into range like any other sample.
+            buffer[i] = 0.0f;
+        }
         average += buffer[i];
         if (buffer[i] < min) {
             min = buffer[i];
@@ -182,8 +188,18 @@ void UserEnvCurve::normalize(float* buffer, int numberOfSamples) {
     }
 
     if ((max - min) == 0) {
-        // Flat curve: no shape to normalize. Leave the DC level untouched —
-        // the old code computed 1/0 here and every sample became NaN.
+        // Flat curve: no shape to normalize. Clamp the DC level into 0..1 so
+        // consumers always receive the contract range (the old code clamped
+        // flat curves too — a flat 2.0 became 1.0 — but produced NaN when
+        // the DC level was 0).
+        for (int i=0; i< numberOfSamples; i++) {
+            if (buffer[i] < 0) {
+                buffer[i] = 0;
+            }
+            if (buffer[i] > 1) {
+                buffer[i] = 1;
+            }
+        }
         return;
     }
 

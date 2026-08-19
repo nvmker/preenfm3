@@ -179,6 +179,39 @@ TEST_F(UserEnvCurveTest, NonFlatNormalizeScalesIntoUnitRange) {
     EXPECT_NEAR(buf[6], 6.0f / 63.0f, 0.002f);
 }
 
+TEST_F(UserEnvCurveTest, FlatCurveClampsDCIntoUnitRange) {
+    // Review hardening (bugfix-phase1): a flat curve has no shape, but the
+    // consumer contract is 0..1 — DC above 1 clamps to 1, below 0 clamps to 0
+    // (matches the pre-fix observable behavior for flat curves).
+    float buf[64];
+    for (int i = 0; i < 64; i++) buf[i] = 2.0f;
+    uec_.normalize(buf, 64);
+    for (int i = 0; i < 64; i++) {
+        EXPECT_FLOAT_EQ(buf[i], 1.0f) << "sample " << i;
+    }
+    for (int i = 0; i < 64; i++) buf[i] = -0.5f;
+    uec_.normalize(buf, 64);
+    for (int i = 0; i < 64; i++) {
+        EXPECT_FLOAT_EQ(buf[i], 0.0f) << "sample " << i;
+    }
+}
+
+TEST_F(UserEnvCurveTest, InteriorNonFiniteSampleIsSanitized) {
+    // Review hardening (bugfix-phase1): a NaN/Inf sample (parser garbage) is
+    // zeroed during the scan instead of poisoning min/max or surviving into
+    // the normalized output.
+    float buf[64];
+    for (int i = 0; i < 64; i++) buf[i] = i / 63.0f;
+    buf[30] = std::nanf("");
+    buf[31] = 1e30f * 1e30f;  // inf
+    uec_.normalize(buf, 64);
+    for (int i = 0; i < 64; i++) {
+        EXPECT_TRUE(std::isfinite(buf[i])) << "sample " << i;
+        EXPECT_GE(buf[i], 0.0f) << "sample " << i;
+        EXPECT_LE(buf[i], 1.0f) << "sample " << i;
+    }
+}
+
 TEST_F(UserEnvCurveTest, InterpolateReadsOnePastPopulatedSourceQuirk) {
     float buf[64];
     for (int i = 0; i < 16; i++) buf[i] = 1.0f;
