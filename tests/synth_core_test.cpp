@@ -743,6 +743,27 @@ TEST_F(SynthCore, NewMixerValueGlobalFxSettingsArmsComplete) {
 }
 
 // ===========================================================================
+TEST_F(SynthCore, HostileSendAboveOneRendersDefinedDryOutput) {
+    // Regression (bugfix-phase3 3.10): the dry-output path computed
+    // panTable[(int)((1 - send) * 255)] — send > 1 made the index negative and
+    // read below the table (UB/OOB). The index is now clamped to [0, 255].
+    // Driven via the production CC-routing entry point
+    // Synth::setNewMixerValueFromMidi(MIXER_VALUE_SEND) -> newMixerValue,
+    // which writes mixerState.instrumentState_[0].send; output observed at
+    // Synth::buildNewSampleBlock level. Value > 1 is unreachable from a
+    // normal MIDI CC (0..127/127 <= 1) — it models a corrupt preset/state.
+    synth().noteOn(0, 60, 100);
+    renderBlocks(2);
+    synth().setNewMixerValueFromMidi(0, MIXER_VALUE_SEND, 2.0f);
+    const int64_t m = renderBlocks(4);
+    EXPECT_GT(m, kSilenceThreshold) << "note should still be audible";
+    // Rendered samples are int32 DAC units and finite by construction; the
+    // clamp guarantee is the bounded magnitude: no wraparound garbage from an
+    // out-of-range panTable read.
+    EXPECT_LT(m, (int64_t)1 << 30);
+    synth().noteOff(0, 60);
+}
+
 // 8. midiClock routing (Synth::midiClock* — tellSequencer=false arms).
 // ===========================================================================
 

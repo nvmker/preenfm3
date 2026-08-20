@@ -385,7 +385,12 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
 
         // Max is 0x7fffff * [-1:1]
         //float sampleMultipler = (float) 0x7fffff;
-        float sampleMultipler = panTable[(int)((1 - synthState_->mixerState.instrumentState_[timbre].send) * 255)] * (float) 0x7fffff;
+        // Clamp the derived index (not send: send feeds level math) so a
+        // hostile/corrupt send > 1 can never read below the table.
+        int dryPanIndex = (int)((1 - synthState_->mixerState.instrumentState_[timbre].send) * 255);
+        if (dryPanIndex < 0) dryPanIndex = 0;
+        if (dryPanIndex > 255) dryPanIndex = 255;
+        float sampleMultipler = panTable[dryPanIndex] * (float) 0x7fffff;
 
         switch (synthState_->mixerState.instrumentState_[timbre].out) {
             // 0 => out1+out2, 1 => out1, 2=> out2
