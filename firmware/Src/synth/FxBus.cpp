@@ -824,7 +824,7 @@ void FxBus::processBlock(int32_t *outBuff) {
 
 }
 
-float FxBus::delayAllpassInterpolation(float readPos, float buffer[], int bufferLenM1, float prevVal) {
+float FxBus::delayAllpassInterpolation(float readPos, const float buffer[], int bufferLenM1, float prevVal) {
     //v[n] = VoiceL[i + 1] + (1 - frac)  * VoiceL[i] - (1 - frac)  * v[n - 1]
     int readPosInt = readPos;
     float y1 = buffer[readPosInt];
@@ -833,7 +833,7 @@ float FxBus::delayAllpassInterpolation(float readPos, float buffer[], int buffer
     return y1 + x * (y0 - prevVal);
 }
 
-float FxBus::delayInterpolation(float readPos, float buffer[], int bufferLenM1) {
+float FxBus::delayInterpolation(float readPos, const float buffer[], int bufferLenM1) {
     int readPosInt = readPos;
     float y1 = buffer[readPosInt];
     float y0 = buffer[(unlikely(readPosInt <= 0) ? readPosInt + bufferLenM1 : readPosInt - 1)];
