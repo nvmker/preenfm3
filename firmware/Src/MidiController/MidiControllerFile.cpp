@@ -141,6 +141,11 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
                 // Let skip 8 bytes
                 p += 4;
                 button->buttonType = (MidiButtonType)*(p++);
+                if (button->buttonType != MIDI_BUTTON_TYPE_PUSH
+                        && button->buttonType != MIDI_BUTTON_TYPE_TOGGLE) {
+                    // Corrupt byte: fail safe to the PUSH default.
+                    button->buttonType = MIDI_BUTTON_TYPE_PUSH;
+                }
                 button->midiChannel = *(p++);
                 if (button->midiChannel > 16) {
                     // Corrupt byte: fail safe to the 'use global' sentinel.
