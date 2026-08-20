@@ -32,6 +32,10 @@ public:
 protected:
 	const char* getFolderName() { return 0; }
     bool isCorrectFile(char *name, int size) { return false; }
+
+private:
+    bool isValidConfigFile(const char* fileName);
+    const char* recoverConfigFile();
 };
 
 #endif /* MidiControllerFile_H_ */

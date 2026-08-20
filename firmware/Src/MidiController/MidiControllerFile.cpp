@@ -18,9 +18,14 @@
 
 #include "MidiControllerFile.h"
 
-/* Temp path for crash-safe config replacement (next to the real file so the
- * final f_rename stays a same-volume atomic dir-entry swap). */
-#define MIDI_CONTROLLER_STATE_TMP "0:/pfm3/MidiCtl1.tmp"
+namespace {
+
+const char* const MIDI_CONTROLLER_STATE_CANONICAL = MIDI_CONTROLLER_STATE_NAME;
+const char* const MIDI_CONTROLLER_STATE_TMP = "0:/pfm3/MidiCtl1.tmp";
+const char* const MIDI_CONTROLLER_STATE_BACKUP = "0:/pfm3/MidiCtl1.bak";
+constexpr int MIDI_CONTROLLER_STATE_V1_SIZE = 2 + MIDI_NUMBER_OF_PAGES * 12 * 20;
+
+} // namespace
 
 MidiControllerFile::MidiControllerFile() {
 }
@@ -28,17 +33,70 @@ MidiControllerFile::MidiControllerFile() {
 MidiControllerFile::~MidiControllerFile() {
 }
 
+bool MidiControllerFile::isValidConfigFile(const char* fileName) {
+    if (checkSize(fileName) != MIDI_CONTROLLER_STATE_V1_SIZE) {
+        return false;
+    }
+
+    uint16_t version = 0;
+    return load(fileName, 0, &version, sizeof(version)) == sizeof(version)
+            && version == MIDI_CONTROLLER_VERSION_1;
+}
+
+const char* MidiControllerFile::recoverConfigFile() {
+    if (isValidConfigFile(MIDI_CONTROLLER_STATE_CANONICAL)) {
+        // The canonical file is authoritative. A backup means promotion
+        // completed before cleanup; a temp means saving stopped before the
+        // old file was rotated. Neither should replace a valid canonical file.
+        f_unlink(MIDI_CONTROLLER_STATE_BACKUP);
+        f_unlink(MIDI_CONTROLLER_STATE_TMP);
+        return MIDI_CONTROLLER_STATE_CANONICAL;
+    }
+
+    if (isValidConfigFile(MIDI_CONTROLLER_STATE_BACKUP)) {
+        // Saving stopped after the old file was moved aside. Restore the last
+        // known-good config; if recovery itself fails, load directly from the
+        // backup and leave every recovery artifact intact for the next boot.
+        int canonicalSize = checkSize(MIDI_CONTROLLER_STATE_CANONICAL);
+        if (canonicalSize != -1 && f_unlink(MIDI_CONTROLLER_STATE_CANONICAL) != FR_OK) {
+            return MIDI_CONTROLLER_STATE_BACKUP;
+        }
+        if (f_rename(MIDI_CONTROLLER_STATE_BACKUP, MIDI_CONTROLLER_STATE_CANONICAL) == FR_OK) {
+            f_unlink(MIDI_CONTROLLER_STATE_TMP);
+            return MIDI_CONTROLLER_STATE_CANONICAL;
+        }
+        return MIDI_CONTROLLER_STATE_BACKUP;
+    }
+
+    if (isValidConfigFile(MIDI_CONTROLLER_STATE_TMP)) {
+        // First-save recovery, or a completed temp write with no recoverable
+        // canonical/backup file. Promote it when possible and otherwise load
+        // it in place so a valid configuration is never discarded.
+        int canonicalSize = checkSize(MIDI_CONTROLLER_STATE_CANONICAL);
+        if (canonicalSize != -1 && f_unlink(MIDI_CONTROLLER_STATE_CANONICAL) != FR_OK) {
+            return MIDI_CONTROLLER_STATE_TMP;
+        }
+        if (f_rename(MIDI_CONTROLLER_STATE_TMP, MIDI_CONTROLLER_STATE_CANONICAL) == FR_OK) {
+            return MIDI_CONTROLLER_STATE_CANONICAL;
+        }
+        return MIDI_CONTROLLER_STATE_TMP;
+    }
+
+    return MIDI_CONTROLLER_STATE_CANONICAL;
+}
+
 void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
     char* reachableProperties = storageBuffer;
+    const char* configFileName = recoverConfigFile();
 
-    int size = checkSize(MIDI_CONTROLLER_STATE);
+    int size = checkSize(configFileName);
     if (size >= PROPERTY_FILE_SIZE || size == -1) {
         // ERROR
         return;
     }
     reachableProperties[size] = 0;
 
-    load(MIDI_CONTROLLER_STATE, 0,  reachableProperties, size);
+    load(configFileName, 0, reachableProperties, size);
     // First int is the version
     uint16_t* p = (uint16_t*)reachableProperties;
     int version = (int)*(p++);
@@ -131,21 +189,47 @@ void MidiControllerFile::saveConfig(MidiControllerState* midiControllerState) {
 #else
     int size = ((uint32_t)p) -  ((uint32_t)reachableProperties);
 #endif
-    // Crash-safe replacement: write the temp file first and only swap it in
-    // when the write fully succeeded (save() returns the byte count written,
-    // 0 on any failure). The old remove()-then-save() destroyed the last
-    // valid config whenever the SD write failed mid-save. f_rename removes
-    // an existing destination file on the same volume, so the swap itself
-    // has no data-loss window. A leftover temp (failed save) is harmless:
-    // the next save unlinks and rewrites it.
-    f_unlink(MIDI_CONTROLLER_STATE_TMP);
-    if (save(MIDI_CONTROLLER_STATE_TMP, 0, reachableProperties, size) == size
-            && checkSize(MIDI_CONTROLLER_STATE_TMP) == size) {
-        // checkSize guards the no-truncate hole: save() opens FA_OPEN_ALWAYS,
-        // so if a longer stale tmp somehow survived the unlink (e.g. a
-        // write-protected volume), a wrong-size tmp must NOT be promoted.
-        f_rename(MIDI_CONTROLLER_STATE_TMP, MIDI_CONTROLLER_STATE_NAME);
+    // Recover an interrupted previous save before starting another. If a
+    // valid fallback cannot be restored to the canonical name, leave it alone
+    // so loadConfig() can still use it directly.
+    const char* activeConfig = recoverConfigFile();
+    if (activeConfig != MIDI_CONTROLLER_STATE_CANONICAL) {
+        return;
     }
+
+    const bool hadValidConfig = isValidConfigFile(MIDI_CONTROLLER_STATE_CANONICAL);
+    f_unlink(MIDI_CONTROLLER_STATE_TMP);
+    if (save(MIDI_CONTROLLER_STATE_TMP, 0, reachableProperties, size) != size
+            || !isValidConfigFile(MIDI_CONTROLLER_STATE_TMP)) {
+        return;
+    }
+
+    if (hadValidConfig) {
+        // FatFs cannot rename over an existing destination. Rotate the old
+        // file to a backup first; loadConfig() understands every intermediate
+        // state and restores the last known-good file after interruption.
+        f_unlink(MIDI_CONTROLLER_STATE_BACKUP);
+        if (checkSize(MIDI_CONTROLLER_STATE_BACKUP) != -1
+                || f_rename(MIDI_CONTROLLER_STATE_CANONICAL, MIDI_CONTROLLER_STATE_BACKUP) != FR_OK) {
+            return;
+        }
+    } else {
+        int canonicalSize = checkSize(MIDI_CONTROLLER_STATE_CANONICAL);
+        if (canonicalSize != -1 && f_unlink(MIDI_CONTROLLER_STATE_CANONICAL) != FR_OK) {
+            return;
+        }
+    }
+
+    if (f_rename(MIDI_CONTROLLER_STATE_TMP, MIDI_CONTROLLER_STATE_CANONICAL) != FR_OK) {
+        if (hadValidConfig) {
+            // Best-effort immediate rollback. If it fails, the backup remains
+            // loadable and the next load/save retries recovery.
+            f_rename(MIDI_CONTROLLER_STATE_BACKUP, MIDI_CONTROLLER_STATE_CANONICAL);
+        }
+        return;
+    }
+
+    f_unlink(MIDI_CONTROLLER_STATE_BACKUP);
 }
 
 

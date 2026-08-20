@@ -150,15 +150,16 @@ extern "C" FRESULT f_open(FIL* fp, const TCHAR* path, BYTE mode) {
 
 extern "C" FRESULT f_close(FIL* fp) {
     if (fp == nullptr) return FR_INVALID_PARAMETER;
-    /* The handle entry is dropped exactly once, even when the close is
-     * injected to fail: a failing close must not leak an open-handle
-     * reservation that would poison later f_unlink/f_stat on the path. */
     uint32_t id = fp->shim_id;
-    fp->shim_id = 0;
-    bool wasOpen = id != 0 && st().open.erase(id) != 0;
+    if (id == 0 || st().open.find(id) == st().open.end()) {
+        return FR_INVALID_OBJECT;
+    }
+    /* Real FatFs leaves the FIL valid when f_sync fails during close, so an
+     * injected close failure must keep the handle open for retry. */
     FRESULT injected;
     if (consumeFail("f_close", injected)) return injected;
-    if (!wasOpen) return FR_INVALID_OBJECT;
+    st().open.erase(id);
+    fp->shim_id = 0;
     return FR_OK;
 }
 
@@ -299,14 +300,11 @@ extern "C" FRESULT f_rename(const TCHAR* path_old, const TCHAR* path_new) {
     std::string from = norm(path_old);
     std::string to = norm(path_new);
     if (!fileExists(from)) return FR_NO_FILE;
-    /* Real FatFs semantics: renaming onto ITSELF is refused; an existing
-     * destination DIRECTORY is refused (FR_EXIST); an existing destination
-     * FILE is silently removed and replaced by the rename (same-volume
-     * overwrite — this is what makes tmp-then-rename saves atomic). */
-    if (from == to) return FR_EXIST;
-    if (dirExists(to)) return FR_EXIST;
+    /* Real FatFs requires the destination name to be unused. It returns
+     * FR_EXIST for both file and directory collisions; callers that need
+     * replacement must rotate or unlink the destination explicitly. */
+    if (fileExists(to) || dirExists(to)) return FR_EXIST;
     if (!dirExists(parentOf(to))) return FR_NO_PATH;
-    if (fileExists(to)) st().files.erase(to);
     st().files[to] = std::move(st().files[from]);
     st().files.erase(from);
     return FR_OK;
