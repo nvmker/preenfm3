@@ -28,11 +28,24 @@ struct ShimState {
     std::set<std::string> dirs;
     std::map<uint32_t, OpenFile> open;
     uint32_t nextId = 1;
+    /* One-shot failure injection (fatfsShimFailNext): fn name -> error the
+     * NEXT call to that f_* function returns. Cleared on consumption and by
+     * fatfsShimReset(). Test-fixture only — real FatFs never sees this. */
+    std::map<std::string, FRESULT> failNext;
 };
 
 ShimState& st() {
     static ShimState s;
     return s;
+}
+
+/* One-shot injected failure for the next call to fn (see ShimState::failNext). */
+bool consumeFail(const char* fn, FRESULT& out) {
+    auto it = st().failNext.find(fn);
+    if (it == st().failNext.end()) return false;
+    out = it->second;
+    st().failNext.erase(it);
+    return true;
 }
 
 /* Hard size ceiling: the largest real firmware artifact is the sequence
@@ -100,6 +113,8 @@ OpenFile* lookup(FIL* fp) {
 
 extern "C" FRESULT f_open(FIL* fp, const TCHAR* path, BYTE mode) {
     if (fp == nullptr || path == nullptr) return FR_INVALID_PARAMETER;
+    FRESULT injected;
+    if (consumeFail("f_open", injected)) return injected;
     std::string p = norm(path);
     bool write = (mode & FA_WRITE) != 0;
 
@@ -135,10 +150,15 @@ extern "C" FRESULT f_open(FIL* fp, const TCHAR* path, BYTE mode) {
 
 extern "C" FRESULT f_close(FIL* fp) {
     if (fp == nullptr) return FR_INVALID_PARAMETER;
-    if (fp->shim_id == 0 || st().open.erase(fp->shim_id) == 0) {
-        fp->shim_id = 0;
+    uint32_t id = fp->shim_id;
+    if (id == 0 || st().open.find(id) == st().open.end()) {
         return FR_INVALID_OBJECT;
     }
+    /* Real FatFs leaves the FIL valid when f_sync fails during close, so an
+     * injected close failure must keep the handle open for retry. */
+    FRESULT injected;
+    if (consumeFail("f_close", injected)) return injected;
+    st().open.erase(id);
     fp->shim_id = 0;
     return FR_OK;
 }
@@ -163,6 +183,11 @@ extern "C" FRESULT f_read(FIL* fp, void* buff, UINT btr, UINT* br) {
 extern "C" FRESULT f_write(FIL* fp, const void* buff, UINT btw, UINT* bw) {
     OpenFile* of = lookup(fp);
     if (of == nullptr) return FR_INVALID_OBJECT;
+    FRESULT injected;
+    if (consumeFail("f_write", injected)) {
+        if (bw) *bw = 0;
+        return injected;
+    }
     if (!of->write) {
         if (bw) *bw = 0;
         return FR_DENIED;
@@ -254,6 +279,8 @@ extern "C" FRESULT f_mkdir(const TCHAR* path) {
 
 extern "C" FRESULT f_unlink(const TCHAR* path) {
     if (path == nullptr) return FR_INVALID_PARAMETER;
+    FRESULT injected;
+    if (consumeFail("f_unlink", injected)) return injected;
     std::string p = norm(path);
     if (fileExists(p)) {
         /* real FatFs refuses to unlink a file with an open handle */
@@ -268,13 +295,15 @@ extern "C" FRESULT f_unlink(const TCHAR* path) {
 
 extern "C" FRESULT f_rename(const TCHAR* path_old, const TCHAR* path_new) {
     if (path_old == nullptr || path_new == nullptr) return FR_INVALID_PARAMETER;
+    FRESULT injected;
+    if (consumeFail("f_rename", injected)) return injected;
     std::string from = norm(path_old);
     std::string to = norm(path_new);
     if (!fileExists(from)) return FR_NO_FILE;
-    if (fileExists(to) || (dirExists(to) && to != "0:" && !to.empty() &&
-                           st().dirs.count(to))) {
-        return FR_EXIST;
-    }
+    /* Real FatFs requires the destination name to be unused. It returns
+     * FR_EXIST for both file and directory collisions; callers that need
+     * replacement must rotate or unlink the destination explicitly. */
+    if (fileExists(to) || dirExists(to)) return FR_EXIST;
     if (!dirExists(parentOf(to))) return FR_NO_PATH;
     st().files[to] = std::move(st().files[from]);
     st().files.erase(from);
@@ -307,6 +336,12 @@ void fatfsShimReset() {
     st().dirs.clear();
     st().open.clear();
     st().nextId = 1;
+    st().failNext.clear();
+}
+
+void fatfsShimFailNext(const char* fn, FRESULT err) {
+    if (fn == nullptr) return;
+    st().failNext[fn] = err;
 }
 
 void fatfsShimMkdir(const char* path) {

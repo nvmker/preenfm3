@@ -152,18 +152,42 @@ TEST_F(ScalaFileTest, ZeroDegreesFallsBackToDiatonic) {
     EXPECT_EQ(r, diatonicScaleFrequency);
 }
 
-TEST_F(ScalaFileTest, TruncatedFileDividesByZeroIntervalQuirk) {
-    // QUIRK GOLDEN: declares 12 degrees but only provides ONE. interval[11]
-    // stays 0.0f -> octaveRatio 0 -> freq[48] = 261.626/0 = +inf and the
-    // in-octave notes collapse to 0 (except interval[0] carriers).
+TEST_F(ScalaFileTest, TruncatedFileFallsBackToDiatonic) {
+    // Fixed (was TruncatedFileDividesByZeroIntervalQuirk): declares 12 degrees
+    // but provides one. The parse now detects parsed < declared and falls back
+    // to the diatonic table instead of dividing by a zero interval — no +inf
+    // below middle C, no collapsed in-octave frequencies.
     fatfsShimInjectString("0:/pfm3/scala/trunc.scl",
                           "trunc\n12\n100.0\n");
     float* freq = scala_.loadScalaScale(&ms_, 0);
-    ASSERT_NE(freq, nullptr);
-    EXPECT_TRUE(std::isinf(freq[48]));        // below middle C: /0
-    EXPECT_FLOAT_EQ(freq[61], 261.626f * powf(2.0f, 1.0f / 12.0f));
-    EXPECT_FLOAT_EQ(freq[62], 0.0f);          // interval[1] == 0
-    EXPECT_FLOAT_EQ(freq[72], 0.0f);          // 261.626 * 0
+    extern float diatonicScaleFrequency[];
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+    for (int n = 0; n < 127; n++) {  // table is float[127] (0..126)
+        EXPECT_TRUE(std::isfinite(freq[n])) << "note " << n;
+    }
+}
+
+TEST_F(ScalaFileTest, DegenerateFinalIntervalFallsBackToDiatonic) {
+    // Review hardening (bugfix-phase1): a FULL-COUNT file whose final interval
+    // is degenerate must fall back to diatonic too — the same +inf/0 collapse
+    // as the truncated-file division, via a different door. Garbage ratio
+    // "x/y" parses as 0/0 = NaN; "3/0" parses as +inf. (A garbage CENTS line
+    // is NOT degenerate: stof quirk -> 0 cents -> ratio 1.0, a valid unison;
+    // a literal "0" likewise.)
+    fatfsShimInjectString(
+        "0:/pfm3/scala/nan.scl",
+        "nan\n3\n9/8\n5/4\nx/y\n");
+    float* freq = scala_.loadScalaScale(&ms_, 0);
+    extern float diatonicScaleFrequency[];
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+    fatfsShimInjectString(
+        "0:/pfm3/scala/inf.scl",
+        "inf\n3\n9/8\n5/4\n3/0\n");
+    freq = scala_.loadScalaScale(&ms_, 0);
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+    for (int n = 0; n < 127; n++) {
+        EXPECT_TRUE(std::isfinite(freq[n])) << "note " << n;
+    }
 }
 
 TEST_F(ScalaFileTest, RatioLinesParseAsFraction) {
