@@ -165,11 +165,22 @@ int UserEnvCurve::fillUserEnvCurveFromTxt(int f, char* buffer, int filled, bool 
 }
 
 void UserEnvCurve::normalize(float* buffer, int numberOfSamples) {
-    float min = 0;
-    float max = 0;
-    float average = 0;
-    for (int i=0; i < numberOfSamples; i++) {
-        average += buffer[i];
+    if (numberOfSamples <= 0) {
+        return;
+    }
+
+    // Sanitize before seeding extrema: a non-finite first sample must not
+    // poison min/max. Imported text can overflow the parser's float
+    // accumulator even though normal curve files contain only finite values.
+    for (int i = 0; i < numberOfSamples; i++) {
+        if (!isfinite(buffer[i])) {
+            buffer[i] = 0.0f;
+        }
+    }
+
+    float min = buffer[0];
+    float max = buffer[0];
+    for (int i = 1; i < numberOfSamples; i++) {
         if (buffer[i] < min) {
             min = buffer[i];
         }
@@ -177,18 +188,24 @@ void UserEnvCurve::normalize(float* buffer, int numberOfSamples) {
             max = buffer[i];
         }
     }
-	
-    float m = (max-min) == 0 ? 1 / (max-min) : 1;
 
-    for (int i=0; i < numberOfSamples; i++) {
-        buffer[i] -= min;
-        buffer[i] *= m;
-		if(buffer[i]>1) {
-			buffer[i] = 1;
-		}
-		if(buffer[i]<0) {
-			buffer[i] = 0;
-		}
+    // Widen the subtraction so opposite-sign finite float extrema cannot
+    // overflow the range to infinity. A flat curve has no shape to scale;
+    // preserve its finite DC level exactly as required by the file contract.
+    const double range = static_cast<double>(max) - static_cast<double>(min);
+    if (range == 0.0) {
+        return;
+    }
+
+    for (int i = 0; i < numberOfSamples; i++) {
+        double normalized = (static_cast<double>(buffer[i]) - static_cast<double>(min)) / range;
+        if (normalized > 1.0) {
+            normalized = 1.0;
+        }
+        if (normalized < 0.0) {
+            normalized = 0.0;
+        }
+        buffer[i] = static_cast<float>(normalized);
     }
 }
 
