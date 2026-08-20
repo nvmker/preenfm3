@@ -837,6 +837,17 @@ void MidiDecoder::controlChange(int timbre, MidiEvent& midiEvent) {
     }
 }
 
+
+// Clamp a float to the representable int range before narrowing (plan 3.5):
+// float->int conversion is UB when the value exceeds INT_MAX or is NaN.
+// In-range values keep the exact truncation semantics of the +.1f trick.
+static int nrpnValueFromFloat(float v) {
+    if (v != v) return 0;  // NaN -> defined 0
+    if (v > 2147483000.0f) return 2147483000;
+    if (v < -2147483000.0f) return -2147483000;
+    return (int) v;
+}
+
 void MidiDecoder::sendCurrentPatchAsNrpns(int timbre) {
     struct MidiEvent cc;
 
@@ -884,9 +895,9 @@ void MidiDecoder::sendCurrentPatchAsNrpns(int timbre) {
 
             if (param->displayType == DISPLAY_TYPE_FLOAT || param->displayType == DISPLAY_TYPE_FLOAT_OSC_FREQUENCY
                     || param->displayType == DISPLAY_TYPE_FLOAT_LFO_FREQUENCY || param->displayType == DISPLAY_TYPE_LFO_KSYN) {
-                valueToSend = (floatValue - param->minValue) * 100.0f + .1f;
+                valueToSend = nrpnValueFromFloat((floatValue - param->minValue) * 100.0f + .1f);
             } else {
-                valueToSend = floatValue + .1f;
+                valueToSend = nrpnValueFromFloat(floatValue + .1f);
             }
             // MSB / LSB
             int midiIndex = getMidiIndexFromMemory(memoryIndex);
@@ -1034,9 +1045,9 @@ void MidiDecoder::newParamValue(int timbre, int currentrow, int encoder, Paramet
 
             if (param->displayType == DISPLAY_TYPE_FLOAT || param->displayType == DISPLAY_TYPE_FLOAT_OSC_FREQUENCY
                     || param->displayType == DISPLAY_TYPE_FLOAT_LFO_FREQUENCY || param->displayType == DISPLAY_TYPE_LFO_KSYN) {
-                valueToSend = (newValue - param->minValue) * 100.0f + .1f;
+                valueToSend = nrpnValueFromFloat((newValue - param->minValue) * 100.0f + .1f);
             } else {
-                valueToSend = newValue + .1f;
+                valueToSend = nrpnValueFromFloat(newValue + .1f);
             }
             // MSB / LSB
             int midiIndex = getMidiIndexFromMemory(currentrow * NUMBER_OF_ENCODERS_PFM2 + encoder);

@@ -1453,3 +1453,49 @@ TEST_F(MidiDecoderPhase2, NewParamValueNrpnFloatParamScalesByHundred) {
     EXPECT_EQ(usartBufferOut.remove(), 38);
     EXPECT_EQ(usartBufferOut.remove(), 44) << "300 & 0x7f is the 14-bit LSB";
 }
+
+
+// 3.5: hostile float params (huge / -huge / NaN) must clamp to a defined int
+// before narrowing instead of invoking UB and emitting garbage NRPN bytes.
+TEST_F(MidiDecoderPhase2, NewParamValueNrpnClampsHugeFloatBeforeNarrowing) {
+    ss_->fullState.midiConfigValue[MIDICONFIG_SENDS] = 2;
+    struct ParameterDisplay pd = {};  // raw value path: valueToSend = v + .1f
+    decoder_.newParamValue(0, ROW_ENGINE, ENCODER_ENGINE_ALGO, &pd, 0.0f, 3e9f);
+    ASSERT_EQ(usartBufferOut.getCount(), 12);
+    for (int i = 0; i < 7; i++) (void)usartBufferOut.remove();
+    EXPECT_EQ(usartBufferOut.remove(), 6);
+    EXPECT_EQ(usartBufferOut.remove(), 250) << "2147483000 >> 7 truncated to a byte";
+    (void)usartBufferOut.remove();  // 0xB0
+    (void)usartBufferOut.remove();  // 38
+    EXPECT_EQ(usartBufferOut.remove(), 120) << "2147483000 & 0x7f";
+}
+
+TEST_F(MidiDecoderPhase2, NewParamValueNrpnClampsHugeNegativeFloatBeforeNarrowing) {
+    ss_->fullState.midiConfigValue[MIDICONFIG_SENDS] = 2;
+    struct ParameterDisplay pd = {};
+    decoder_.newParamValue(0, ROW_ENGINE, ENCODER_ENGINE_ALGO, &pd, 0.0f, -3e9f);
+    ASSERT_EQ(usartBufferOut.getCount(), 12);
+    for (int i = 0; i < 7; i++) (void)usartBufferOut.remove();
+    EXPECT_EQ(usartBufferOut.remove(), 6);
+    EXPECT_EQ(usartBufferOut.remove(), 5) << "(unsigned char)(-2147483000 >> 7)";
+    (void)usartBufferOut.remove();  // 0xB0
+    (void)usartBufferOut.remove();  // 38
+    EXPECT_EQ(usartBufferOut.remove(), 8) << "-2147483000 & 0x7f";
+}
+
+TEST_F(MidiDecoderPhase2, NewParamValueNrpnNanFloatMapsToZero) {
+    // NaN fails every comparison; the clamp helper maps it to a defined 0.
+    ss_->fullState.midiConfigValue[MIDICONFIG_SENDS] = 2;
+    struct ParameterDisplay pd = {};
+    pd.displayType = DISPLAY_TYPE_FLOAT;
+    pd.minValue = 1.0f;
+    decoder_.newParamValue(0, ROW_ENGINE, ENCODER_ENGINE_ALGO, &pd, 0.0f,
+                           std::numeric_limits<float>::quiet_NaN());
+    ASSERT_EQ(usartBufferOut.getCount(), 12);
+    for (int i = 0; i < 7; i++) (void)usartBufferOut.remove();
+    EXPECT_EQ(usartBufferOut.remove(), 6);
+    EXPECT_EQ(usartBufferOut.remove(), 0);
+    (void)usartBufferOut.remove();  // 0xB0
+    (void)usartBufferOut.remove();  // 38
+    EXPECT_EQ(usartBufferOut.remove(), 0);
+}
