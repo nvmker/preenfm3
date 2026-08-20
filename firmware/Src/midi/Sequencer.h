@@ -61,7 +61,7 @@ struct SeqMidiAction {
 /**
  * unique / values[0..1] = position
  * values[2] = velocity
- * values[3...8] 6 notes
+ * values[3...7] 5 notes
  */
 union StepSeqValue {
     uint64_t full;
