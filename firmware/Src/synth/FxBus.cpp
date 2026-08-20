@@ -546,7 +546,14 @@ void FxBus::paramChanged() {
  */
 void FxBus::mixAdd(float *inStereo, float send, float reverbLevel) {
     if (send > 0) {
-        const float level = - panTable[(int)(send * 255)] * 0.0625f * reverbLevel;
+        // send can exceed 1.0f from a corrupt bank or external MIDI: clamp
+        // the derived index (not send itself, which feeds nothing else here)
+        // so the panTable[256] read stays in bounds.
+        int panIndex = (int)(send * 255);
+        if (panIndex > 255) {
+            panIndex = 255;
+        }
+        const float level = - panTable[panIndex] * 0.0625f * reverbLevel;
         
         totalSent += level;
 
