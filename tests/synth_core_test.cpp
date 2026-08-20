@@ -764,6 +764,23 @@ TEST_F(SynthCore, HostileSendAboveOneRendersDefinedDryOutput) {
     synth().noteOff(0, 60);
 }
 
+TEST_F(SynthCore, HostileNanSendRendersDefinedDryOutput) {
+    // Review follow-up to 3.10: the clamp ran AFTER the (int) cast, but
+    // (int)NaN and (int)infinity are undefined float-to-int conversions
+    // (UBSan float-cast-overflow) -- the clamp can never repair them. The
+    // index is now derived only after a float-domain range check, and a
+    // non-finite send fails AUDIBLE (treated as send 0: full dry, index
+    // 255 -- panTable[0] is zero, so index 0 would mute the timbre). Valid
+    // sends in [0, 1] render byte-identically.
+    synth().noteOn(0, 60, 100);
+    renderBlocks(2);
+    synth().setNewMixerValueFromMidi(0, MIXER_VALUE_SEND, NAN);
+    const int64_t m = renderBlocks(4);
+    EXPECT_GT(m, kSilenceThreshold) << "full-dry pan, note should be audible";
+    EXPECT_LT(m, (int64_t)1 << 30);
+    synth().noteOff(0, 60);
+}
+
 // 8. midiClock routing (Synth::midiClock* — tellSequencer=false arms).
 // ===========================================================================
 

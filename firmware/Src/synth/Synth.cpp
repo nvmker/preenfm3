@@ -385,11 +385,21 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
 
         // Max is 0x7fffff * [-1:1]
         //float sampleMultipler = (float) 0x7fffff;
-        // Clamp the derived index (not send: send feeds level math) so a
-        // hostile/corrupt send > 1 can never read below the table.
-        int dryPanIndex = (int)((1 - synthState_->mixerState.instrumentState_[timbre].send) * 255);
-        if (dryPanIndex < 0) dryPanIndex = 0;
-        if (dryPanIndex > 255) dryPanIndex = 255;
+        // Range-check in the float domain (not send: send feeds level
+        // math) BEFORE the int conversion -- (int)NaN and (int)infinity
+        // are undefined conversions no later clamp can repair. A
+        // non-finite hostile send fails AUDIBLE: treated as send 0
+        // (index 255, full dry) so the timbre keeps sounding. Same
+        // idiom as FxBus::mixAdd.
+        float dryPan = (1.0f - synthState_->mixerState.instrumentState_[timbre].send) * 255.0f;
+        int dryPanIndex;
+        if (!(dryPan >= 0.0f)) {
+            dryPanIndex = 255; // NaN or -inf: fail audible (no send)
+        } else if (dryPan >= 255.0f) {
+            dryPanIndex = 255; // +inf or >= 255
+        } else {
+            dryPanIndex = static_cast<int>(dryPan);
+        }
         float sampleMultipler = panTable[dryPanIndex] * (float) 0x7fffff;
 
         switch (synthState_->mixerState.instrumentState_[timbre].out) {
