@@ -679,11 +679,19 @@ const struct PFM3File* PreenFMFileType::addEmptyFile(const char *fileName) {
         // NO EMPTY file
         return 0;
     }
+    if (fileName == 0) {
+        // Defensive: strnlen(NULL) is UB; callers pass literals today, but a
+        // NULL means no name to store — fail the add rather than read it.
+        return 0;
+    }
     myFiles_[k].fileType = FILE_OK;
     size_t nameLen = strnlen(fileName, 12);
     for (size_t n = 0; n < 12; n++) {
         myFiles_[k].name[n] = (n < nameLen) ? fileName[n] : '\0';
     }
+    // name is char[13]: terminate the 13th byte too so an exact-12 name is
+    // a valid C string (previously the stale byte from the listing stayed).
+    myFiles_[k].name[12] = '\0';
     isInitialized_ = false;
     return &myFiles_[k];
 }
