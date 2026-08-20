@@ -16,8 +16,12 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "StorageSizes.h"
+
+// Local chunk size for txt reads; the extern now declares the true buffer
+// size (spec 2.7) — reads stay capped at 64 bytes per pass as before.
 #define LINE_BUFFER_SIZE 64
-extern char lineBuffer[64];
+extern char lineBuffer[PFM3_LINE_BUFFER_SIZE];
 
 // User curves
 extern float userEnvCurves[4][64];

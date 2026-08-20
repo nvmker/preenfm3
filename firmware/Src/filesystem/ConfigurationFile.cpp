@@ -17,9 +17,10 @@
 
 
 #include "ConfigurationFile.h"
+#include "StorageSizes.h"
 #include "Menu.h"
 
-extern char lineBuffer[512];
+extern char lineBuffer[PFM3_LINE_BUFFER_SIZE];
 
 ConfigurationFile::ConfigurationFile() {
 	numberOfFilesMax_ = 0;
