@@ -4,6 +4,7 @@
 #include "MidiControllerState.h"
 #include "RingBuffer.h"
 
+#include <climits>
 #include <cstring>
 #include <new>
 #include <type_traits>
@@ -124,6 +125,31 @@ TEST_F(MidiControllerStateTest, EncoderClampsAndEmitsOnlyOnActualChange) {
     state_->encoderDelta(0, 3, 0, -200);
     EXPECT_EQ((std::vector<uint8_t>{0xB3, 16, 0}), drain());
     EXPECT_EQ(encoder->value, 0);
+}
+
+TEST_F(MidiControllerStateTest, EncoderExtremeDeltasClampWithoutOverflow) {
+    // value + delta would overflow int for extreme deltas; the accumulate is
+    // done in int64_t so the result is a defined clamp, never a wraparound.
+    MidiEncoder* encoder = state_->getEncoder(0, 0);
+    encoder->value = 1;
+    state_->encoderDelta(0, 3, 0, INT_MAX);
+    EXPECT_EQ((std::vector<uint8_t>{0xB3, 16, 127}), drain());
+    EXPECT_EQ(encoder->value, 127);
+
+    encoder->value = 1;
+    state_->encoderDelta(0, 3, 0, INT_MIN);
+    EXPECT_EQ((std::vector<uint8_t>{0xB3, 16, 0}), drain());
+    EXPECT_EQ(encoder->value, 0);
+
+    encoder->maxValue = 65535;
+    encoder->value = 65535;
+    state_->encoderDelta(0, 3, 0, INT_MIN);
+    EXPECT_EQ((std::vector<uint8_t>{0xB3, 16, 0}), drain());
+    EXPECT_EQ(encoder->value, 0);
+
+    // No-change tick (delta 0) must not emit.
+    state_->encoderDelta(0, 3, 0, 0);
+    EXPECT_TRUE(drain().empty());
 }
 
 TEST_F(MidiControllerStateTest, EncoderClampsToCustomMinimumAndMaximum) {

@@ -69,7 +69,8 @@ void MidiControllerState::resetState() {
 
 void MidiControllerState::encoderDelta(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t encoderNumber, int delta) {
     MidiEncoder* encoder =  &midiPage_[pageNumber].encoder_[encoderNumber];
-    int newValue = encoder->value + delta;
+    // Accumulate in 64-bit: encoder->value + delta could overflow int (UB).
+    int64_t newValue = static_cast<int64_t>(encoder->value) + static_cast<int64_t>(delta);
     newValue = newValue < encoder->minValue ? encoder->minValue : newValue;
     newValue = newValue > encoder->maxValue ? encoder->maxValue : newValue;
 
