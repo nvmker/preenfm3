@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cmath>
+#include <limits>
 #include <cstring>
 #include <new>
 #include <type_traits>
@@ -238,4 +239,72 @@ TEST(SimpleCompRmsTest, RuntimeConfigurationDelegatesToEnvelopeDetectors) {
     EXPECT_FLOAT_EQ(comp->getAttack(), 2.0f);
     EXPECT_FLOAT_EQ(comp->getRelease(), 80.0f);
     comp->~SimpleCompRms();
+}
+
+
+// 3.6: non-finite input samples must be sanitized to 0 at block entry.
+TEST_F(SimpleCompTest, NonFiniteSamplesSanitizedToZeroAtBlockEntry) {
+    // Compressing path: a NaN/+Inf sample would otherwise poison maxAbsSample,
+    // getGain and previousGain_. Compare against a never-poisoned instance fed
+    // the same block with the non-finite positions pre-zeroed.
+    SimpleComp clean;
+    clean.initRuntime();
+    for (SimpleComp* c : {comp_, &clean}) {
+        c->setSampleRate(1000.0f);
+        c->setAttack(1.0f);
+        c->setRelease(20.0f);
+        c->setThresh(-12.0f);
+        c->setRatio(0.25f);
+    }
+    float hostile[64];
+    fill(hostile, 1.0f, 0.5f);
+    hostile[3] = std::numeric_limits<float>::quiet_NaN();
+    hostile[17] = std::numeric_limits<float>::infinity();
+    hostile[40] = -std::numeric_limits<float>::infinity();
+    float sanitized[64];
+    std::copy(hostile, hostile + 64, sanitized);
+    sanitized[3] = 0.0f;
+    sanitized[17] = 0.0f;
+    sanitized[40] = 0.0f;
+
+    const float gainHostile = comp_->processPfm3(hostile);
+    const float gainClean = clean.processPfm3(sanitized);
+    EXPECT_FLOAT_EQ(gainHostile, gainClean);
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        ASSERT_TRUE(std::isfinite(hostile[sample])) << "sample " << sample;
+        EXPECT_EQ(hostile[sample], sanitized[sample]) << "sample " << sample;
+    }
+}
+
+TEST_F(SimpleCompTest, PoisonedThenCleanBlockMatchesNeverPoisonedInstance) {
+    // previousGain_ must not stay poisoned: after a NaN block, a later loud
+    // block is bit-identical to the same loud block fed to an instance that
+    // saw plain silence first (the NaN block sanitized to all-zero silence).
+    SimpleComp clean;
+    clean.initRuntime();
+    for (SimpleComp* c : {comp_, &clean}) {
+        c->setSampleRate(1000.0f);
+        c->setAttack(1.0f);
+        c->setRelease(20.0f);
+        c->setThresh(-12.0f);
+        c->setRatio(0.25f);
+    }
+    float poison[64];
+    fill(poison, std::numeric_limits<float>::quiet_NaN(),
+          std::numeric_limits<float>::quiet_NaN());
+    comp_->processPfm3(poison);
+    float silence[64] = {};
+    clean.processPfm3(silence);
+
+    float loud[64], loudRef[64];
+    fill(loud, 1.0f, 0.75f);
+    std::copy(loud, loud + 64, loudRef);
+    const float gainPoisoned = comp_->processPfm3(loud);
+    const float gainClean = clean.processPfm3(loudRef);
+    ASSERT_TRUE(std::isfinite(gainPoisoned));
+    EXPECT_FLOAT_EQ(gainPoisoned, gainClean);
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        ASSERT_TRUE(std::isfinite(loud[sample])) << "sample " << sample;
+        EXPECT_EQ(loud[sample], loudRef[sample]) << "sample " << sample;
+    }
 }
