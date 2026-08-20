@@ -195,6 +195,20 @@ TEST_F(MidiControllerStateTest, HostileStoredChannelFailsSafeToGlobalChannel) {
     EXPECT_EQ((std::vector<uint8_t>{0xBF, 16, 3}), drain());
 }
 
+TEST_F(MidiControllerStateTest, UnknownButtonTypeEmitsNothingAndKeepsState) {
+    // Bugfix-phase3 item 3.3: an unknown buttonType must not emit CC with
+    // stale state, and must not change the stored value.
+    MidiButton* button = state_->getButton(0, 0);
+    button->buttonType = (MidiButtonType)7;
+    button->value = 0;
+    state_->buttonDown(0, 4, 0);
+    EXPECT_TRUE(drain().empty());
+    EXPECT_EQ(button->value, 0);
+    EXPECT_FALSE(state_->buttonUp(0, 4, 0));
+    EXPECT_TRUE(drain().empty());
+    EXPECT_EQ(button->value, 0);
+}
+
 TEST_F(MidiControllerStateTest, PushDownAndUpEmitOnThenOffAndUpReturnsTrue) {
     state_->buttonDown(0, 4, 0);
     EXPECT_EQ((std::vector<uint8_t>{0xB4, 60, 127}), drain());

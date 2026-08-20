@@ -92,6 +92,9 @@ void MidiControllerState::buttonDown(uint8_t pageNumber, uint8_t globalMidiChann
         button->value = 1;
     } else if (button->buttonType == MIDI_BUTTON_TYPE_TOGGLE) {
         button->value = (button->value == 0? 1 : 0);
+    } else {
+        // Unknown type: no state change, no emission.
+        return;
     }
     uint8_t midiChannel = resolveMidiChannel_(button->midiChannel, globalMidiChannel);
 
