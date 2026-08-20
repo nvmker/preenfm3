@@ -3,8 +3,8 @@
 //
 // Characterization suite (spec-test-coverage-phase4). The normalize()
 // inverted-ternary quirk (NaN on flat curves, never-scaled non-flat) was
-// FIXED in bugfix-phase1 (item 1.3): min/max now seed from buffer[0], flat
-// curves early out untouched, and non-flat curves scale into 0..1.
+// FIXED in bugfix-phase1 (item 1.3): non-finite samples are sanitized,
+// finite flat curves early out untouched, and non-flat curves scale into 0..1.
 // Still-pinned quirks (deferred-work.md):
 //   * interpolate() reads buffer[iPos+1] one past the populated source
 //     window (same shape as UserWaveform).
@@ -12,9 +12,9 @@
 //     error and no load.
 // userEnvCurves is the REAL global from Env.cpp (already linked); envCurveNames
 // comes from the Phase-4 stub table.
+// pi-lens-ignore: fatal error
 #include "gtest/gtest.h"
 
-#include "Common.h"
 #include "FileSystemUtils.h"
 #include "fatfs.h"
 #define private public
@@ -23,6 +23,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -86,8 +87,7 @@ TEST_F(UserEnvCurveTest, Txt64SamplesInterpolatesNothingAndCachesBin) {
     std::string txt = MakeTxt("EXP1", 64, 0.0f, 1.0f / 63.0f);
     fatfsShimInjectString("0:/pfm3/envcurve/usr2.txt", txt.c_str());
     uec_.loadUserEnvCurves();
-    // normalize quirk (see header): ramp 0..1, range != 0 -> m=1: shift by
-    // -min(=0) only. Values stay 0..1 unscaled.
+    // The source already spans 0..1, so normalization preserves its values.
     EXPECT_FLOAT_EQ(userEnvCurves[1][0], 0.0f);
     EXPECT_FLOAT_EQ(userEnvCurves[1][63], 1.0f);
     std::vector<uint8_t> bin;
@@ -179,36 +179,50 @@ TEST_F(UserEnvCurveTest, NonFlatNormalizeScalesIntoUnitRange) {
     EXPECT_NEAR(buf[6], 6.0f / 63.0f, 0.002f);
 }
 
-TEST_F(UserEnvCurveTest, FlatCurveClampsDCIntoUnitRange) {
-    // Review hardening (bugfix-phase1): a flat curve has no shape, but the
-    // consumer contract is 0..1 — DC above 1 clamps to 1, below 0 clamps to 0
-    // (matches the pre-fix observable behavior for flat curves).
+TEST_F(UserEnvCurveTest, FlatOutOfRangeCurveIsLeftUntouched) {
+    // A finite flat curve has no shape to normalize. Preserve its DC level
+    // exactly, including values outside 0..1, as required by the file contract.
     float buf[64];
     for (int i = 0; i < 64; i++) buf[i] = 2.0f;
     uec_.normalize(buf, 64);
     for (int i = 0; i < 64; i++) {
-        EXPECT_FLOAT_EQ(buf[i], 1.0f) << "sample " << i;
+        EXPECT_FLOAT_EQ(buf[i], 2.0f) << "sample " << i;
     }
     for (int i = 0; i < 64; i++) buf[i] = -0.5f;
     uec_.normalize(buf, 64);
     for (int i = 0; i < 64; i++) {
-        EXPECT_FLOAT_EQ(buf[i], 0.0f) << "sample " << i;
+        EXPECT_FLOAT_EQ(buf[i], -0.5f) << "sample " << i;
     }
 }
 
-TEST_F(UserEnvCurveTest, InteriorNonFiniteSampleIsSanitized) {
-    // Review hardening (bugfix-phase1): a NaN/Inf sample (parser garbage) is
-    // zeroed during the scan instead of poisoning min/max or surviving into
-    // the normalized output.
+TEST_F(UserEnvCurveTest, NonFiniteSamplesIncludingFirstAreSanitized) {
+    // Sanitize before min/max seeding so a non-finite first sample cannot
+    // poison the extrema or survive into the normalized output.
     float buf[64];
     for (int i = 0; i < 64; i++) buf[i] = i / 63.0f;
-    buf[30] = std::nanf("");
-    buf[31] = 1e30f * 1e30f;  // inf
+    buf[0] = std::nanf("");
+    buf[1] = std::numeric_limits<float>::infinity();
+    buf[31] = -std::numeric_limits<float>::infinity();
     uec_.normalize(buf, 64);
     for (int i = 0; i < 64; i++) {
         EXPECT_TRUE(std::isfinite(buf[i])) << "sample " << i;
         EXPECT_GE(buf[i], 0.0f) << "sample " << i;
         EXPECT_LE(buf[i], 1.0f) << "sample " << i;
+    }
+}
+
+TEST_F(UserEnvCurveTest, OppositeFiniteExtremaNormalizeWithoutRangeOverflow) {
+    float buf[] = {
+        std::numeric_limits<float>::lowest(),
+        0.0f,
+        std::numeric_limits<float>::max(),
+    };
+    uec_.normalize(buf, 3);
+    EXPECT_FLOAT_EQ(buf[0], 0.0f);
+    EXPECT_FLOAT_EQ(buf[1], 0.5f);
+    EXPECT_FLOAT_EQ(buf[2], 1.0f);
+    for (float sample : buf) {
+        EXPECT_TRUE(std::isfinite(sample));
     }
 }
 
