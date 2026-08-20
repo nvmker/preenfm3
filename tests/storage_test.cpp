@@ -7,6 +7,7 @@
 #include "gtest/gtest.h"
 
 #include "Storage.h"
+#include "StorageSizes.h"
 #include "fatfs.h"
 
 #include <cstring>
@@ -47,4 +48,12 @@ TEST_F(StorageTest, LineBufferGlobalIsReachableAndWritable) {
     lineBuffer[1] = 'k';
     lineBuffer[2] = 0;
     EXPECT_STREQ(lineBuffer, "ok");
+}
+
+TEST_F(StorageTest, LineBufferSizeMatchesSharedConstant) {
+    // Spec 2.7: every TU externs lineBuffer through StorageSizes.h's
+    // PFM3_LINE_BUFFER_SIZE; the Storage.cpp static_assert enforces it at
+    // compile time, this guard pins it on the host too.
+    extern char lineBuffer[PFM3_LINE_BUFFER_SIZE];  // sized extern: sizeof is valid
+    EXPECT_EQ(sizeof(lineBuffer), (size_t)PFM3_LINE_BUFFER_SIZE);
 }

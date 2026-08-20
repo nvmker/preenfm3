@@ -17,6 +17,10 @@
 
 #include "PreenFMFileType.h"
 
+// Common.h redeclares strcmp with C++ linkage, so <string.h> cannot be
+// included here; declare just strnlen with C linkage instead.
+extern "C" size_t strnlen(const char *s, size_t maxlen);
+
 #ifndef PFM3_HOST
 __attribute__((section(".ram_d2b")))
 #endif
@@ -668,17 +672,26 @@ bool PreenFMFileType::nameExists(const char *bankName) {
 
 const struct PFM3File* PreenFMFileType::addEmptyFile(const char *fileName) {
     int k;
-    for (k = 0; myFiles_[k].fileType != FILE_EMPTY && k < numberOfFilesMax_; k++)
+    for (k = 0; k < numberOfFilesMax_ && myFiles_[k].fileType != FILE_EMPTY; k++)
         ;
 
     if (k == numberOfFilesMax_) {
         // NO EMPTY file
         return 0;
     }
-    myFiles_[k].fileType = FILE_OK;
-    for (int n = 0; n < 12; n++) {
-        myFiles_[k].name[n] = fileName[n];
+    if (fileName == 0) {
+        // Defensive: strnlen(NULL) is UB; callers pass literals today, but a
+        // NULL means no name to store — fail the add rather than read it.
+        return 0;
     }
+    myFiles_[k].fileType = FILE_OK;
+    size_t nameLen = strnlen(fileName, 12);
+    for (size_t n = 0; n < 12; n++) {
+        myFiles_[k].name[n] = (n < nameLen) ? fileName[n] : '\0';
+    }
+    // name is char[13]: terminate the 13th byte too so an exact-12 name is
+    // a valid C string (previously the stale byte from the listing stayed).
+    myFiles_[k].name[12] = '\0';
     isInitialized_ = false;
     return &myFiles_[k];
 }
