@@ -203,7 +203,7 @@ int FileSystemUtils::str_cmp(const char*s1, const char*s2) {
 
 int FileSystemUtils::getLine(char* file, char* line) {
 	int k;
-	for (k=0; k <128 && file[k] != '\n' && file[k] != '\r'; k++) {
+	for (k=0; k <128 && file[k] != '\n' && file[k] != '\r' && file[k] != 0; k++) {
 		line[k] = file[k];
 	}
 	line[k] = 0;
@@ -245,7 +245,7 @@ int FileSystemUtils::getPositionOfPeriod(const char *line) {
 float FileSystemUtils::stof(const char* s, int &charRead) {
     float rez = 0, fact = 1;
     const char* sPointer = s;
-    while (!isNumber(*s)) {
+    while (*s != 0 && !isNumber(*s)) {
         s++;
     }
     if (*s == '-'){

@@ -159,10 +159,8 @@ TEST_F(FileSystemUtilsTest, GetLineSplitsOnNewlineAndSkipsSeparators) {
 }
 
 TEST_F(FileSystemUtilsTest, GetLineReturnsMinusOneAtBufferEnd) {
-    // NOTE: getLine does NOT stop at NUL — it scans until '\n'/'\r' or 128
-    // chars. The fixture zero-fills the 128-byte window so the scan is
-    // deterministic (on the firmware the same holds: it relies on the whole
-    // lineBuffer being in scope).
+    // FIXED (spec 2.5): getLine stops at NUL, so a short final line scans
+    // only its own bytes before returning the end-of-buffer -1.
     char line[160];
     memset(lineBuffer, 0, 160);
     strcpy(lineBuffer, "tail");
@@ -215,18 +213,22 @@ TEST_F(FileSystemUtilsTest, StofSecondDotIsIgnoredAsDigit) {
     EXPECT_EQ(read, 5);
 }
 
-TEST_F(FileSystemUtilsTest, StofSkipsLeadingGarbageAcrossNulQuirk) {
-    // QUIRK GOLDEN (deferred-work.md): the skip loop `while (!isNumber(*s))`
-    // does NOT stop at NUL. "abc\0...42" inside the 1024-byte parse buffer
-    // scans past the NUL and finds the '4' at offset 100 — charRead counts
-    // from the ORIGINAL pointer (102), not from the digit.
+TEST_F(FileSystemUtilsTest, StofStopsAtNul) {
+    // FIXED (spec 2.5): the skip loop `while (*s != 0 && !isNumber(*s))`
+    // stops at NUL. "abc\0...42" inside the 1024-byte parse buffer yields
+    // 0.0f with charRead at the NUL — it no longer scans past the terminator
+    // and picks up unrelated bytes further into the buffer.
     memset(lineBuffer, 0, sizeof(lineBuffer));
     strcpy(lineBuffer, "abc");
     lineBuffer[100] = '4';
     lineBuffer[101] = '2';
     int read = 0;
+    EXPECT_FLOAT_EQ(fsu.stof(lineBuffer, read), 0.0f);
+    EXPECT_EQ(read, 3);
+    // A NUL-terminated valid number still parses normally.
+    strcpy(lineBuffer, "42");
     EXPECT_FLOAT_EQ(fsu.stof(lineBuffer, read), 42.0f);
-    EXPECT_EQ(read, 102);
+    EXPECT_EQ(read, 2);
 }
 
 TEST_F(FileSystemUtilsTest, IsNumberAndIsSeparatorRanges) {
