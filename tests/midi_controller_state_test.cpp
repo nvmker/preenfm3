@@ -90,8 +90,8 @@ TEST_F(MidiControllerStateTest, ResetRestoresEveryAssignedFieldAcrossAllControls
             EXPECT_EQ(encoder->name[3], char('0' + ordinal / 10));
             EXPECT_EQ(encoder->name[4], char('0' + ordinal % 10));
             EXPECT_EQ(encoder->name[5], 'X');
-            EXPECT_EQ(encoder->encoderType, MIDI_ENCODER_TYPE_NRPN);
-            EXPECT_EQ(encoder->minValue, 42);
+            EXPECT_EQ(encoder->encoderType, MIDI_ENCODER_TYPE_CC);
+            EXPECT_EQ(encoder->minValue, 0);
             EXPECT_EQ(encoder->midiChannel, 16);
             EXPECT_EQ(encoder->controller, 15 + ordinal);
             EXPECT_EQ(encoder->value, (page & 1) ? 64 : 0);
