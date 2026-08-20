@@ -307,6 +307,37 @@ TEST_F(MidiControllerFileTest, UnknownVersionLeavesStateUnchanged) {
     expectEqual(expected.state, actual.state);
 }
 
+TEST_F(MidiControllerFileTest, TruncatedVersionOneBodyLeavesStateUnchanged) {
+    // Bugfix-phase3 item 3.4: a valid V1 prefix with a truncated body must not
+    // be deserialized — the record walk would read stale storageBuffer bytes.
+    ZeroedController expected;
+    ZeroedController actual;
+    differentiate(expected.state, 41);
+    differentiate(actual.state, 41);
+    std::vector<uint8_t> truncated(500, 0);
+    truncated[0] = MIDI_CONTROLLER_VERSION_1;
+    truncated[1] = 0;
+    fatfsShimInjectBytes(MIDI_CONTROLLER_STATE_NAME, truncated.data(), truncated.size());
+    file_.loadConfig(actual.state);
+    expectEqual(expected.state, actual.state);
+}
+
+TEST_F(MidiControllerFileTest, CloseFailureDuringLoadLeavesStateUnchanged) {
+    // A failed f_close makes load() return 0; the stale buffer must be
+    // rejected instead of deserialized (bugfix-phase3 item 3.4).
+    ZeroedController source;
+    ZeroedController expected;
+    ZeroedController actual;
+    differentiate(source.state, 43);
+    differentiate(expected.state, 43);
+    differentiate(actual.state, 43);
+    file_.saveConfig(source.state);
+
+    fatfsShimFailNext("f_close", FR_DISK_ERR);
+    file_.loadConfig(actual.state);
+    expectEqual(expected.state, actual.state);
+}
+
 TEST_F(MidiControllerFileTest, PropertySizedAndStrictlyLargerFilesLeaveStateUnchanged) {
     for (std::size_t invalidSize : {std::size_t(PROPERTY_FILE_SIZE),
                                     std::size_t(PROPERTY_FILE_SIZE + 1)}) {
