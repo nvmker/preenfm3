@@ -164,6 +164,11 @@ extern "C" FRESULT f_close(FIL* fp) {
 }
 
 extern "C" FRESULT f_read(FIL* fp, void* buff, UINT btr, UINT* br) {
+    FRESULT injected;
+    if (consumeFail("f_read", injected)) {
+        if (br) *br = 0;
+        return injected;
+    }
     OpenFile* of = lookup(fp);
     if (of == nullptr) return FR_INVALID_OBJECT;
     if (!of->read) {
