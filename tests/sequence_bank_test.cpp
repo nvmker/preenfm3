@@ -206,6 +206,14 @@ TEST_F(SequenceBankTest, IsReadOnlyFollowsStoredVersion) {
     strcpy(old.name, "oldbank");
     old.fileType = FILE_OK;
     EXPECT_TRUE(bank_.isReadOnly(&old));    // old version -> read-only
+
+    // Open-failure path: bankVersion stays at its initialized 0 and the
+    // return is a defined true (version != current), never stack garbage.
+    fatfsShimFailNext("f_open", FR_NO_PATH);
+    PFM3File missing;
+    strcpy(missing.name, "missing");
+    missing.fileType = FILE_OK;
+    EXPECT_TRUE(bank_.isReadOnly(&missing)); // open fail -> defined read-only
 }
 
 TEST_F(SequenceBankTest, IsCorrectFileRequiresSeqExtension) {

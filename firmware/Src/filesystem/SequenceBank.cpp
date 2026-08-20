@@ -104,7 +104,7 @@ void SequenceBank::setSequencer(Sequencer* sequencer) {
 
 bool SequenceBank::isReadOnly(struct PFM3File *file) {
     const char* fullSeqBankName = getFullName(file->name);
-    uint32_t bankVersion;
+    uint32_t bankVersion = 0;
     UINT byteRead;
     this->sequencer = sequencer;
     if (f_open(&sequenceFile, fullSeqBankName, FA_READ) == FR_OK) {
@@ -124,7 +124,7 @@ void SequenceBank::loadSequence(const struct PFM3File* bank, int patchNumber) {
     }
 
     const char* fullSeqBankName = getFullName(bank->name);
-    uint32_t bankVersion;
+    uint32_t bankVersion = 0;
     UINT byteRead;
     if (f_open(&sequenceFile, fullSeqBankName, FA_READ) == FR_OK) {
         f_read(&sequenceFile, (void *)&bankVersion, 4, &byteRead);
@@ -181,7 +181,7 @@ const char* SequenceBank::loadSequenceName(const struct PFM3File* bank, int patc
     }
 
     const char* fullSeqBankName = getFullName(bank->name);
-    uint32_t bankVersion;
+    uint32_t bankVersion = 0;
     UINT byteRead;
 
     if (f_open(&sequenceFile, fullSeqBankName, FA_READ) == FR_OK) {
