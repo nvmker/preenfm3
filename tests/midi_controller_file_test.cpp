@@ -7,7 +7,6 @@
 
 #include <cstddef>
 #include <cstring>
-#include <new>
 #include <type_traits>
 #include <vector>
 
@@ -164,6 +163,128 @@ TEST_F(MidiControllerFileTest, SaveOverwritesExistingConfiguration) {
     EXPECT_EQ(fatfsShimFileSize(MIDI_CONTROLLER_STATE_NAME), 1202u);
     file_.loadConfig(restored.state);
     expectEqual(second.state, restored.state);
+}
+
+TEST_F(MidiControllerFileTest, WriteFailureDuringSaveLeavesOriginalIntact) {
+    // Fixed (bugfix-phase1 item 1.4): saveConfig writes a temp file first and
+    // only rotates the real config after a complete verified write. An I/O
+    // failure must leave the last valid config loadable (the old
+    // remove()-then-save() destroyed it).
+    ZeroedController good;
+    ZeroedController next;
+    ZeroedController restored;
+    differentiate(good.state, 3);
+    differentiate(next.state, 7);
+    file_.saveConfig(good.state);
+    std::vector<uint8_t> before;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, before));
+
+    fatfsShimFailNext("f_write", FR_DENIED);  // the tmp write fails mid-save
+    file_.saveConfig(next.state);
+
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, after));
+    EXPECT_EQ(after, before) << "failed save must not touch the stored config";
+    file_.loadConfig(restored.state);
+    expectEqual(good.state, restored.state);  // last good config still loads
+    // leftover tmp is an accepted orphan; a subsequent successful save reuses it
+    file_.saveConfig(next.state);
+    file_.loadConfig(restored.state);
+    expectEqual(next.state, restored.state);
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/MidiCtl1.tmp"));
+}
+
+TEST_F(MidiControllerFileTest, RenameFailureDuringSaveLeavesOriginalIntact) {
+    // Failure while rotating the canonical file to the backup leaves the
+    // original untouched and the verified temp available for diagnosis/retry.
+    ZeroedController good;
+    ZeroedController next;
+    ZeroedController restored;
+    differentiate(good.state, 13);
+    differentiate(next.state, 17);
+    file_.saveConfig(good.state);
+    std::vector<uint8_t> before;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, before));
+
+    fatfsShimFailNext("f_rename", FR_DENIED);
+    file_.saveConfig(next.state);
+
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, after));
+    EXPECT_EQ(after, before);
+    EXPECT_TRUE(fatfsShimFileExists("0:/pfm3/MidiCtl1.tmp"))
+        << "failed rename may leave the tmp orphan until recovery";
+    file_.loadConfig(restored.state);
+    expectEqual(good.state, restored.state);
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/MidiCtl1.tmp"));
+}
+
+TEST_F(MidiControllerFileTest, FirstSavePromotionFailureRecoversVerifiedTempOnLoad) {
+    ZeroedController source;
+    ZeroedController restored;
+    differentiate(source.state, 21);
+
+    fatfsShimFailNext("f_rename", FR_DISK_ERR);
+    file_.saveConfig(source.state);
+    EXPECT_FALSE(fatfsShimFileExists(MIDI_CONTROLLER_STATE_NAME));
+    EXPECT_TRUE(fatfsShimFileExists("0:/pfm3/MidiCtl1.tmp"));
+
+    file_.loadConfig(restored.state);
+    expectEqual(source.state, restored.state);
+    EXPECT_TRUE(fatfsShimFileExists(MIDI_CONTROLLER_STATE_NAME));
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/MidiCtl1.tmp"));
+}
+
+TEST_F(MidiControllerFileTest, InterruptedRotationRestoresLastKnownGoodBackup) {
+    ZeroedController good;
+    ZeroedController next;
+    ZeroedController restored;
+    differentiate(good.state, 23);
+    differentiate(next.state, 29);
+
+    file_.saveConfig(good.state);
+    std::vector<uint8_t> goodBytes;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, goodBytes));
+    file_.saveConfig(next.state);
+    std::vector<uint8_t> nextBytes;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, nextBytes));
+
+    // Power loss after canonical -> backup but before temp -> canonical.
+    fatfsShimReset();
+    fatfsShimMkdir("0:/pfm3");
+    fatfsShimInjectBytes("0:/pfm3/MidiCtl1.bak", goodBytes.data(), goodBytes.size());
+    fatfsShimInjectBytes("0:/pfm3/MidiCtl1.tmp", nextBytes.data(), nextBytes.size());
+
+    file_.loadConfig(restored.state);
+    expectEqual(good.state, restored.state);
+    EXPECT_TRUE(fatfsShimFileExists(MIDI_CONTROLLER_STATE_NAME));
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/MidiCtl1.bak"));
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/MidiCtl1.tmp"));
+}
+
+TEST_F(MidiControllerFileTest, CompletedPromotionKeepsNewConfigAndCleansBackup) {
+    ZeroedController good;
+    ZeroedController next;
+    ZeroedController restored;
+    differentiate(good.state, 31);
+    differentiate(next.state, 37);
+
+    file_.saveConfig(good.state);
+    std::vector<uint8_t> goodBytes;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, goodBytes));
+    file_.saveConfig(next.state);
+    std::vector<uint8_t> nextBytes;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, nextBytes));
+
+    // Power loss after temp -> canonical but before backup cleanup.
+    fatfsShimReset();
+    fatfsShimMkdir("0:/pfm3");
+    fatfsShimInjectBytes(MIDI_CONTROLLER_STATE_NAME, nextBytes.data(), nextBytes.size());
+    fatfsShimInjectBytes("0:/pfm3/MidiCtl1.bak", goodBytes.data(), goodBytes.size());
+
+    file_.loadConfig(restored.state);
+    expectEqual(next.state, restored.state);
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/MidiCtl1.bak"));
 }
 
 TEST_F(MidiControllerFileTest, MissingFileLeavesStateUnchanged) {

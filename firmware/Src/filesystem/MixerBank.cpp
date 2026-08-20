@@ -105,7 +105,7 @@ void MixerBank::removeDefaultMixer() {
 bool MixerBank::saveDefaultMixer() {
     bool savedOK = true;
 
-    FRESULT fatFSResult = f_open(&mixerFile, getFileName(DEFAULT_MIXER), FA_OPEN_ALWAYS | FA_WRITE);
+    FRESULT fatFSResult = f_open(&mixerFile, getFileName(DEFAULT_MIXER), FA_CREATE_ALWAYS | FA_WRITE);
     if (fatFSResult == FR_OK) {
         f_lseek(&mixerFile, 0);
         savedOK = saveMixerData(&mixerFile, 0, this->mixerState);
