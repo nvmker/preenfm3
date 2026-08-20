@@ -213,6 +213,8 @@ extern "C" FRESULT f_write(FIL* fp, const void* buff, UINT btw, UINT* bw) {
 extern "C" FRESULT f_lseek(FIL* fp, FSIZE_t ofs) {
     OpenFile* of = lookup(fp);
     if (of == nullptr) return FR_INVALID_OBJECT;
+    FRESULT injected;
+    if (consumeFail("f_lseek", injected)) return injected;
     if (ofs > kShimMaxFileSize) return FR_INVALID_PARAMETER;
     fp->fptr = ofs; /* past-EOF seek allowed; reads clamp, writes extend */
     return FR_OK;
