@@ -142,15 +142,19 @@ float* ScalaFile::applyScalaScale(MixerState* mixerState, int instrumentNumber) 
         return diatonicScaleFrequency;
     }
 
-    float octaveRatio = interval[instrumentNumber][numberOfDegrees[instrumentNumber]-1];
-    if (!isfinite(octaveRatio) || octaveRatio <= 0.0f) {
-        // Degenerate final interval (NaN from a garbage ratio like "x/y" = 0/0,
-        // inf from "3/0", 0 or negative): the octave division would produce
-        // inf / collapse to 0 — same failure class as the truncated-file
-        // division. Diatonic fallback. (A plain garbage CENTS line is NOT
-        // degenerate: stof quirk yields 0 -> ratio 1.0, a valid unison.)
-        return diatonicScaleFrequency;
+    for (int i = 0; i < numberOfDegrees[instrumentNumber]; i++) {
+        float ratio = interval[instrumentNumber][i];
+        if (!isfinite(ratio) || ratio <= 0.0f) {
+            // Degenerate interval (NaN from a garbage ratio like "x/y" = 0/0,
+            // inf from "3/0", 0 or negative): ANY interval like this makes the
+            // table build produce inf / collapse-to-0 frequencies, not just the
+            // final (octave) one. Diatonic fallback. (A plain garbage CENTS
+            // line is NOT degenerate: stof quirk yields 0 -> ratio 1.0, a
+            // valid unison.)
+            return diatonicScaleFrequency;
+        }
     }
+    float octaveRatio = interval[instrumentNumber][numberOfDegrees[instrumentNumber]-1];
 
     float *instrumentScalaFrequency = scalaFrequency[instrumentNumber];
 
