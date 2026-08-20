@@ -170,6 +170,31 @@ TEST_F(MidiControllerStateTest, EncoderExplicitChannelOverridesGlobalChannel) {
     EXPECT_EQ((std::vector<uint8_t>{0xB7, 24, 65}), drain());
 }
 
+TEST_F(MidiControllerStateTest, HostileStoredChannelFailsSafeToGlobalChannel) {
+    // Bugfix-phase3 item 3.2: a persisted channel > 15 would emit an invalid
+    // status byte (0xB0 + 200); any stored value > 15 resolves to global.
+    MidiEncoder* encoder = state_->getEncoder(0, 0);
+    encoder->midiChannel = 200;
+    state_->encoderDelta(0, 5, 0, 1);
+    EXPECT_EQ((std::vector<uint8_t>{0xB5, 16, 1}), drain());
+
+    MidiButton* button = state_->getButton(0, 0);
+    button->buttonType = MIDI_BUTTON_TYPE_PUSH;
+    button->midiChannel = 17;
+    state_->buttonDown(0, 6, 0);
+    EXPECT_EQ((std::vector<uint8_t>{0xB6, 60, 127}), drain());
+    EXPECT_TRUE(state_->buttonUp(0, 6, 0));
+    EXPECT_EQ((std::vector<uint8_t>{0xB6, 60, 0}), drain());
+
+    // Sentinel 16 still means global, and 0-15 still win over global.
+    encoder->midiChannel = 16;
+    state_->encoderDelta(0, 2, 0, 1);
+    EXPECT_EQ((std::vector<uint8_t>{0xB2, 16, 2}), drain());
+    encoder->midiChannel = 15;
+    state_->encoderDelta(0, 2, 0, 1);
+    EXPECT_EQ((std::vector<uint8_t>{0xBF, 16, 3}), drain());
+}
+
 TEST_F(MidiControllerStateTest, PushDownAndUpEmitOnThenOffAndUpReturnsTrue) {
     state_->buttonDown(0, 4, 0);
     EXPECT_EQ((std::vector<uint8_t>{0xB4, 60, 127}), drain());

@@ -86,6 +86,9 @@ public:
 private:
     void sendMidiDin5Out();
     void strcpy(char* dest, const char *src, int len);
+    static uint8_t resolveMidiChannel_(uint8_t stored, uint8_t global) {
+        return stored <= 15 ? stored : global;
+    }
     MidiPage midiPage_[MIDI_NUMBER_OF_PAGES];
 };
 
