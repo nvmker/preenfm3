@@ -97,10 +97,11 @@ int PreenFMFileType::load(const char *fileName, int seek, void *bytes, int size)
     int toReturn = 0;
     if (fatFSResult == FR_OK) {
 
+        FRESULT seekResult = FR_OK;
         if (seek != 0) {
-            f_lseek(&file, seek);
+            seekResult = f_lseek(&file, seek);
         }
-        if (fatFSResult == FR_OK) {
+        if (seekResult == FR_OK) {
             UINT byteRead;
             fatFSResult = f_read(&file, bytes, size, &byteRead);
             if (fatFSResult == FR_OK && byteRead == size) {
@@ -151,10 +152,11 @@ int PreenFMFileType::save(const char *fileName, int seek, void *bytes, int size)
     int toReturn = 0;
     if (fatFSResult == FR_OK) {
 
+        FRESULT seekResult = FR_OK;
         if (seek != 0) {
-            f_lseek(&file, seek);
+            seekResult = f_lseek(&file, seek);
         }
-        if (fatFSResult == FR_OK) {
+        if (seekResult == FR_OK) {
             UINT byteWritten;
             fatFSResult = f_write(&file, bytes, size, &byteWritten);
             if (fatFSResult == FR_OK && byteWritten == size) {

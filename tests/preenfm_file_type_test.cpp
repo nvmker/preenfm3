@@ -438,3 +438,28 @@ TEST_F(PreenFMFileTypeTest, ZeroEnvCurveFlashFallsBackToDefaultCurves) {
     EXPECT_FLOAT_EQ(p.env6Curve.releaseCurve, 0.0f);
     EXPECT_FLOAT_EQ(p.env6Curve.attackCurve, 1.0f);
 }
+
+
+// 3.8: a failed f_lseek must fail the save/load closed — no write ever lands
+// at offset 0 (silent wrong-slot clobber) and load returns 0.
+TEST_F(PreenFMFileTypeTest, SaveWithFailedLseekReturnsZeroAndDoesNotClobberOffsetZero) {
+    const uint8_t original[8] = {'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O'};
+    fatfsShimInjectBytes("0:/pfm3/test/data.tst", original, sizeof(original));
+    fatfsShimFailNext("f_lseek", FR_DISK_ERR);
+    uint32_t payload = 0xAABBCCDD;
+    EXPECT_EQ(tft_.save("data.tst", 4, &payload, 4), 0);
+    std::vector<uint8_t> out;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/test/data.tst", out));
+    EXPECT_EQ(out, std::vector<uint8_t>(original, original + 8))
+        << "offset 0 must stay intact when the seek fails";
+}
+
+TEST_F(PreenFMFileTypeTest, LoadWithFailedLseekReturnsZero) {
+    const uint8_t content[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    fatfsShimInjectBytes("0:/pfm3/test/data.tst", content, sizeof(content));
+    fatfsShimFailNext("f_lseek", FR_DISK_ERR);
+    uint8_t buf[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+    EXPECT_EQ(tft_.load("data.tst", 4, buf, 4), 0);
+    // No read happened at offset 0 either.
+    EXPECT_EQ(buf[0], 0xFF);
+}
