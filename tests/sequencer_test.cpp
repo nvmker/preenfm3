@@ -652,6 +652,12 @@ TEST_F(SequencerPhase2, ChangeCurrentNoteCreatesNoteOnEmptyPattern) {
     uint64_t step = seq_->getStepData(0, 0);
     EXPECT_EQ((step >> 16) & 0xFF, 100);  // values[2] velocity
     EXPECT_EQ((step >> 24) & 0xFF, 64);   // values[3] note
+    // Fixed (spec 2.4): the local StepSeqValue is zero-initialized, so the
+    // unused note slots values[4..7] are defined zeros, not stack garbage.
+    for (int n = 4; n <= 7; n++) {
+        EXPECT_EQ((step >> (8 * n)) & 0xFF, 0)
+            << "unused note slot values[" << n << "] must be a defined zero";
+    }
 }
 
 TEST_F(SequencerPhase2, ChangeCurrentNoteEditsAndRejectsOutOfRange) {

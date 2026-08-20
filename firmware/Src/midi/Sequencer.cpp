@@ -971,8 +971,8 @@ bool Sequencer::createNewNoteIfEmpty(int instrument, int stepCursor, int stepSiz
         }
     }
 
-    // Create new Note
-    StepSeqValue newNote;
+    // Create new Note (zero-init: bytes 4-7 must be defined, not stack garbage)
+    StepSeqValue newNote = {};
     newNote.unique = stepUniqueValue_[instrument];
     newNote.values[2] = 100;
     newNote.values[3] = 64;
