@@ -123,6 +123,10 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
                 p += 4;
                 encoder->encoderType = (MidiEncoderType)*(p++);
                 encoder->midiChannel = *(p++);
+                if (encoder->midiChannel > 16) {
+                    // Corrupt byte: fail safe to the 'use global' sentinel.
+                    encoder->midiChannel = 16;
+                }
                 encoder->controller = *(p++);
                 encoder->value = *(p++);
                 encoder->maxValue = *(p++);
@@ -138,6 +142,10 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
                 p += 4;
                 button->buttonType = (MidiButtonType)*(p++);
                 button->midiChannel = *(p++);
+                if (button->midiChannel > 16) {
+                    // Corrupt byte: fail safe to the 'use global' sentinel.
+                    button->midiChannel = 16;
+                }
                 button->controller = *(p++);
                 button->value = *(p++);
                 button->valueOff = *(p++);
