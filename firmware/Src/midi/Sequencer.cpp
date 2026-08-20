@@ -420,19 +420,19 @@ void Sequencer::processActionBetwen(int instrument, uint16_t startTimer, uint16_
                 if ((stepNotes[seqNumber][currentIndex].full & 0xffffff00) == 0l) {
                     if ((stepNotes[seqNumber][previousIndex].full & 0xffffff00) != 0l) {
                         // Note off
-                        for (int n = 0; stepNotes[seqNumber][previousIndex].values[3 + n] != 0 && n < 6; n++) {
+                        for (int n = 0; n < 5 && stepNotes[seqNumber][previousIndex].values[3 + n] != 0; n++) {
                             synth_->noteOffFromSequencer(instrument, stepNotes[seqNumber][previousIndex].values[3 + n] + transpose_[instrument]);
                         }
                     }
                 } else {
                     // Note off
                     if ((stepNotes[seqNumber][previousIndex].full & 0xffffff00) != 0l) {
-                        for (int n = 0; stepNotes[seqNumber][previousIndex].values[3 + n] != 0 && n < 6; n++) {
+                        for (int n = 0; n < 5 && stepNotes[seqNumber][previousIndex].values[3 + n] != 0; n++) {
                             synth_->noteOffFromSequencer(instrument, stepNotes[seqNumber][previousIndex].values[3 + n] + transpose_[instrument]);
                         }
                     }
                     // Note on
-                    for (int n = 0; stepNotes[seqNumber][currentIndex].values[3 + n] != 0 && n < 6; n++) {
+                    for (int n = 0; n < 5 && stepNotes[seqNumber][currentIndex].values[3 + n] != 0; n++) {
                         synth_->noteOnFromSequencer(instrument, stepNotes[seqNumber][currentIndex].values[3 + n]  + transpose_[instrument],
                             stepNotes[seqNumber][currentIndex].values[2]);
                     }
@@ -971,8 +971,8 @@ bool Sequencer::createNewNoteIfEmpty(int instrument, int stepCursor, int stepSiz
         }
     }
 
-    // Create new Note
-    StepSeqValue newNote;
+    // Create new Note (zero-init: bytes 4-7 must be defined, not stack garbage)
+    StepSeqValue newNote = {};
     newNote.unique = stepUniqueValue_[instrument];
     newNote.values[2] = 100;
     newNote.values[3] = 64;

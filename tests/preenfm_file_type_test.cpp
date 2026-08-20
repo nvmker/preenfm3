@@ -233,15 +233,38 @@ TEST_F(PreenFMFileTypeTest, NameExistsComparesBaseCaseInsensitive) {
 
 TEST_F(PreenFMFileTypeTest, AddEmptyFileMarksListingStale) {
     EXPECT_EQ(tft_.getFileIndex("notlisted"), -1);  // triggers initFiles
-    const PFM3File* added = tft_.addEmptyFile("brandnew1234"); // 12 chars: addEmptyFile copies 12
+    const PFM3File* added = tft_.addEmptyFile("short");  // < 12 chars: copy must NUL-pad, not over-read
     ASSERT_NE(added, nullptr);
-    EXPECT_STREQ(added->name, "brandnew1234");
+    EXPECT_STREQ(added->name, "short");
     EXPECT_EQ(added->fileType, FILE_OK);
     EXPECT_FALSE(tft_.initialized());
     // QUIRK ADJACENT: any lazy re-init (getFile/getFileIndex) re-enumerates
     // from the folder and DROPS the just-added empty entry until the caller
     // saves a real file under that name.
-    EXPECT_EQ(tft_.getFileIndex("brandnew1234"), -1);
+    EXPECT_EQ(tft_.getFileIndex("short"), -1);
+}
+
+TEST_F(PreenFMFileTypeTest, AddEmptyFileExact12NameIsCopiedFullAndTerminated) {
+    // Review patch (P4): the exact-12 full-copy case was retired with the
+    // padded fixture — keep it pinned. name is char[13]: all 12 bytes copied,
+    // 13th byte NUL-terminated (previously the stale byte from the listing
+    // stayed), so the stored name is always a valid C string.
+    EXPECT_EQ(tft_.getFileIndex("notlisted"), -1);  // triggers initFiles
+    // Dirty the first free slot's 13th byte so a missing termination shows.
+    for (int k = 0; k < 4; k++) {
+        files_[k].name[12] = 'X';
+        files_[k].fileType = FILE_EMPTY;
+    }
+    const PFM3File* added = tft_.addEmptyFile("brandnew1234");  // exactly 12 chars
+    ASSERT_NE(added, nullptr);
+    EXPECT_EQ(memcmp(added->name, "brandnew1234", 12), 0);
+    EXPECT_EQ(added->name[12], '\0');
+}
+
+TEST_F(PreenFMFileTypeTest, AddEmptyFileNullNameIsRejected) {
+    // Review patch (P2): strnlen(NULL) is UB; the add fails cleanly instead.
+    EXPECT_EQ(tft_.getFileIndex("notlisted"), -1);  // triggers initFiles
+    EXPECT_EQ(tft_.addEmptyFile(nullptr), nullptr);
 }
 
 TEST_F(PreenFMFileTypeTest, SortAndSwapHelpers) {
@@ -281,18 +304,15 @@ TEST_F(PreenFMFileTypeTest, EnumerateSubDirsSortedDepth1) {
 }
 
 TEST_F(PreenFMFileTypeTest, AddEmptyFileWithFullListingReturnsNull) {
-    // QUIRK ADJACENT (deferred-work.md): the find loop reads
-    // myFiles_[k].fileType BEFORE the k < numberOfFilesMax_ check, so a
-    // FULL listing reads one past the array. This fixture pads the array by
-    // one slot (17 declared, max 16) so the one-past read stays in bounds —
-    // the firmware's fixed global arrays do not have that padding, which is
-    // exactly why the quirk is deferred rather than driven here.
-    struct PFM3File padded[17];
-    memset(padded, 0, sizeof(padded));
-    tft_.setListing(padded, 16);
+    // Fixed: the find loop checks k < numberOfFilesMax_ BEFORE reading
+    // myFiles_[k].fileType, so a full listing no longer reads one past the
+    // array — no padding slot needed (ASAN would catch the regression).
+    struct PFM3File files[16];
+    memset(files, 0, sizeof(files));
+    tft_.setListing(files, 16);
     tft_.initFiles();
-    for (int k = 0; k < 16; k++) padded[k].fileType = FILE_OK;
-    EXPECT_EQ(tft_.addEmptyFile("whatever12345"), nullptr);
+    for (int k = 0; k < 16; k++) files[k].fileType = FILE_OK;
+    EXPECT_EQ(tft_.addEmptyFile("full"), nullptr);
 }
 
 TEST_F(PreenFMFileTypeTest, ReadNextFileIsAStubReturningZero) {

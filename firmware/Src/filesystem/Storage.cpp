@@ -19,13 +19,15 @@
 #include <math.h>
 
 #include "Storage.h"
+#include "StorageSizes.h"
 #include "Menu.h"
 
 
 #ifndef PFM3_HOST
 __attribute__((section(".ram_d2b")))
 #endif
-char lineBuffer[1024];
+char lineBuffer[PFM3_LINE_BUFFER_SIZE];
+static_assert(sizeof(lineBuffer) == PFM3_LINE_BUFFER_SIZE, "lineBuffer size must match the shared constant");
 
 void Storage::init(struct OneSynthParams*timbre1, struct OneSynthParams*timbre2, struct OneSynthParams*timbre3, struct OneSynthParams*timbre4, struct OneSynthParams*timbre5, struct OneSynthParams*timbre6) {
     mixerBank.setFileSystemUtils(&fsu);
