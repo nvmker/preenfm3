@@ -546,18 +546,12 @@ void FxBus::paramChanged() {
  */
 void FxBus::mixAdd(float *inStereo, float send, float reverbLevel) {
     if (send > 0) {
-        // send can exceed 1.0f from a corrupt bank or external MIDI: clamp
-        // the derived index (not send itself, which feeds nothing else here)
-        // so the panTable[256] read stays in bounds.
-        int panIndex = (int)(send * 255);
-        if (panIndex > 255) {
-            panIndex = 255;
-        } else if (panIndex < 0) {
-            // +inf send passes the send > 0 gate but (int)(inf * 255) is UB:
-            // INT_MIN on the host. NaN is excluded by the gate (NaN > 0 is
-            // false). Clamp the low side too so the read is defined everywhere.
-            panIndex = 0;
-        }
+        // send can exceed 1.0f from a corrupt bank or external MIDI. Clamp
+        // before converting so infinity and values outside int range never
+        // trigger undefined float-to-int conversion. NaN is excluded by the
+        // send > 0 gate.
+        const int panIndex =
+            send >= 1.0f ? 255 : static_cast<int>(send * 255.0f);
         const float level = - panTable[panIndex] * 0.0625f * reverbLevel;
         
         totalSent += level;

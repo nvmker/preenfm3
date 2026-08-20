@@ -41,6 +41,7 @@
 #include <cstdint>
 #include <cmath>
 #include <cstring>
+#include <limits>
 
 #include "FxBus.h"  // firmware-under-test (host-compilable, no seam needed)
 
@@ -133,6 +134,14 @@ TEST_F(FxBusTest, MixAddAccumulatesPannedLevelIntoBlock) {
 
     bus_->mixSumInit();
     bus_->mixAdd(in_, /*send=*/1000.0f, /*reverbLevel=*/1.0f);
+    EXPECT_FLOAT_EQ(bus_->getSampleBlock()[0], in_[0] * levelClamped);
+
+    bus_->mixSumInit();
+    bus_->mixAdd(in_, std::numeric_limits<float>::infinity(), 1.0f);
+    EXPECT_FLOAT_EQ(bus_->getSampleBlock()[0], in_[0] * levelClamped);
+
+    bus_->mixSumInit();
+    bus_->mixAdd(in_, std::numeric_limits<float>::max(), 1.0f);
     EXPECT_FLOAT_EQ(bus_->getSampleBlock()[0], in_[0] * levelClamped);
 }
 
