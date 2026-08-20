@@ -123,6 +123,17 @@ TEST_F(FxBusTest, MixAddAccumulatesPannedLevelIntoBlock) {
     // And the pan table really levels: mid send is quieter than full send.
     EXPECT_GT(level1 * level1, 0.0f);
     EXPECT_LT(std::fabs(level2), std::fabs(level1));
+
+    // FIXED (spec 2.2): send > 1 (corrupt bank / external MIDI) clamps the
+    // derived panTable index to 255 — no out-of-bounds table read.
+    bus_->mixSumInit();
+    bus_->mixAdd(in_, /*send=*/1.5f, /*reverbLevel=*/1.0f);
+    const float levelClamped = -panTable[255] * 0.0625f * 1.0f;
+    EXPECT_FLOAT_EQ(bus_->getSampleBlock()[0], in_[0] * levelClamped);
+
+    bus_->mixSumInit();
+    bus_->mixAdd(in_, /*send=*/1000.0f, /*reverbLevel=*/1.0f);
+    EXPECT_FLOAT_EQ(bus_->getSampleBlock()[0], in_[0] * levelClamped);
 }
 
 // send <= 0 is fully skipped: totalSent stays 0, so BOTH mixSumInit and
