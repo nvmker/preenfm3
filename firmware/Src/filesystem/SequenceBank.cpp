@@ -108,7 +108,11 @@ bool SequenceBank::isReadOnly(struct PFM3File *file) {
     UINT byteRead;
     this->sequencer = sequencer;
     if (f_open(&sequenceFile, fullSeqBankName, FA_READ) == FR_OK) {
-        f_read(&sequenceFile, (void *)&bankVersion, 4, &byteRead);
+        if (f_read(&sequenceFile, (void *)&bankVersion, 4, &byteRead) != FR_OK || byteRead != 4) {
+            // Short/failed version-header read: bankVersion is unusable —
+            // same safe path as an unknown version (read-only).
+            bankVersion = 0;
+        }
         f_close(&sequenceFile);
     }
     if (bankVersion == SEQUENCE_BANK_CURRENT_VERSION) {
@@ -127,7 +131,10 @@ void SequenceBank::loadSequence(const struct PFM3File* bank, int patchNumber) {
     uint32_t bankVersion = 0;
     UINT byteRead;
     if (f_open(&sequenceFile, fullSeqBankName, FA_READ) == FR_OK) {
-        f_read(&sequenceFile, (void *)&bankVersion, 4, &byteRead);
+        if (f_read(&sequenceFile, (void *)&bankVersion, 4, &byteRead) != FR_OK || byteRead != 4) {
+            // Short/failed version-header read: skip version dispatch.
+            bankVersion = 0;
+        }
 
         switch (bankVersion) {
             case SEQUENCE_BANK_VERSION1:
@@ -185,7 +192,10 @@ const char* SequenceBank::loadSequenceName(const struct PFM3File* bank, int patc
     UINT byteRead;
 
     if (f_open(&sequenceFile, fullSeqBankName, FA_READ) == FR_OK) {
-        f_read(&sequenceFile, (void *)&bankVersion, 4, &byteRead);
+        if (f_read(&sequenceFile, (void *)&bankVersion, 4, &byteRead) != FR_OK || byteRead != 4) {
+            // Short/failed version-header read: skip version dispatch.
+            bankVersion = 0;
+        }
 
         switch (bankVersion) {
             case SEQUENCE_BANK_VERSION1: {
@@ -311,11 +321,15 @@ bool SequenceBank::saveDefaultSequence() {
 }
 
 bool SequenceBank::loadDefaultSequence() {
-	uint32_t bankVersion;
+	uint32_t bankVersion = 0;
     UINT byteRead;
 
     if (f_open(&sequenceFile, getFileName(DEFAULT_SEQUENCE), FA_READ) == FR_OK) {
-        f_read(&sequenceFile, (void *)&bankVersion, 4, &byteRead);
+        if (f_read(&sequenceFile, (void *)&bankVersion, 4, &byteRead) != FR_OK || byteRead != 4) {
+            // Short/failed version-header read: skip version dispatch
+            // (bankVersion was previously used UNINITIALIZED here on failure).
+            bankVersion = 0;
+        }
 
         switch (bankVersion) {
             case SEQUENCE_BANK_VERSION1:

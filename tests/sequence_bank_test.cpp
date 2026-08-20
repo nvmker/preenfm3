@@ -216,6 +216,46 @@ TEST_F(SequenceBankTest, IsReadOnlyFollowsStoredVersion) {
     EXPECT_TRUE(bank_.isReadOnly(&missing)); // open fail -> defined read-only
 }
 
+TEST_F(SequenceBankTest, ShortVersionHeaderIsRejected) {
+    // A 1-byte file holding a plausible version byte: the readers used to
+    // dispatch on a partially-filled bankVersion and consume truncated data.
+    // Now every reader requires f_read == FR_OK && byteRead == 4 first.
+    std::vector<uint8_t> one(1, 0x01);
+    fatfsShimInjectBytes("0:/pfm3/short", one.data(), one.size());
+    PFM3File bank;
+    strcpy(bank.name, "short");
+    bank.fileType = FILE_OK;
+
+    // version dispatch skipped -> same safe paths as an unknown version
+    EXPECT_TRUE(bank_.isReadOnly(&bank));            // read-only
+    EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");  // fallback name
+
+    // loadSequence must not touch sequencer state from truncated data
+    StampState();
+    memset(actions, 0, sizeof(actions));
+    memset(stepNotes, 0, sizeof(stepNotes));
+    bank_.loadSequence(&bank, 0);
+    EXPECT_EQ(actions[0].when, 0);                   // rejected, nothing loaded
+    EXPECT_EQ(stepNotes[3][100].full, 0u);
+
+    // loadDefaultSequence on a 1-byte default file: no-op, still returns true
+    fatfsShimInjectBytes("0:/pfm3/seq.dfl", one.data(), one.size());
+    EXPECT_TRUE(bank_.loadDefaultSequence());
+    EXPECT_EQ(actions[0].when, 0);
+}
+
+TEST_F(SequenceBankTest, FailedVersionHeaderReadIsRejected) {
+    // Same class, other door: the header read itself fails (f_read hook).
+    bank_.createSequenceFile("mybank123456"); // 12 chars: addEmptyFile copies 12
+    PFM3File bank;
+    strcpy(bank.name, "mybank123456");
+    bank.fileType = FILE_OK;
+    fatfsShimFailNext("f_read", FR_DISK_ERR);
+    EXPECT_TRUE(bank_.isReadOnly(&bank));            // fail-safe read-only
+    fatfsShimFailNext("f_read", FR_DISK_ERR);
+    EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");
+}
+
 TEST_F(SequenceBankTest, IsCorrectFileRequiresSeqExtension) {
     // isCorrectFile scans name[1..8] for '.' unconditionally: fixtures live
     // in 16-byte buffers (the firmware always passes FILINFO.fname[256]).
