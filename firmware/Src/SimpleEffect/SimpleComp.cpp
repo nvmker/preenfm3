@@ -41,6 +41,10 @@ namespace chunkware_simple
 		, ratio_( 1.0 )
 		, envdB_( DC_OFFSET )
 		, keydBMaxTmp_( -100.0)
+		, previousGain_( 0.0f )
+		, keydBMax_( 0.0f )
+		, gr_( 0.0f )
+		, keydBMaxCpt_( 0 )
 	{
 
 	}
