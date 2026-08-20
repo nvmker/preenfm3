@@ -41,6 +41,8 @@ void MidiControllerState::resetState() {
             midiPage_[pageNumber].encoder_[i].controller = 15 + cpt;
             midiPage_[pageNumber].encoder_[i].value = (pageNumber & 0x1) == 0 ? 0 : 64;
             midiPage_[pageNumber].encoder_[i].midiChannel = 16;
+            midiPage_[pageNumber].encoder_[i].encoderType = MIDI_ENCODER_TYPE_CC;
+            midiPage_[pageNumber].encoder_[i].minValue = 0;
             midiPage_[pageNumber].encoder_[i].maxValue = 127;
 
             midiPage_[pageNumber].button_[i].controller = 59 + cpt;

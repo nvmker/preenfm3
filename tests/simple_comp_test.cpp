@@ -178,6 +178,51 @@ TEST_F(SimpleCompTest, ExpansionReturnsBoostButLeavesSamplesUnchanged) {
     expectBlockExactlyEqual(block, original);
 }
 
+TEST(SimpleCompStackInstanceTest, FreshStackInstanceMatchesBssInitializedGolden) {
+    // The constructor now explicitly zeroes previousGain_/keydBMax_/gr_/
+    // keydBMaxCpt_, so a plain stack instance (uninitialized storage) must
+    // behave identically to the BSS-backed fixture instance.
+    SimpleComp stackComp;
+    stackComp.initRuntime();
+    stackComp.setThresh(-6.0f);
+    stackComp.setRatio(0.25f);
+    float block[64];
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        block[sample] = (sample & 1U) ? -0.125f : 0.25f;
+    }
+    float original[64];
+    std::copy(block, block + 64, original);
+
+    const float gain = stackComp.processPfm3(block);
+    EXPECT_FLOAT_EQ(gain, 1.0f);
+    ASSERT_TRUE(std::isfinite(gain));
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        ASSERT_TRUE(std::isfinite(block[sample]));
+        EXPECT_EQ(block[sample], original[sample]) << "sample " << sample;
+    }
+
+    // Two fresh stack instances must produce identical output blocks.
+    float a[64], b[64];
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        a[sample] = b[sample] = (sample & 1U) ? -0.5f : 0.75f;
+    }
+    SimpleComp compA, compB;
+    compA.initRuntime(); compB.initRuntime();
+    for (SimpleComp* c : {&compA, &compB}) {
+        c->setSampleRate(1000.0f);
+        c->setAttack(1.0f);
+        c->setRelease(20.0f);
+        c->setThresh(-12.0f);
+        c->setRatio(0.25f);
+    }
+    const float gainA = compA.processPfm3(a);
+    const float gainB = compB.processPfm3(b);
+    EXPECT_EQ(gainA, gainB);
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        EXPECT_EQ(a[sample], b[sample]) << "sample " << sample;
+    }
+}
+
 TEST(SimpleCompRmsTest, RuntimeConfigurationDelegatesToEnvelopeDetectors) {
     using SimpleCompRms = chunkware_simple::SimpleCompRms;
     typename std::aligned_storage<sizeof(SimpleCompRms), alignof(SimpleCompRms)>::type storage;
