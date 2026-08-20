@@ -652,6 +652,12 @@ TEST_F(SequencerPhase2, ChangeCurrentNoteCreatesNoteOnEmptyPattern) {
     uint64_t step = seq_->getStepData(0, 0);
     EXPECT_EQ((step >> 16) & 0xFF, 100);  // values[2] velocity
     EXPECT_EQ((step >> 24) & 0xFF, 64);   // values[3] note
+    // Fixed (spec 2.4): the local StepSeqValue is zero-initialized, so the
+    // unused note slots values[4..7] are defined zeros, not stack garbage.
+    for (int n = 4; n <= 7; n++) {
+        EXPECT_EQ((step >> (8 * n)) & 0xFF, 0)
+            << "unused note slot values[" << n << "] must be a defined zero";
+    }
 }
 
 TEST_F(SequencerPhase2, ChangeCurrentNoteEditsAndRejectsOutOfRange) {
@@ -695,6 +701,47 @@ TEST_F(SequencerPhase2, ChangeCurrentVelocityClamps1To127) {
 // ---------------------------------------------------------------------------
 // Misc: transpose, stepseq assignment, external clock, v0 name.
 // ---------------------------------------------------------------------------
+
+TEST_F(SequencerPhase2, StepPlaybackPlaysFiveNotesWithoutPhantomSixth) {
+    // REGRESSION (spec 2.3): the step note-on/off loops used to evaluate
+    // values[3 + n] BEFORE the n < 6 bound, reading values[8] — one past the
+    // 8-byte StepSeqValue union, i.e. byte 0 (position LSB) of the NEXT step.
+    // No writer stores values[5..7] today, but a fully populated step must
+    // play exactly its 5 note slots and never treat the adjacent byte as a
+    // 6th note. The note-on and note-off loops share the fixed condition.
+    seq_->setStepMode(true);
+    seq_->insertNote(0, 60, 100);
+    seq_->stepRecordNotes(0, 0, 16);  // one note: moreThanOneNote is false
+    ASSERT_TRUE(seq_->isStepActivated(0));
+    seq_->setStepMode(false);
+    StepSeqValue* seqData = seq_->stepGetSequence(0);
+
+    // Step 1 (the one the playhead lands on): all 5 note slots populated.
+    seqData[1].full = 0;
+    seqData[1].values[1] = 1;                      // unique != lastUnique
+    seqData[1].values[2] = 100;                    // velocity
+    seqData[1].values[3] = 60;
+    seqData[1].values[4] = 61;
+    seqData[1].values[5] = 62;
+    seqData[1].values[6] = 63;
+    seqData[1].values[7] = 64;
+    // Step 2 stays empty but keeps its unique so the transport advances;
+    // its values[0] (10) is the byte the old loop played as a phantom 6th
+    // note of step 1 (values[8] of step 1 == values[0] of step 2).
+    seqData[2].full = 0;
+    seqData[2].values[0] = 10;
+    seqData[2].values[1] = 1;
+
+    seq_->start();
+    seq_->onMidiStart();
+    seq_->mainSequencerTic(16);   // playhead: step 0 -> step 1
+    EXPECT_EQ(synth_.getLowerNote(0), 60)
+        << "step 1 must play its 5 notes (lowest 60), not the adjacent byte as a 6th";
+
+    seq_->mainSequencerTic(32);   // playhead: step 1 (populated) -> step 2 (empty)
+    EXPECT_EQ(synth_.getLowerNote(0), 60)
+        << "note-off pass must turn off step 1's real notes without phantom behavior";
+}
 
 TEST_F(SequencerPhase2, TransposeBoundariesAreObservedIndependentlyAtPlayback) {
     seq_->start();

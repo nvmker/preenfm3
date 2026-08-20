@@ -2,7 +2,7 @@
 # in so CI fails ONLY on findings NEW vs this snapshot. This is a NOISE FLOOR,
 # not an acceptance list: every line below is a candidate for a real fix, and
 # the baseline is expected to SHRINK as findings get resolved. As of check-in:
-# 194 findings (118 warning, 76 style) over firmware/Src + lib/Src.
+# 190 findings (118 warning, 72 style) over firmware/Src + lib/Src.
 #
 # How CI uses this (scripts/ci/static-analysis.sh):
 #   - cppcheck runs over firmware/Src + lib/Src (excludes firmware/Drivers,
@@ -147,10 +147,6 @@ firmware/Src/synth/FxBus.cpp:141:8: warning: Member variable 'FxBus::sampleBlock
 firmware/Src/synth/FxBus.cpp:141:8: warning: Member variable 'FxBus::sampleMultipler' is not initialized in the constructor. [uninitMemberVar]
 firmware/Src/synth/FxBus.cpp:141:8: warning: Member variable 'FxBus::sizeParam' is not initialized in the constructor. [uninitMemberVar]
 firmware/Src/synth/FxBus.cpp:547:27: style: Parameter 'inStereo' can be declared as pointer to const [constParameterPointer]
-firmware/Src/synth/FxBus.cpp:821:14: style: The member function 'FxBus::delayAllpassInterpolation' can be static. [functionStatic]
-firmware/Src/synth/FxBus.cpp:821:61: style: Parameter 'buffer' can be declared as const array [constParameter]
-firmware/Src/synth/FxBus.cpp:830:14: style: The member function 'FxBus::delayInterpolation' can be static. [functionStatic]
-firmware/Src/synth/FxBus.cpp:830:54: style: Parameter 'buffer' can be declared as const array [constParameter]
 firmware/Src/synth/Matrix.cpp:20:9: warning: Member variable 'Matrix::destinations' is not initialized in the constructor. [uninitMemberVar]
 firmware/Src/synth/Matrix.cpp:20:9: warning: Member variable 'Matrix::rows' is not initialized in the constructor. [uninitMemberVar]
 firmware/Src/synth/Matrix.cpp:20:9: warning: Member variable 'Matrix::sources' is not initialized in the constructor. [uninitMemberVar]

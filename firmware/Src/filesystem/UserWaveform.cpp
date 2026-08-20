@@ -21,10 +21,13 @@
  #include "LiquidCrystal.h"
 extern LiquidCrystal      lcd;
 */
+
+#include "StorageSizes.h"
+
 // User waveforms
 extern float userWaveform[6][1024];
 
-extern char lineBuffer[512];
+extern char lineBuffer[PFM3_LINE_BUFFER_SIZE];
 #define LINE_BUFFER_SIZE 512
 
 extern char *oscShapeNames[];

@@ -17,6 +17,7 @@
 
 #include <math.h>
 #include "ScalaFile.h"
+#include "StorageSizes.h"
 #include "MixerState.h"
 
 // store scalaScaleFrequencies in ITCMRAM
@@ -30,7 +31,7 @@ __attribute__((section(".ram_d2b")))
 struct PFM3File scalaScaleFileAlloc[NUMBEROFSCALASCALEFILES];
 
 
-extern char lineBuffer[512];
+extern char lineBuffer[PFM3_LINE_BUFFER_SIZE];
 extern float diatonicScaleFrequency[];
 
 

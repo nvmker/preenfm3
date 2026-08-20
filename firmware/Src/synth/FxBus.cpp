@@ -546,7 +546,13 @@ void FxBus::paramChanged() {
  */
 void FxBus::mixAdd(float *inStereo, float send, float reverbLevel) {
     if (send > 0) {
-        const float level = - panTable[(int)(send * 255)] * 0.0625f * reverbLevel;
+        // send can exceed 1.0f from a corrupt bank or external MIDI. Clamp
+        // before converting so infinity and values outside int range never
+        // trigger undefined float-to-int conversion. NaN is excluded by the
+        // send > 0 gate.
+        const int panIndex =
+            send >= 1.0f ? 255 : static_cast<int>(send * 255.0f);
+        const float level = - panTable[panIndex] * 0.0625f * reverbLevel;
         
         totalSent += level;
 
@@ -818,7 +824,7 @@ void FxBus::processBlock(int32_t *outBuff) {
 
 }
 
-float FxBus::delayAllpassInterpolation(float readPos, float buffer[], int bufferLenM1, float prevVal) {
+float FxBus::delayAllpassInterpolation(float readPos, const float buffer[], int bufferLenM1, float prevVal) {
     //v[n] = VoiceL[i + 1] + (1 - frac)  * VoiceL[i] - (1 - frac)  * v[n - 1]
     int readPosInt = readPos;
     float y1 = buffer[readPosInt];
@@ -827,7 +833,7 @@ float FxBus::delayAllpassInterpolation(float readPos, float buffer[], int buffer
     return y1 + x * (y0 - prevVal);
 }
 
-float FxBus::delayInterpolation(float readPos, float buffer[], int bufferLenM1) {
+float FxBus::delayInterpolation(float readPos, const float buffer[], int bufferLenM1) {
     int readPosInt = readPos;
     float y1 = buffer[readPosInt];
     float y0 = buffer[(unlikely(readPosInt <= 0) ? readPosInt + bufferLenM1 : readPosInt - 1)];
