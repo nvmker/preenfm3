@@ -190,6 +190,42 @@ TEST_F(ScalaFileTest, DegenerateFinalIntervalFallsBackToDiatonic) {
     }
 }
 
+TEST_F(ScalaFileTest, DegenerateNonFinalIntervalFallsBackToDiatonic) {
+    // A NON-final interval that is 0 / negative / NaN / Inf used to pass
+    // validation (only the octave interval was checked) and poisoned the
+    // frequency table (division collapse / NaN frequencies). Every interval
+    // is now validated: each falls back to diatonic like the octave case.
+    extern float diatonicScaleFrequency[];
+
+    // interval[0] = 0.0f ("0/3")
+    fatfsShimInjectString("0:/pfm3/scala/zero.scl",
+                          "zero\n3\n0/3\n5/4\n2/1\n");
+    float* freq = scala_.loadScalaScale(&ms_, 0);
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+
+    // interval[0] negative (negative cents -> ratio < 1 but positive is
+    // actually fine, so use a negative RATIO: "-3/2" = -1.5)
+    fatfsShimInjectString("0:/pfm3/scala/neg.scl",
+                          "neg\n3\n-3/2\n5/4\n2/1\n");
+    freq = scala_.loadScalaScale(&ms_, 0);
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+
+    // interval[0] NaN ("x/y" = 0/0)
+    fatfsShimInjectString("0:/pfm3/scala/nanmid.scl",
+                          "nanmid\n3\nx/y\n5/4\n2/1\n");
+    freq = scala_.loadScalaScale(&ms_, 0);
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+
+    // interval[0] +inf ("3/0")
+    fatfsShimInjectString("0:/pfm3/scala/infmid.scl",
+                          "infmid\n3\n3/0\n5/4\n2/1\n");
+    freq = scala_.loadScalaScale(&ms_, 0);
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+    for (int n = 0; n < 127; n++) {
+        EXPECT_TRUE(std::isfinite(freq[n])) << "note " << n;
+    }
+}
+
 TEST_F(ScalaFileTest, RatioLinesParseAsFraction) {
     float f = 0; // getScalaIntervale is private; covered via full-table test
     (void)f;
