@@ -244,6 +244,29 @@ TEST_F(PreenFMFileTypeTest, AddEmptyFileMarksListingStale) {
     EXPECT_EQ(tft_.getFileIndex("short"), -1);
 }
 
+TEST_F(PreenFMFileTypeTest, AddEmptyFileExact12NameIsCopiedFullAndTerminated) {
+    // Review patch (P4): the exact-12 full-copy case was retired with the
+    // padded fixture — keep it pinned. name is char[13]: all 12 bytes copied,
+    // 13th byte NUL-terminated (previously the stale byte from the listing
+    // stayed), so the stored name is always a valid C string.
+    EXPECT_EQ(tft_.getFileIndex("notlisted"), -1);  // triggers initFiles
+    // Dirty the first free slot's 13th byte so a missing termination shows.
+    for (int k = 0; k < 4; k++) {
+        files_[k].name[12] = 'X';
+        files_[k].fileType = FILE_EMPTY;
+    }
+    const PFM3File* added = tft_.addEmptyFile("brandnew1234");  // exactly 12 chars
+    ASSERT_NE(added, nullptr);
+    EXPECT_EQ(memcmp(added->name, "brandnew1234", 12), 0);
+    EXPECT_EQ(added->name[12], '\0');
+}
+
+TEST_F(PreenFMFileTypeTest, AddEmptyFileNullNameIsRejected) {
+    // Review patch (P2): strnlen(NULL) is UB; the add fails cleanly instead.
+    EXPECT_EQ(tft_.getFileIndex("notlisted"), -1);  // triggers initFiles
+    EXPECT_EQ(tft_.addEmptyFile(nullptr), nullptr);
+}
+
 TEST_F(PreenFMFileTypeTest, SortAndSwapHelpers) {
     for (int k = 0; k < 4; k++) {
         memset(&files_[k], 0, sizeof(files_[k]));

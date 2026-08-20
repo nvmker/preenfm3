@@ -552,6 +552,11 @@ void FxBus::mixAdd(float *inStereo, float send, float reverbLevel) {
         int panIndex = (int)(send * 255);
         if (panIndex > 255) {
             panIndex = 255;
+        } else if (panIndex < 0) {
+            // +inf send passes the send > 0 gate but (int)(inf * 255) is UB:
+            // INT_MIN on the host. NaN is excluded by the gate (NaN > 0 is
+            // false). Clamp the low side too so the read is defined everywhere.
+            panIndex = 0;
         }
         const float level = - panTable[panIndex] * 0.0625f * reverbLevel;
         
