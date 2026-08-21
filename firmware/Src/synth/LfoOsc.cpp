@@ -154,27 +154,29 @@ void LfoOsc::nextValueInMatrix() {
     // A hostile rate (NaN/inf/huge float from a corrupt preset) would make
     // the (int) cast below undefined behavior: fail safe to phase 0
     // instead. Legitimate synced advances stay within (0, ~5) per block.
-    if (unlikely(!(phase >= 0.0f && phase < 8.0f))) {
-        phase = 0.0f;
-    } else if (phase >= 1.0f) {
-        phase -= (int) phase;
-        switch ((int) lfo->shape) {
-        case LFO_RANDOM:
-            currentRandomValue = noise[0];
-            break;
-        case LFO_BROWNIAN:
-            noiseLp = noise[0] * 0.4f + noiseLp * 0.6f;
-            currentRandomValue = noiseLp;
-            break;
-        case LFO_WANDERING:
-            currentRandomValue = nextRandomValue;
-            nextRandomValue = noise[0];
-            break;
-        case LFO_FLOW:
-            noiseLp = noise[0] * 0.4f + noiseLp * 0.6f;
-            currentRandomValue = nextRandomValue;
-            nextRandomValue = noiseLp;
-            break;
+    if (!this->isNotMidiSynchronized) {
+        if (unlikely(!(phase >= 0.0f && phase < 8.0f))) {
+            phase = 0.0f;
+        } else if (phase >= 1.0f) {
+            phase -= (int) phase;
+            switch ((int) lfo->shape) {
+            case LFO_RANDOM:
+                currentRandomValue = noise[0];
+                break;
+            case LFO_BROWNIAN:
+                noiseLp = noise[0] * 0.4f + noiseLp * 0.6f;
+                currentRandomValue = noiseLp;
+                break;
+            case LFO_WANDERING:
+                currentRandomValue = nextRandomValue;
+                nextRandomValue = noise[0];
+                break;
+            case LFO_FLOW:
+                noiseLp = noise[0] * 0.4f + noiseLp * 0.6f;
+                currentRandomValue = nextRandomValue;
+                nextRandomValue = noiseLp;
+                break;
+            }
         }
     }
 

@@ -287,6 +287,8 @@ TEST_F(ScalaFileTest, KeyboardMappingUsesTwelveOctaveDegrees) {
     ms_.instrumentState_[0].scalaMapping = SCALA_MAPPING_CONT;
     freq = scala_.apply(&ms_, 0);
     EXPECT_FLOAT_EQ(freq[67], 261.626f * 2.0f);
+    EXPECT_FLOAT_EQ(freq[0], 261.626f);  // below first generated C: backfill
+    EXPECT_FLOAT_EQ(freq[3], 261.626f);  // final low backfill stays audible
 }
 
 TEST_F(ScalaFileTest, ApplyDisabledReturnsDiatonic) {

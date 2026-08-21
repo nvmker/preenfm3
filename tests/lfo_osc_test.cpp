@@ -192,6 +192,24 @@ TEST_F(LfoOscTest, FreqDrivesPhaseIncrementPlusMatrixDestination) {
     EXPECT_NEAR(lfo_->phase, expected, kTol);
 }
 
+TEST_F(LfoOscTest, NegativeMatrixModulationPreservesFreeRunPhaseSemantics) {
+    Configure(LFO_TRIANGLE, 0.1f);
+    ASSERT_TRUE(lfo_->isNotMidiSynchronized);
+    lfo_->noteOn();
+
+    rows_[4].source = MATRIX_SOURCE_MODWHEEL;
+    rows_[4].mul = -1.0f;
+    rows_[4].dest1 = LFO1_FREQ;
+    rows_[4].dest2 = (DestinationEnum)0;
+    matrix_.setSource(MATRIX_SOURCE_MODWHEEL, 1.0f);
+    matrix_.computeAllDestinations();
+
+    lfo_->nextValueInMatrix();
+    EXPECT_NEAR(lfo_->phase, (0.1f - 1.0f) * kInvLfo, kTol)
+        << "valid negative free-run modulation must not be reset by the "
+           "MIDI-synchronized phase guard";
+}
+
 // S&H randomness (LFO_RANDOM): the value holds noise[0] sampled at the last
 // phase wrap (and at noteOn). Changing noise[0] mid-flight proves the hold:
 // the output flips exactly on the wrap call, deterministically.
