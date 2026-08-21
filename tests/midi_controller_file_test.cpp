@@ -307,6 +307,83 @@ TEST_F(MidiControllerFileTest, UnknownVersionLeavesStateUnchanged) {
     expectEqual(expected.state, actual.state);
 }
 
+TEST_F(MidiControllerFileTest, HostilePersistedChannelLoadsAsGlobalSentinel) {
+    // Bugfix-phase3 item 3.2: a corrupt channel byte (e.g. 200) in the file
+    // must load as 16 (global), never into state as an invalid channel.
+    ZeroedController source;
+    ZeroedController restored;
+    differentiate(source.state, 45);
+    file_.saveConfig(source.state);
+
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, bytes));
+    const std::size_t encoder0Channel = 2U + 20U + 6U + 2U + 2U;  // page0 encoder1 midiChannel
+    bytes[encoder0Channel] = 200;
+    bytes[encoder0Channel + 1U] = 0;
+    const std::size_t button0Channel = 2U + 120U + 20U + 6U + 2U + 2U;  // page0 button1 midiChannel
+    bytes[button0Channel] = 255;
+    bytes[button0Channel + 1U] = 0;
+    fatfsShimReset();
+    fatfsShimMkdir("0:/pfm3");
+    fatfsShimInjectBytes(MIDI_CONTROLLER_STATE_NAME, bytes.data(), bytes.size());
+
+    file_.loadConfig(restored.state);
+    EXPECT_EQ(restored.state->getEncoder(0, 1)->midiChannel, 16);
+    EXPECT_EQ(restored.state->getButton(0, 1)->midiChannel, 16);
+}
+
+TEST_F(MidiControllerFileTest, HostilePersistedButtonTypeLoadsAsPush) {
+    // Bugfix-phase3 item 3.3: a corrupt buttonType byte (e.g. 7) must load as
+    // PUSH, never into state as an unknown type.
+    ZeroedController source;
+    ZeroedController restored;
+    differentiate(source.state, 47);
+    file_.saveConfig(source.state);
+
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, bytes));
+    const std::size_t button0Type = 2U + 120U + 20U + 6U + 2U;  // page0 button1 buttonType
+    bytes[button0Type] = 7;
+    bytes[button0Type + 1U] = 0;
+    fatfsShimReset();
+    fatfsShimMkdir("0:/pfm3");
+    fatfsShimInjectBytes(MIDI_CONTROLLER_STATE_NAME, bytes.data(), bytes.size());
+
+    file_.loadConfig(restored.state);
+    EXPECT_EQ(restored.state->getButton(0, 1)->buttonType, MIDI_BUTTON_TYPE_PUSH);
+}
+
+TEST_F(MidiControllerFileTest, TruncatedVersionOneBodyLeavesStateUnchanged) {
+    // Bugfix-phase3 item 3.4: a valid V1 prefix with a truncated body must not
+    // be deserialized — the record walk would read stale storageBuffer bytes.
+    ZeroedController expected;
+    ZeroedController actual;
+    differentiate(expected.state, 41);
+    differentiate(actual.state, 41);
+    std::vector<uint8_t> truncated(500, 0);
+    truncated[0] = MIDI_CONTROLLER_VERSION_1;
+    truncated[1] = 0;
+    fatfsShimInjectBytes(MIDI_CONTROLLER_STATE_NAME, truncated.data(), truncated.size());
+    file_.loadConfig(actual.state);
+    expectEqual(expected.state, actual.state);
+}
+
+TEST_F(MidiControllerFileTest, CloseFailureDuringLoadLeavesStateUnchanged) {
+    // A failed f_close makes load() return 0; the stale buffer must be
+    // rejected instead of deserialized (bugfix-phase3 item 3.4).
+    ZeroedController source;
+    ZeroedController expected;
+    ZeroedController actual;
+    differentiate(source.state, 43);
+    differentiate(expected.state, 43);
+    differentiate(actual.state, 43);
+    file_.saveConfig(source.state);
+
+    fatfsShimFailNext("f_close", FR_DISK_ERR);
+    file_.loadConfig(actual.state);
+    expectEqual(expected.state, actual.state);
+}
+
 TEST_F(MidiControllerFileTest, PropertySizedAndStrictlyLargerFilesLeaveStateUnchanged) {
     for (std::size_t invalidSize : {std::size_t(PROPERTY_FILE_SIZE),
                                     std::size_t(PROPERTY_FILE_SIZE + 1)}) {

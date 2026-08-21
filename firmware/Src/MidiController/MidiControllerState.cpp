@@ -41,6 +41,8 @@ void MidiControllerState::resetState() {
             midiPage_[pageNumber].encoder_[i].controller = 15 + cpt;
             midiPage_[pageNumber].encoder_[i].value = (pageNumber & 0x1) == 0 ? 0 : 64;
             midiPage_[pageNumber].encoder_[i].midiChannel = 16;
+            midiPage_[pageNumber].encoder_[i].encoderType = MIDI_ENCODER_TYPE_CC;
+            midiPage_[pageNumber].encoder_[i].minValue = 0;
             midiPage_[pageNumber].encoder_[i].maxValue = 127;
 
             midiPage_[pageNumber].button_[i].controller = 59 + cpt;
@@ -67,13 +69,14 @@ void MidiControllerState::resetState() {
 
 void MidiControllerState::encoderDelta(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t encoderNumber, int delta) {
     MidiEncoder* encoder =  &midiPage_[pageNumber].encoder_[encoderNumber];
-    int newValue = encoder->value + delta;
+    // Accumulate in 64-bit: encoder->value + delta could overflow int (UB).
+    int64_t newValue = static_cast<int64_t>(encoder->value) + static_cast<int64_t>(delta);
     newValue = newValue < encoder->minValue ? encoder->minValue : newValue;
     newValue = newValue > encoder->maxValue ? encoder->maxValue : newValue;
 
     if (newValue != encoder->value) {
         encoder->value = newValue;
-        uint8_t midiChannel = encoder->midiChannel == 16 ? globalMidiChannel : encoder->midiChannel;
+        uint8_t midiChannel = resolveMidiChannel_(encoder->midiChannel, globalMidiChannel);
         usartBufferOut.insert((uint8_t)(0xb0 + midiChannel));
         usartBufferOut.insert((uint8_t)encoder->controller);
         usartBufferOut.insert((uint8_t)encoder->value);
@@ -89,8 +92,11 @@ void MidiControllerState::buttonDown(uint8_t pageNumber, uint8_t globalMidiChann
         button->value = 1;
     } else if (button->buttonType == MIDI_BUTTON_TYPE_TOGGLE) {
         button->value = (button->value == 0? 1 : 0);
+    } else {
+        // Unknown type: no state change, no emission.
+        return;
     }
-    uint8_t midiChannel = button->midiChannel == 16 ? globalMidiChannel : button->midiChannel;
+    uint8_t midiChannel = resolveMidiChannel_(button->midiChannel, globalMidiChannel);
 
     usartBufferOut.insert((uint8_t)(0xb0 + midiChannel));
     usartBufferOut.insert((uint8_t)button->controller);
@@ -103,7 +109,7 @@ bool MidiControllerState::buttonUp(uint8_t pageNumber, uint8_t globalMidiChannel
     if (button->buttonType == MIDI_BUTTON_TYPE_PUSH) {
         button->value = 0;
 
-        uint8_t midiChannel = button->midiChannel == 16 ? globalMidiChannel : button->midiChannel;
+        uint8_t midiChannel = resolveMidiChannel_(button->midiChannel, globalMidiChannel);
         usartBufferOut.insert((uint8_t)(0xb0 + midiChannel));
         usartBufferOut.insert((uint8_t)button->controller);
         usartBufferOut.insert((uint8_t)button->getValue());
