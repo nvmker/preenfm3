@@ -387,6 +387,11 @@ void Timbre::preenNoteOn(char note, char velocity) {
 
     if (params_.engine1.playMode == PLAY_MODE_MONO) {
         monoNotePush(note, velocity);
+    } else if (monoStackSize_ != 0) {
+        // Mode switched away from MONO since the last note: held-note
+        // tracking is stale (note-offs may have been routed elsewhere) —
+        // reset so a later MONO recall can never fire a ghost note.
+        monoStackSize_ = 0;
     }
 
     int iNov = params_.engine1.playMode == PLAY_MODE_POLY ? (int) numberOfVoices_ : 1;
@@ -508,7 +513,12 @@ void Timbre::preenNoteOn(char note, char velocity) {
 void Timbre::monoNotePush(char note, char velocity) {
     monoNoteRemove(note);
     if (monoStackSize_ >= MONO_STACK_SIZE) {
-        return;
+        // 17th+ simultaneous key: drop the OLDEST entry so the stack keeps
+        // tracking the most recent holds (LIFO recall stays correct).
+        for (int i = 0; i < MONO_STACK_SIZE - 1; i++) {
+            monoStack_[i] = monoStack_[i + 1];
+        }
+        monoStackSize_ = MONO_STACK_SIZE - 1;
     }
     monoStack_[monoStackSize_].note = note;
     monoStack_[monoStackSize_].velocity = velocity;
@@ -540,6 +550,7 @@ void Timbre::monoNoteRecall() {
         preenNoteOnUpdateMatrix(n, note, velocity);
         float noteFrequency = mixerState_->instrumentState_[timbreNumber_].scaleFrequencies[(int) note];
         voices_[n]->noteOnWithoutPop(note, noteFrequency, velocity, voiceIndex_++);
+        lastPlayedNote_ = n;
         lowerNote_ = note;
         lowerNoteReleased_ = false;
         lowerNoteFrequency = voices_[n]->getNoteRealFrequencyEstimation(noteFrequency);
@@ -562,6 +573,10 @@ void Timbre::preenNoteOff(char note) {
 
     if (isMono) {
         monoNoteRemove(note);
+    } else if (monoStackSize_ != 0) {
+        // Same stale-tracking self-heal as preenNoteOn: a note-off arriving
+        // in a non-MONO mode means the stack no longer reflects reality.
+        monoStackSize_ = 0;
     }
 
 

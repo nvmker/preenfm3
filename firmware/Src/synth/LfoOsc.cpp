@@ -151,7 +151,12 @@ void LfoOsc::nextValueInMatrix() {
     // 1.0 per block: wrap once per block here so every shape below sees a
     // phase in [0, 1). The per-shape single-subtract wraps further down stay
     // correct for free-run LFOs, where the advance is always < 1.0.
-    if (unlikely(phase >= 1.0f)) {
+    // A hostile rate (NaN/inf/huge float from a corrupt preset) would make
+    // the (int) cast below undefined behavior: fail safe to phase 0
+    // instead. Legitimate synced advances stay within (0, ~5) per block.
+    if (unlikely(!(phase >= 0.0f && phase < 8.0f))) {
+        phase = 0.0f;
+    } else if (phase >= 1.0f) {
         phase -= (int) phase;
         switch ((int) lfo->shape) {
         case LFO_RANDOM:

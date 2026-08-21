@@ -469,6 +469,26 @@ TEST_F(LfoOscTest, MidiClockTime8PhaseStaysWrappedOverManyBlocks) {
     }
 }
 
+// A hostile rate (NaN / inf / huge float from a corrupt preset) must fail
+// safe to phase 0 in the float domain — never reach the undefined (int) cast
+// in the per-block wrap (review finding on the 4.4 fix).
+TEST_F(LfoOscTest, HostileFreqFailsSafeToPhaseZeroNotUndefinedCast) {
+    Configure(LFO_TRIANGLE, 100.8f);
+    lfo_->midiClock(0, true);
+    const float hostileRates[] = { 1.0e30f, INFINITY, -INFINITY, NAN };
+    for (float rate : hostileRates) {
+        lfo_->currentFreq = rate;
+        lfo_->phase = 0.25f;
+        for (int block = 0; block < 4; block++) {
+            lfo_->nextValueInMatrix();
+            EXPECT_TRUE(lfo_->phase >= 0.0f && lfo_->phase < 1.0f)
+                << "rate " << rate << " left phase at " << lfo_->phase;
+        }
+        EXPECT_LE(Source(), 1.0f);
+        EXPECT_GE(Source(), -1.0f);
+    }
+}
+
 // valueChanged(ENCODER_LFO_FREQ) is the free-run/midi-sync switch.
 TEST_F(LfoOscTest, ValueChangedFreqTogglesMidiSyncFlag) {
     Configure(LFO_TRIANGLE, 50.0f);
