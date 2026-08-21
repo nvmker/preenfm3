@@ -77,6 +77,13 @@ void LfoStepSeq::midiClock(int songPosition, bool computeStep) {
 		}
 		break;
 	case LFO_SEQ_MIDICLOCK_TIME_4:
+	default:
+		// Corrupt/unmatched sync values (e.g. 246-255 from a bad bank)
+		// fall back to the nearest supported division (TIME_4). Values
+		// below the sync range are free-run: keep the valueChanged rate.
+		if ((int)this->seqParams->bpm < LFO_SEQ_MIDICLOCK_TIME_4) {
+			break;
+		}
 		if ((songPosition & 0x1)==0) {
 			if (computeStep) {
                 phaseStep = 8.0f * invTab[ticks];

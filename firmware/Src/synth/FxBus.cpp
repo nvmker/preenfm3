@@ -209,6 +209,19 @@ void FxBus::setDefaultValue() {
  */
 void FxBus::mixSumInit() {
 
+    // Deferred preset/param changes must advance even when nothing was sent
+    // (all reverb sends at 0), otherwise an armed change never fires.
+    if (somethingChanged) {
+        if (waitCountBeforeChange-- == 0 ) {
+            somethingChanged = false;
+            if (currentPresetNum != nextPresetNum) {
+                presetChanged(nextPresetNum);
+            } else {
+                paramChanged();
+            }
+        }
+    }
+
     if(totalSent == 0.0f) {
         return;
     }
@@ -227,17 +240,6 @@ void FxBus::mixSumInit() {
     }
 
     totalSent = 0.0f;
-
-    if (somethingChanged) {
-        if (waitCountBeforeChange-- == 0 ) {
-            somethingChanged = false;
-            if (currentPresetNum != nextPresetNum) {
-                presetChanged(nextPresetNum);
-            } else {
-                paramChanged();
-            }
-        }
-    }
 }
 
 void FxBus::slowParamChange() {

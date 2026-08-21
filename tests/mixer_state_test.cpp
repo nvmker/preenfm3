@@ -176,50 +176,43 @@ TEST_F(MixerStateTest, GetFullDefaultStateWritesNameAndDefaults) {
     EXPECT_EQ((uint8_t)buf[201], 0);   // reverbOutput_
     EXPECT_EQ((uint8_t)buf[202], 100); // reverbLevel_
 
-    // 13 master-FX defaults (written in *_DEFAULT macro order) at 203..215.
-    const uint8_t kFxD[] = {54, 35, 41, 84, 63, 74, 28, 69, 36, 46, 50, 69,
-                            34};
+    // 13 master-FX defaults (canonical v6 save/restore order) at 203..215.
+    const uint8_t kFxD[] = {54, 74, 35, 41, 84, 63, 28, 69, 36, 46, 34, 50,
+                            69};
     for (int i = 0; i < 13; i++) {
         SCOPED_TRACE(i);
         EXPECT_EQ((uint8_t)buf[203 + i], kFxD[i]);
     }
 }
 
-// LATENT QUIRK (characterized, NOT fixed — flag for a firmware owner):
-// getFullDefaultState writes the 13 master-FX defaults in a DIFFERENT order
-// (MixerState.cpp:176-188: PREDELAYTIME, PREDELAYMIX, SIZE, DIFFUSION,
-// DAMPING, DECAY, ..., NOTCHBASE, NOTCHSPREAD, LOOPHP) than the v6
-// save/restore order (MixerState.cpp:87-99 / :533-545: PREDELAYTIME, DECAY,
-// PREDELAYMIX, SIZE, DIFFUSION, DAMPING, ..., LOOPHP, NOTCHBASE,
-// NOTCHSPREAD). getFullState<->restoreFullState round-trips byte-identical
-// (RoundTripV6IsByteIdenticalForEveryPercentByte below), but restoring a DEFAULT
-// mix — what a new-bank load does — permutes 8 of the 13 params: DECAY
-// receives PREDELAYMIX_DEFAULT, PREDELAYMIX receives SIZE_DEFAULT, ...
-// NOTCHSPREAD receives LOOPHP_DEFAULT. This pins the permutation so a future
-// reorder (or a regression that spreads it) is a visible, deliberate change.
-TEST_F(MixerStateTest, DefaultBankMasterFxOrderIsPermutedVersusRestore) {
+// FIXED (spec 4.8): getFullDefaultState used to write the 13 master-FX
+// defaults in a DIFFERENT order (macro order: PREDELAYTIME, PREDELAYMIX,
+// SIZE, ...) than the v6 save/restore order, so restoring a DEFAULT mix —
+// what a new-bank load does — permuted 8 of the 13 params (DECAY received
+// PREDELAYMIX_DEFAULT, ... NOTCHSPREAD received LOOPHP_DEFAULT). The default
+// state is now written in the canonical v6 order and lroundf-quantized like
+// the save path: every param lands on its OWN default.
+TEST_F(MixerStateTest, DefaultBankMasterFxOrderMatchesRestore) {
     char buf[256];
     uint32_t size = 0;
     ms_.getFullDefaultState(buf, &size, 1);
     ASSERT_EQ(size, 216u);
     ms_.restoreFullState(buf);
 
-    // The 5 params that land on their own defaults (byte order matches):
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_PREDELAYTIME], 0.54f);
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_LFODEPTH], 0.28f);
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_LFOSPEED], 0.69f);
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_INPUTBASE], 0.36f);
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_INPUTWIDTH], 0.46f);
-    // The 8 permuted slots — each receives a NEIGHBORING param's default:
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_DECAY], 0.35f)      // <- PREDELAYMIX default
-        << "default-bank DECAY receives PREDELAYMIX_DEFAULT";
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_PREDELAYMIX], 0.41f);  // <- SIZE
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_SIZE], 0.84f);          // <- DIFFUSION
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_DIFFUSION], 0.63f);     // <- DAMPING
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_DAMPING], 0.74f);       // <- DECAY
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_LOOPHP], 0.50f);        // <- NOTCHBASE
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_NOTCHBASE], 0.69f);    // <- NOTCHSPREAD
-    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_NOTCHSPREAD], 0.34f);  // <- LOOPHP
+    // All 13 params land on their OWN defaults.
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_PREDELAYTIME], GLOBALFX_PREDELAYTIME_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_DECAY], GLOBALFX_DECAY_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_PREDELAYMIX], GLOBALFX_PREDELAYMIX_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_SIZE], GLOBALFX_SIZE_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_DIFFUSION], GLOBALFX_DIFFUSION_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_DAMPING], GLOBALFX_DAMPING_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_LFODEPTH], GLOBALFX_LFODEPTH_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_LFOSPEED], GLOBALFX_LFOSPEED_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_INPUTBASE], GLOBALFX_INPUTBASE_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_INPUTWIDTH], GLOBALFX_INPUTWIDTH_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_LOOPHP], GLOBALFX_LOOPHP_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_NOTCHBASE], GLOBALFX_NOTCHBASE_DEFAULT);
+    EXPECT_FLOAT_EQ(ms_.fxBus_.masterfxConfig[GLOBALFX_NOTCHSPREAD], GLOBALFX_NOTCHSPREAD_DEFAULT);
 }
 
 // Each version's minimal valid buffer has the exact documented size — a

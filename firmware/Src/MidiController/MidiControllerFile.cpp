@@ -122,6 +122,11 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
                 // Let skip 8 bytes
                 p += 4;
                 encoder->encoderType = (MidiEncoderType)*(p++);
+                if (encoder->encoderType != MIDI_ENCODER_TYPE_CC
+                        && encoder->encoderType != MIDI_ENCODER_TYPE_NRPN) {
+                    // Corrupt byte: fail safe to the CC default.
+                    encoder->encoderType = MIDI_ENCODER_TYPE_CC;
+                }
                 encoder->midiChannel = *(p++);
                 if (encoder->midiChannel > 16) {
                     // Corrupt byte: fail safe to the 'use global' sentinel.
