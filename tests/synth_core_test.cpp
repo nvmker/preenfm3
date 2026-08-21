@@ -743,24 +743,22 @@ TEST_F(SynthCore, NewMixerValueGlobalFxSettingsArmsComplete) {
 }
 
 // ===========================================================================
-TEST_F(SynthCore, HostileSendAboveOneRendersDefinedDryOutput) {
+TEST_F(SynthCore, HostileSendAboveOneClampsDryPathToZero) {
     // Regression (bugfix-phase3 3.10): the dry-output path computed
     // panTable[(int)((1 - send) * 255)] — send > 1 made the index negative and
-    // read below the table (UB/OOB). The index is now clamped to [0, 255].
+    // read below the table (UB/OOB). A finite negative derived index must clamp
+    // to 0; only non-finite input takes the fail-audible index-255 path.
     // Driven via the production CC-routing entry point
     // Synth::setNewMixerValueFromMidi(MIXER_VALUE_SEND) -> newMixerValue,
     // which writes mixerState.instrumentState_[0].send; output observed at
     // Synth::buildNewSampleBlock level. Value > 1 is unreachable from a
     // normal MIDI CC (0..127/127 <= 1) — it models a corrupt preset/state.
+    harness_->setReverbLevel(0.0f);  // isolate the dry path from FxBus output
     synth().noteOn(0, 60, 100);
-    renderBlocks(2);
+    ASSERT_GT(renderBlocks(2), kSilenceThreshold);
     synth().setNewMixerValueFromMidi(0, MIXER_VALUE_SEND, 2.0f);
-    const int64_t m = renderBlocks(4);
-    EXPECT_GT(m, kSilenceThreshold) << "note should still be audible";
-    // Rendered samples are int32 DAC units and finite by construction; the
-    // clamp guarantee is the bounded magnitude: no wraparound garbage from an
-    // out-of-range panTable read.
-    EXPECT_LT(m, (int64_t)1 << 30);
+    EXPECT_LE(renderBlocks(4), kSilenceThreshold)
+        << "finite send=2 derives -255 and must clamp to panTable[0]";
     synth().noteOff(0, 60);
 }
 
@@ -772,6 +770,7 @@ TEST_F(SynthCore, HostileNanSendRendersDefinedDryOutput) {
     // non-finite send fails AUDIBLE (treated as send 0: full dry, index
     // 255 -- panTable[0] is zero, so index 0 would mute the timbre). Valid
     // sends in [0, 1] render byte-identically.
+    harness_->setReverbLevel(0.0f);  // non-finite send must still retain dry audio
     synth().noteOn(0, 60, 100);
     renderBlocks(2);
     synth().setNewMixerValueFromMidi(0, MIXER_VALUE_SEND, NAN);

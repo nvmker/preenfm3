@@ -223,6 +223,9 @@ const char* SequenceBank::loadSequenceName(const struct PFM3File* bank, int patc
                 break;
             }
         }
+        // Every successful open must be paired with a close, including short,
+        // failed, and unknown version-header fallback paths.
+        f_close(&sequenceFile);
     }
 
     return "##";
