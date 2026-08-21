@@ -164,6 +164,11 @@ extern "C" FRESULT f_close(FIL* fp) {
 }
 
 extern "C" FRESULT f_read(FIL* fp, void* buff, UINT btr, UINT* br) {
+    FRESULT injected;
+    if (consumeFail("f_read", injected)) {
+        if (br) *br = 0;
+        return injected;
+    }
     OpenFile* of = lookup(fp);
     if (of == nullptr) return FR_INVALID_OBJECT;
     if (!of->read) {
@@ -213,6 +218,8 @@ extern "C" FRESULT f_write(FIL* fp, const void* buff, UINT btw, UINT* bw) {
 extern "C" FRESULT f_lseek(FIL* fp, FSIZE_t ofs) {
     OpenFile* of = lookup(fp);
     if (of == nullptr) return FR_INVALID_OBJECT;
+    FRESULT injected;
+    if (consumeFail("f_lseek", injected)) return injected;
     if (ofs > kShimMaxFileSize) return FR_INVALID_PARAMETER;
     fp->fptr = ofs; /* past-EOF seek allowed; reads clamp, writes extend */
     return FR_OK;
@@ -387,6 +394,8 @@ bool fatfsShimExtract(const char* path, std::vector<uint8_t>& out) {
 }
 
 size_t fatfsShimFileCount() { return st().files.size(); }
+
+size_t fatfsShimOpenFileCount() { return st().open.size(); }
 
 std::vector<std::string> fatfsShimListDir(const char* path) {
     return childrenOf(norm(path));

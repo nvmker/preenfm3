@@ -96,13 +96,22 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
     }
     reachableProperties[size] = 0;
 
-    load(configFileName, 0, reachableProperties, size);
+    // A short read or failed close returns 0 from load(); deserializing the
+    // stale storageBuffer would inject garbage records into the state.
+    if (load(configFileName, 0, reachableProperties, size) != size) {
+        return;
+    }
     // First int is the version
     uint16_t* p = (uint16_t*)reachableProperties;
     int version = (int)*(p++);
 
     switch (version) {
     case MIDI_CONTROLLER_VERSION_1: {
+        if (size != MIDI_CONTROLLER_STATE_V1_SIZE) {
+            // Truncated body: walking the records would deserialize stale
+            // storageBuffer bytes past the file's end.
+            return;
+        }
         for (int pageNumber = 0; pageNumber < MIDI_NUMBER_OF_PAGES; pageNumber++) {
             for (int e = 0; e < 6; e++) {
                 MidiEncoder *encoder = midiControllerState->getEncoder(pageNumber, e);
@@ -114,6 +123,10 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
                 p += 4;
                 encoder->encoderType = (MidiEncoderType)*(p++);
                 encoder->midiChannel = *(p++);
+                if (encoder->midiChannel > 16) {
+                    // Corrupt byte: fail safe to the 'use global' sentinel.
+                    encoder->midiChannel = 16;
+                }
                 encoder->controller = *(p++);
                 encoder->value = *(p++);
                 encoder->maxValue = *(p++);
@@ -128,7 +141,16 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
                 // Let skip 8 bytes
                 p += 4;
                 button->buttonType = (MidiButtonType)*(p++);
+                if (button->buttonType != MIDI_BUTTON_TYPE_PUSH
+                        && button->buttonType != MIDI_BUTTON_TYPE_TOGGLE) {
+                    // Corrupt byte: fail safe to the PUSH default.
+                    button->buttonType = MIDI_BUTTON_TYPE_PUSH;
+                }
                 button->midiChannel = *(p++);
+                if (button->midiChannel > 16) {
+                    // Corrupt byte: fail safe to the 'use global' sentinel.
+                    button->midiChannel = 16;
+                }
                 button->controller = *(p++);
                 button->value = *(p++);
                 button->valueOff = *(p++);
