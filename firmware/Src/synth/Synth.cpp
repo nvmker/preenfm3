@@ -25,7 +25,6 @@
 #ifndef PFM3_HOST
 #include "stm32h7xx_hal.h"
 #endif
-#include <math.h>
 #include "Synth.h"
 #include "Menu.h"
 #include "Sequencer.h"
@@ -395,7 +394,7 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
         // table endpoint.
         float dryPan = (1.0f - synthState_->mixerState.instrumentState_[timbre].send) * 255.0f;
         int dryPanIndex;
-        if (!isfinite(dryPan)) {
+        if (!__builtin_isfinite(dryPan)) {
             dryPanIndex = 255; // fail audible (no send)
         } else if (dryPan <= 0.0f) {
             dryPanIndex = 0;
