@@ -585,6 +585,20 @@ TEST_F(SequencerPhase2, StepClearPartAndClearAllResetSteps) {
     seq_->stepClearAll(0);
     EXPECT_EQ(seq_->stepGetSequence(0)[0].full, 0u);
     EXPECT_FALSE(seq_->isStepActivated(0));
+
+    // Bugfix-phase4 4.2: the old `s < 255` bound left step 255 uncleared.
+    // Step 255 must clear for both stepClearPart and stepClearAll.
+    seq_->insertNote(0, 64, 100);
+    seq_->stepRecordNotes(0, 255, 1);
+    ASSERT_NE(seq_->stepGetSequence(0)[255].values[3], 0);
+    seq_->stepClearPart(0, 255, 1);
+    // .full is re-stamped with a fresh .unique; assert the note byte.
+    EXPECT_EQ(seq_->stepGetSequence(0)[255].values[3], 0);
+    seq_->insertNote(0, 65, 100);
+    seq_->stepRecordNotes(0, 255, 1);
+    ASSERT_NE(seq_->stepGetSequence(0)[255].values[3], 0);
+    seq_->stepClearAll(0);
+    EXPECT_EQ(seq_->stepGetSequence(0)[255].full, 0u);
 }
 
 // ---------------------------------------------------------------------------
