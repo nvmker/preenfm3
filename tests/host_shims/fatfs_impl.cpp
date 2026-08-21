@@ -395,6 +395,8 @@ bool fatfsShimExtract(const char* path, std::vector<uint8_t>& out) {
 
 size_t fatfsShimFileCount() { return st().files.size(); }
 
+size_t fatfsShimOpenFileCount() { return st().open.size(); }
+
 std::vector<std::string> fatfsShimListDir(const char* path) {
     return childrenOf(norm(path));
 }

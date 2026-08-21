@@ -209,6 +209,10 @@ public:
     // Access the wired Synth (for noteOn/noteOff between render calls).
     Synth& synth() { return *synth_; }
 
+    // Isolate dry-path rendering in focused Synth tests without exposing the
+    // production SynthState through the harness API.
+    void setReverbLevel(float level) { ss_->mixerState.reverbLevel_ = level; }
+
     // Override a timbre's FM algorithm AFTER construction (which ran Synth::init
     // / preset copy) and BEFORE the first render. Writes params_.engine1.algo
     // (a float; Common.h:282) — read LIVE every block by Voice/Env via the
