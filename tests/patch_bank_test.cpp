@@ -89,6 +89,41 @@ TEST_F(PatchBankTest, SavePatchLoadPatchRoundTripVersion1) {
     EXPECT_EQ(memcmp(slot10, slot11, ALIGNED_PATCH_SIZE), 0);
 }
 
+// A slot stamped with the removed PRESET_VERSION2 magic (292928062) — or any
+// unknown version — takes the one-and-only default conversion path, exactly
+// like a VERSION1 (0) stamp. Pins the post-removal dispatch behavior (review
+// finding on the 5.3 removal: "rejected" would be new code for an input no
+// released firmware ever wrote; the switch has a single default arm).
+TEST_F(PatchBankTest, LoadPatchVersion2StampTakesSamePathAsVersion1) {
+    bank_.createPatchBank("mybank123456");
+    PFM3File bf = BankFile("mybank123456");
+    OneSynthParams src = preenMainPreset;
+    snprintf(src.presetName, 13, "V2STAMPED    ");
+
+    std::vector<uint8_t> slot(ALIGNED_PATCH_SIZE, 0);
+    memcpy(slot.data(), &src, PFM3_PATCH_FLASH_SIZE);
+    uint32_t v2Stamp = 292928062u;  // the removed PRESET_VERSION2 magic
+    memcpy(&slot[ALIGNED_PATCH_SIZE - 5], &v2Stamp, 4);
+
+    std::vector<uint8_t> data;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/mybank123456", data));
+    ASSERT_GE(data.size(), 44u * ALIGNED_PATCH_SIZE);
+    memcpy(&data[42 * ALIGNED_PATCH_SIZE], slot.data(), ALIGNED_PATCH_SIZE);
+    // Slot 43: identical bytes with the VERSION1 (0) stamp.
+    memcpy(&data[43 * ALIGNED_PATCH_SIZE], slot.data(), ALIGNED_PATCH_SIZE);
+    memset(&data[43 * ALIGNED_PATCH_SIZE + ALIGNED_PATCH_SIZE - 5], 0, 4);
+    fatfsShimInjectBytes("0:/pfm3/mybank123456", data.data(), data.size());
+
+    OneSynthParams fromV2Stamp, fromV1Stamp;
+    memset(&fromV2Stamp, 0, sizeof(fromV2Stamp));
+    memset(&fromV1Stamp, 0, sizeof(fromV1Stamp));
+    bank_.loadPatch(&bf, 42, &fromV2Stamp);
+    bank_.loadPatch(&bf, 43, &fromV1Stamp);
+    // Same payload bytes + different version stamps => identical conversion
+    // output. The dispatch cannot special-case a removed version.
+    EXPECT_EQ(memcmp(&fromV2Stamp, &fromV1Stamp, sizeof(OneSynthParams)), 0);
+}
+
 TEST_F(PatchBankTest, LoadPatchShortReadLeavesParamsUntouched) {
     bank_.createPatchBank("mybank123456");
     std::vector<uint8_t> data;
