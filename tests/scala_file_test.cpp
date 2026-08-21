@@ -226,6 +226,40 @@ TEST_F(ScalaFileTest, DegenerateNonFinalIntervalFallsBackToDiatonic) {
     }
 }
 
+TEST_F(ScalaFileTest, ExtremeRatioFallsBackToDiatonic) {
+    // Bugfix-phase4 folded-A: an interval that is finite and > 0 but EXTREME
+    // (e.g. 1e30 / 1e-30) passes interval validation, yet overflows or
+    // underflows the ratio-written frequency entries at computation time.
+    // Every ratio-written entry is validated when computed: any inf / 0
+    // result falls back to diatonic. Deliberate 0.0f silences and
+    // defaultFreq backfills are NOT ratio-written and stay valid.
+    extern float diatonicScaleFrequency[];
+
+    // octave ratio 1e30: C-fill overflows to inf
+    fatfsShimInjectString("0:/pfm3/scala/huge.scl",
+                          "huge\n3\n9/8\n5/4\n"
+                          "1000000000000000000000000000000/1\n");
+    float* freq = scala_.loadScalaScale(&ms_, 0);
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+
+    // interval 1e-30: degree-fill collapses entries to 0
+    fatfsShimInjectString("0:/pfm3/scala/tiny.scl",
+                          "tiny\n3\n"
+                          "1/1000000000000000000000000000000\n5/4\n2/1\n");
+    freq = scala_.loadScalaScale(&ms_, 0);
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+
+    // octave ratio 1e-30: C-fill underflows toward 0
+    fatfsShimInjectString("0:/pfm3/scala/tinyoct.scl",
+                          "tinyoct\n3\n9/8\n5/4\n"
+                          "1/1000000000000000000000000000000\n");
+    freq = scala_.loadScalaScale(&ms_, 0);
+    EXPECT_EQ(freq, diatonicScaleFrequency);
+    for (int n = 0; n < 127; n++) {
+        EXPECT_TRUE(std::isfinite(freq[n])) << "note " << n;
+    }
+}
+
 TEST_F(ScalaFileTest, RatioLinesParseAsFraction) {
     float f = 0; // getScalaIntervale is private; covered via full-table test
     (void)f;
