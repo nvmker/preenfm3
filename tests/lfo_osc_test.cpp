@@ -54,6 +54,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 // Global 32-entry random table filled by Synth::buildNewSampleBlock (defined
 // in Osc.cpp, linked). Read/write of noise[0] only, always set explicitly.
@@ -475,7 +476,9 @@ TEST_F(LfoOscTest, MidiClockTime8PhaseStaysWrappedOverManyBlocks) {
 TEST_F(LfoOscTest, HostileFreqFailsSafeToPhaseZeroNotUndefinedCast) {
     Configure(LFO_TRIANGLE, 100.8f);
     lfo_->midiClock(0, true);
-    const float hostileRates[] = { 1.0e30f, INFINITY, -INFINITY, NAN };
+    const float hostileRates[] = { 1.0e30f, std::numeric_limits<float>::infinity(),
+                                   -std::numeric_limits<float>::infinity(),
+                                   std::numeric_limits<float>::quiet_NaN() };
     for (float rate : hostileRates) {
         lfo_->currentFreq = rate;
         lfo_->phase = 0.25f;
