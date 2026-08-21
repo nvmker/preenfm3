@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cmath>
+#include <limits>
 #include <cstring>
 #include <new>
 #include <type_traits>
@@ -178,6 +179,51 @@ TEST_F(SimpleCompTest, ExpansionReturnsBoostButLeavesSamplesUnchanged) {
     expectBlockExactlyEqual(block, original);
 }
 
+TEST(SimpleCompStackInstanceTest, FreshStackInstanceMatchesBssInitializedGolden) {
+    // The constructor now explicitly zeroes previousGain_/keydBMax_/gr_/
+    // keydBMaxCpt_, so a plain stack instance (uninitialized storage) must
+    // behave identically to the BSS-backed fixture instance.
+    SimpleComp stackComp;
+    stackComp.initRuntime();
+    stackComp.setThresh(-6.0f);
+    stackComp.setRatio(0.25f);
+    float block[64];
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        block[sample] = (sample & 1U) ? -0.125f : 0.25f;
+    }
+    float original[64];
+    std::copy(block, block + 64, original);
+
+    const float gain = stackComp.processPfm3(block);
+    EXPECT_FLOAT_EQ(gain, 1.0f);
+    ASSERT_TRUE(std::isfinite(gain));
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        ASSERT_TRUE(std::isfinite(block[sample]));
+        EXPECT_EQ(block[sample], original[sample]) << "sample " << sample;
+    }
+
+    // Two fresh stack instances must produce identical output blocks.
+    float a[64], b[64];
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        a[sample] = b[sample] = (sample & 1U) ? -0.5f : 0.75f;
+    }
+    SimpleComp compA, compB;
+    compA.initRuntime(); compB.initRuntime();
+    for (SimpleComp* c : {&compA, &compB}) {
+        c->setSampleRate(1000.0f);
+        c->setAttack(1.0f);
+        c->setRelease(20.0f);
+        c->setThresh(-12.0f);
+        c->setRatio(0.25f);
+    }
+    const float gainA = compA.processPfm3(a);
+    const float gainB = compB.processPfm3(b);
+    EXPECT_EQ(gainA, gainB);
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        EXPECT_EQ(a[sample], b[sample]) << "sample " << sample;
+    }
+}
+
 TEST(SimpleCompRmsTest, RuntimeConfigurationDelegatesToEnvelopeDetectors) {
     using SimpleCompRms = chunkware_simple::SimpleCompRms;
     typename std::aligned_storage<sizeof(SimpleCompRms), alignof(SimpleCompRms)>::type storage;
@@ -193,4 +239,72 @@ TEST(SimpleCompRmsTest, RuntimeConfigurationDelegatesToEnvelopeDetectors) {
     EXPECT_FLOAT_EQ(comp->getAttack(), 2.0f);
     EXPECT_FLOAT_EQ(comp->getRelease(), 80.0f);
     comp->~SimpleCompRms();
+}
+
+
+// 3.6: non-finite input samples must be sanitized to 0 at block entry.
+TEST_F(SimpleCompTest, NonFiniteSamplesSanitizedToZeroAtBlockEntry) {
+    // Compressing path: a NaN/+Inf sample would otherwise poison maxAbsSample,
+    // getGain and previousGain_. Compare against a never-poisoned instance fed
+    // the same block with the non-finite positions pre-zeroed.
+    SimpleComp clean;
+    clean.initRuntime();
+    for (SimpleComp* c : {comp_, &clean}) {
+        c->setSampleRate(1000.0f);
+        c->setAttack(1.0f);
+        c->setRelease(20.0f);
+        c->setThresh(-12.0f);
+        c->setRatio(0.25f);
+    }
+    float hostile[64];
+    fill(hostile, 1.0f, 0.5f);
+    hostile[3] = std::numeric_limits<float>::quiet_NaN();
+    hostile[17] = std::numeric_limits<float>::infinity();
+    hostile[40] = -std::numeric_limits<float>::infinity();
+    float sanitized[64];
+    std::copy(hostile, hostile + 64, sanitized);
+    sanitized[3] = 0.0f;
+    sanitized[17] = 0.0f;
+    sanitized[40] = 0.0f;
+
+    const float gainHostile = comp_->processPfm3(hostile);
+    const float gainClean = clean.processPfm3(sanitized);
+    EXPECT_FLOAT_EQ(gainHostile, gainClean);
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        ASSERT_TRUE(std::isfinite(hostile[sample])) << "sample " << sample;
+        EXPECT_EQ(hostile[sample], sanitized[sample]) << "sample " << sample;
+    }
+}
+
+TEST_F(SimpleCompTest, PoisonedThenCleanBlockMatchesNeverPoisonedInstance) {
+    // previousGain_ must not stay poisoned: after a NaN block, a later loud
+    // block is bit-identical to the same loud block fed to an instance that
+    // saw plain silence first (the NaN block sanitized to all-zero silence).
+    SimpleComp clean;
+    clean.initRuntime();
+    for (SimpleComp* c : {comp_, &clean}) {
+        c->setSampleRate(1000.0f);
+        c->setAttack(1.0f);
+        c->setRelease(20.0f);
+        c->setThresh(-12.0f);
+        c->setRatio(0.25f);
+    }
+    float poison[64];
+    fill(poison, std::numeric_limits<float>::quiet_NaN(),
+          std::numeric_limits<float>::quiet_NaN());
+    comp_->processPfm3(poison);
+    float silence[64] = {};
+    clean.processPfm3(silence);
+
+    float loud[64], loudRef[64];
+    fill(loud, 1.0f, 0.75f);
+    std::copy(loud, loud + 64, loudRef);
+    const float gainPoisoned = comp_->processPfm3(loud);
+    const float gainClean = clean.processPfm3(loudRef);
+    ASSERT_TRUE(std::isfinite(gainPoisoned));
+    EXPECT_FLOAT_EQ(gainPoisoned, gainClean);
+    for (std::size_t sample = 0; sample < 64; ++sample) {
+        ASSERT_TRUE(std::isfinite(loud[sample])) << "sample " << sample;
+        EXPECT_EQ(loud[sample], loudRef[sample]) << "sample " << sample;
+    }
 }

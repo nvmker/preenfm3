@@ -47,6 +47,14 @@ namespace chunkware_simple
 	INLINE float SimpleComp::processPfm3( float *inStereo )
 	{
 	    float *startBuffer = inStereo;
+	    // Sanitize at block entry (plan 3.6): a non-finite sample would poison
+	    // getGain/maxAbs and, through previousGain_, every later block. Only
+	    // the non-finite samples change; finite samples stay bit-identical.
+	    for (int s = 0; s < 64; s++) {
+	        if (!std::isfinite(startBuffer[s])) {
+	            startBuffer[s] = 0.0f;
+	        }
+	    }
 	    float maxAbsSample = 0.0f;
 	    for (int s = 0; s < 32; s++) {
             float rect1 = abs( *inStereo++ );	// rectify input

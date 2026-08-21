@@ -154,6 +154,7 @@ bool        fatfsShimFileExists(const char* path);
 size_t      fatfsShimFileSize(const char* path);
 bool        fatfsShimExtract(const char* path, std::vector<uint8_t>& out);
 size_t      fatfsShimFileCount();
+size_t      fatfsShimOpenFileCount();
 std::vector<std::string> fatfsShimListDir(const char* path);  /* sorted direct children */
 #endif /* __cplusplus */
 

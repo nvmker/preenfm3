@@ -4,6 +4,7 @@
 #include "MidiControllerState.h"
 #include "RingBuffer.h"
 
+#include <climits>
 #include <cstring>
 #include <new>
 #include <type_traits>
@@ -90,8 +91,8 @@ TEST_F(MidiControllerStateTest, ResetRestoresEveryAssignedFieldAcrossAllControls
             EXPECT_EQ(encoder->name[3], char('0' + ordinal / 10));
             EXPECT_EQ(encoder->name[4], char('0' + ordinal % 10));
             EXPECT_EQ(encoder->name[5], 'X');
-            EXPECT_EQ(encoder->encoderType, MIDI_ENCODER_TYPE_NRPN);
-            EXPECT_EQ(encoder->minValue, 42);
+            EXPECT_EQ(encoder->encoderType, MIDI_ENCODER_TYPE_CC);
+            EXPECT_EQ(encoder->minValue, 0);
             EXPECT_EQ(encoder->midiChannel, 16);
             EXPECT_EQ(encoder->controller, 15 + ordinal);
             EXPECT_EQ(encoder->value, (page & 1) ? 64 : 0);
@@ -126,6 +127,31 @@ TEST_F(MidiControllerStateTest, EncoderClampsAndEmitsOnlyOnActualChange) {
     EXPECT_EQ(encoder->value, 0);
 }
 
+TEST_F(MidiControllerStateTest, EncoderExtremeDeltasClampWithoutOverflow) {
+    // value + delta would overflow int for extreme deltas; the accumulate is
+    // done in int64_t so the result is a defined clamp, never a wraparound.
+    MidiEncoder* encoder = state_->getEncoder(0, 0);
+    encoder->value = 1;
+    state_->encoderDelta(0, 3, 0, INT_MAX);
+    EXPECT_EQ((std::vector<uint8_t>{0xB3, 16, 127}), drain());
+    EXPECT_EQ(encoder->value, 127);
+
+    encoder->value = 1;
+    state_->encoderDelta(0, 3, 0, INT_MIN);
+    EXPECT_EQ((std::vector<uint8_t>{0xB3, 16, 0}), drain());
+    EXPECT_EQ(encoder->value, 0);
+
+    encoder->maxValue = 65535;
+    encoder->value = 65535;
+    state_->encoderDelta(0, 3, 0, INT_MIN);
+    EXPECT_EQ((std::vector<uint8_t>{0xB3, 16, 0}), drain());
+    EXPECT_EQ(encoder->value, 0);
+
+    // No-change tick (delta 0) must not emit.
+    state_->encoderDelta(0, 3, 0, 0);
+    EXPECT_TRUE(drain().empty());
+}
+
 TEST_F(MidiControllerStateTest, EncoderClampsToCustomMinimumAndMaximum) {
     MidiEncoder* encoder = state_->getEncoder(0, 1);
     encoder->minValue = 10;
@@ -142,6 +168,45 @@ TEST_F(MidiControllerStateTest, EncoderExplicitChannelOverridesGlobalChannel) {
     encoder->midiChannel = 7;
     state_->encoderDelta(1, 2, 2, 1);
     EXPECT_EQ((std::vector<uint8_t>{0xB7, 24, 65}), drain());
+}
+
+TEST_F(MidiControllerStateTest, HostileStoredChannelFailsSafeToGlobalChannel) {
+    // Bugfix-phase3 item 3.2: a persisted channel > 15 would emit an invalid
+    // status byte (0xB0 + 200); any stored value > 15 resolves to global.
+    MidiEncoder* encoder = state_->getEncoder(0, 0);
+    encoder->midiChannel = 200;
+    state_->encoderDelta(0, 5, 0, 1);
+    EXPECT_EQ((std::vector<uint8_t>{0xB5, 16, 1}), drain());
+
+    MidiButton* button = state_->getButton(0, 0);
+    button->buttonType = MIDI_BUTTON_TYPE_PUSH;
+    button->midiChannel = 17;
+    state_->buttonDown(0, 6, 0);
+    EXPECT_EQ((std::vector<uint8_t>{0xB6, 60, 127}), drain());
+    EXPECT_TRUE(state_->buttonUp(0, 6, 0));
+    EXPECT_EQ((std::vector<uint8_t>{0xB6, 60, 0}), drain());
+
+    // Sentinel 16 still means global, and 0-15 still win over global.
+    encoder->midiChannel = 16;
+    state_->encoderDelta(0, 2, 0, 1);
+    EXPECT_EQ((std::vector<uint8_t>{0xB2, 16, 2}), drain());
+    encoder->midiChannel = 15;
+    state_->encoderDelta(0, 2, 0, 1);
+    EXPECT_EQ((std::vector<uint8_t>{0xBF, 16, 3}), drain());
+}
+
+TEST_F(MidiControllerStateTest, UnknownButtonTypeEmitsNothingAndKeepsState) {
+    // Bugfix-phase3 item 3.3: an unknown buttonType must not emit CC with
+    // stale state, and must not change the stored value.
+    MidiButton* button = state_->getButton(0, 0);
+    button->buttonType = (MidiButtonType)7;
+    button->value = 0;
+    state_->buttonDown(0, 4, 0);
+    EXPECT_TRUE(drain().empty());
+    EXPECT_EQ(button->value, 0);
+    EXPECT_FALSE(state_->buttonUp(0, 4, 0));
+    EXPECT_TRUE(drain().empty());
+    EXPECT_EQ(button->value, 0);
 }
 
 TEST_F(MidiControllerStateTest, PushDownAndUpEmitOnThenOffAndUpReturnsTrue) {

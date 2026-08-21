@@ -743,6 +743,43 @@ TEST_F(SynthCore, NewMixerValueGlobalFxSettingsArmsComplete) {
 }
 
 // ===========================================================================
+TEST_F(SynthCore, HostileSendAboveOneClampsDryPathToZero) {
+    // Regression (bugfix-phase3 3.10): the dry-output path computed
+    // panTable[(int)((1 - send) * 255)] — send > 1 made the index negative and
+    // read below the table (UB/OOB). A finite negative derived index must clamp
+    // to 0; only non-finite input takes the fail-audible index-255 path.
+    // Driven via the production CC-routing entry point
+    // Synth::setNewMixerValueFromMidi(MIXER_VALUE_SEND) -> newMixerValue,
+    // which writes mixerState.instrumentState_[0].send; output observed at
+    // Synth::buildNewSampleBlock level. Value > 1 is unreachable from a
+    // normal MIDI CC (0..127/127 <= 1) — it models a corrupt preset/state.
+    harness_->setReverbLevel(0.0f);  // isolate the dry path from FxBus output
+    synth().noteOn(0, 60, 100);
+    ASSERT_GT(renderBlocks(2), kSilenceThreshold);
+    synth().setNewMixerValueFromMidi(0, MIXER_VALUE_SEND, 2.0f);
+    EXPECT_LE(renderBlocks(4), kSilenceThreshold)
+        << "finite send=2 derives -255 and must clamp to panTable[0]";
+    synth().noteOff(0, 60);
+}
+
+TEST_F(SynthCore, HostileNanSendRendersDefinedDryOutput) {
+    // Review follow-up to 3.10: the clamp ran AFTER the (int) cast, but
+    // (int)NaN and (int)infinity are undefined float-to-int conversions
+    // (UBSan float-cast-overflow) -- the clamp can never repair them. The
+    // index is now derived only after a float-domain range check, and a
+    // non-finite send fails AUDIBLE (treated as send 0: full dry, index
+    // 255 -- panTable[0] is zero, so index 0 would mute the timbre). Valid
+    // sends in [0, 1] render byte-identically.
+    harness_->setReverbLevel(0.0f);  // non-finite send must still retain dry audio
+    synth().noteOn(0, 60, 100);
+    renderBlocks(2);
+    synth().setNewMixerValueFromMidi(0, MIXER_VALUE_SEND, NAN);
+    const int64_t m = renderBlocks(4);
+    EXPECT_GT(m, kSilenceThreshold) << "full-dry pan, note should be audible";
+    EXPECT_LT(m, (int64_t)1 << 30);
+    synth().noteOff(0, 60);
+}
+
 // 8. midiClock routing (Synth::midiClock* — tellSequencer=false arms).
 // ===========================================================================
 
