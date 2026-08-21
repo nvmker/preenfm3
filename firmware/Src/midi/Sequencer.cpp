@@ -613,7 +613,7 @@ bool Sequencer::stepRecordNotes(int instrument, int stepCursor, int stepSize) {
 
 void Sequencer::stepClearPart(int instrument, int stepCursor, int stepSize) {
 	int seqNumber = instrumentStepSeq_[instrument];
-    for (int s = stepCursor; (s < (stepCursor + stepSize)) && (s < 255); s++) {
+    for (int s = stepCursor; (s < (stepCursor + stepSize)) && (s < 256); s++) {
         stepNotes[seqNumber][s].full = 0l;
         stepNotes[seqNumber][s].unique = stepUniqueValue_[instrument];
     }
@@ -632,7 +632,7 @@ void Sequencer::stepClearAll(int instrument) {
 	int seqNumber = instrumentStepSeq_[instrument];
     synth_->stopArpegiator(instrument);
 	synth_->allNoteOff(instrument);
-    for (int s = 0; s < 255; s++) {
+    for (int s = 0; s < 256; s++) {
         stepNotes[seqNumber][s].full = 0;
     }
     stepUniqueValue_[instrument] = 1;
