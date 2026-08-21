@@ -189,6 +189,8 @@ TEST_F(SequenceBankTest, LoadSequenceNameMissingOrUnknownVersion) {
     strcpy(b2.name, "bogus");
     b2.fileType = FILE_OK;
     EXPECT_STREQ(bank_.loadSequenceName(&b2, 0), "##");    // no version arm
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u)
+        << "unknown-version fallback must close the opened bank";
 }
 
 TEST_F(SequenceBankTest, IsReadOnlyFollowsStoredVersion) {
@@ -229,6 +231,8 @@ TEST_F(SequenceBankTest, ShortVersionHeaderIsRejected) {
     // version dispatch skipped -> same safe paths as an unknown version
     EXPECT_TRUE(bank_.isReadOnly(&bank));            // read-only
     EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");  // fallback name
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u)
+        << "short-header fallback must close the opened bank";
 
     // loadSequence must not touch sequencer state from truncated data
     StampState();
@@ -254,6 +258,8 @@ TEST_F(SequenceBankTest, FailedVersionHeaderReadIsRejected) {
     EXPECT_TRUE(bank_.isReadOnly(&bank));            // fail-safe read-only
     fatfsShimFailNext("f_read", FR_DISK_ERR);
     EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u)
+        << "failed-header fallback must close the opened bank";
 }
 
 TEST_F(SequenceBankTest, IsCorrectFileRequiresSeqExtension) {

@@ -25,6 +25,7 @@
 #ifndef PFM3_HOST
 #include "stm32h7xx_hal.h"
 #endif
+#include <math.h>
 #include "Synth.h"
 #include "Menu.h"
 #include "Sequencer.h"
@@ -389,14 +390,17 @@ uint8_t Synth::buildNewSampleBlock(int32_t *buffer1, int32_t *buffer2, int32_t *
         // math) BEFORE the int conversion -- (int)NaN and (int)infinity
         // are undefined conversions no later clamp can repair. A
         // non-finite hostile send fails AUDIBLE: treated as send 0
-        // (index 255, full dry) so the timbre keeps sounding. Same
-        // idiom as FxBus::mixAdd.
+        // (index 255, full dry) so the timbre keeps sounding. Finite
+        // out-of-range values still clamp to the mathematically nearest
+        // table endpoint.
         float dryPan = (1.0f - synthState_->mixerState.instrumentState_[timbre].send) * 255.0f;
         int dryPanIndex;
-        if (!(dryPan >= 0.0f)) {
-            dryPanIndex = 255; // NaN or -inf: fail audible (no send)
+        if (!isfinite(dryPan)) {
+            dryPanIndex = 255; // fail audible (no send)
+        } else if (dryPan <= 0.0f) {
+            dryPanIndex = 0;
         } else if (dryPan >= 255.0f) {
-            dryPanIndex = 255; // +inf or >= 255
+            dryPanIndex = 255;
         } else {
             dryPanIndex = static_cast<int>(dryPan);
         }
