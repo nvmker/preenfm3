@@ -94,14 +94,10 @@ void PatchBank::loadPatch(const struct PFM3File *bank, int patchNumber, struct O
     if (result == ALIGNED_PATCH_SIZE) {
         uint32_t version = *(uint32_t*) (&storageBuffer[ALIGNED_PATCH_SIZE - 5]);
         switch (version) {
-            case PRESET_VERSION2:
-                // Direct copy
-                for (uint32_t p = 0; p < PFM3_PATCH_FLASH_SIZE; p++) {
-                    ((char*) params)[p] = storageBuffer[p];
-                }
-                break;
             default:
-                // VERSION1 Needs a conversion
+                // VERSION1 Needs a conversion. Unknown versions (including
+                // the old PRESET_VERSION2 layout, never written) take the
+                // same conversion path.
                 convertFlashToParams((const struct FlashSynthParams*) storageBuffer, params, *arpeggiatorPartOfThePreset_ > 0);
                 break;
         }
@@ -117,19 +113,6 @@ const char* PatchBank::loadPatchName(const struct PFM3File *bank, int patchNumbe
     int namePosition;
 
     switch (version) {
-        case PRESET_VERSION2: {
-            OneSynthParams *version2Params = (OneSynthParams*) storageBuffer;
-#ifndef PFM3_HOST
-            namePosition = (int) (((unsigned int) version2Params->presetName) - (unsigned int) version2Params);
-#else
-            // Host (64-bit): the Arm code's (unsigned int) pointer casts are a
-            // hard error on 64-bit hosts (loses information). Same offset via
-            // char* difference - bit-identical result, both pointers are
-            // members of storageBuffer.
-            namePosition = (int) (((char*) version2Params->presetName) - (char*) version2Params);
-#endif
-            break;
-        }
         default: {
             // VERSION 1
             FlashSynthParams *flashSynthParams = (FlashSynthParams*) storageBuffer;

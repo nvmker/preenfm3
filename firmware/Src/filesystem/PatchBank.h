@@ -21,8 +21,7 @@
 #include "PreenFMFileType.h"
 
 enum PRESET_VERSION {
-    PRESET_VERSION1 = 0,
-    PRESET_VERSION2 = 292928062 // random 32 bits number for the first preenfm3
+    PRESET_VERSION1 = 0
 };
 
 // Let's stick to VERSION1 : VERSION2 seems dangerous :)

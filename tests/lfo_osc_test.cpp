@@ -54,6 +54,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 // Global 32-entry random table filled by Synth::buildNewSampleBlock (defined
 // in Osc.cpp, linked). Read/write of noise[0] only, always set explicitly.
@@ -189,6 +190,24 @@ TEST_F(LfoOscTest, FreqDrivesPhaseIncrementPlusMatrixDestination) {
         lfo_->nextValueInMatrix();
     }
     EXPECT_NEAR(lfo_->phase, expected, kTol);
+}
+
+TEST_F(LfoOscTest, NegativeMatrixModulationPreservesFreeRunPhaseSemantics) {
+    Configure(LFO_TRIANGLE, 0.1f);
+    ASSERT_TRUE(lfo_->isNotMidiSynchronized);
+    lfo_->noteOn();
+
+    rows_[4].source = MATRIX_SOURCE_MODWHEEL;
+    rows_[4].mul = -1.0f;
+    rows_[4].dest1 = LFO1_FREQ;
+    rows_[4].dest2 = (DestinationEnum)0;
+    matrix_.setSource(MATRIX_SOURCE_MODWHEEL, 1.0f);
+    matrix_.computeAllDestinations();
+
+    lfo_->nextValueInMatrix();
+    EXPECT_NEAR(lfo_->phase, (0.1f - 1.0f) * kInvLfo, kTol)
+        << "valid negative free-run modulation must not be reset by the "
+           "MIDI-synchronized phase guard";
 }
 
 // S&H randomness (LFO_RANDOM): the value holds noise[0] sampled at the last
@@ -441,6 +460,53 @@ TEST_F(LfoOscTest, MidiClockAllDivisionsSnapPhaseAndRate) {
         lfo_->midiClock(8, true);
         EXPECT_NEAR(lfo_->phase, c.expectedPhase, kTol);
         EXPECT_NEAR(lfo_->currentFreq, c.expectedFreq, kTol);
+
+        // Post-advance wrap: TIME_3/4/8 advance the phase by 3/2/4 per
+        // block; after several blocks the phase must stay in [0, 1).
+        for (int block = 0; block < 8; block++) {
+            lfo_->nextValueInMatrix();
+            EXPECT_GE(lfo_->phase, 0.0f) << "phase escaped [0,1) after block " << block;
+            EXPECT_LT(lfo_->phase, 1.0f) << "phase escaped [0,1) after block " << block;
+        }
+    }
+}
+
+// Regression for the pre-fix escape: TIME_8 advances the phase by 4 per
+// block, so the old per-waveform single `phase -= 1` left the phase in
+// [0,4) and the modulation out of range for several consecutive blocks.
+TEST_F(LfoOscTest, MidiClockTime8PhaseStaysWrappedOverManyBlocks) {
+    Configure(LFO_TRIANGLE, 100.8f);  // (int)(100.8*10+.05) == 1008: TIME_8
+    ASSERT_FALSE(lfo_->isNotMidiSynchronized);
+    lfo_->midiClock(0, true);
+    for (int block = 0; block < 32; block++) {
+        lfo_->nextValueInMatrix();
+        ASSERT_GE(lfo_->phase, 0.0f) << "phase escaped [0,1) after block " << block;
+        ASSERT_LT(lfo_->phase, 1.0f) << "phase escaped [0,1) after block " << block;
+        // Triangle value stays a valid waveform sample in [-1, 1].
+        EXPECT_LE(Source(), 1.0f);
+        EXPECT_GE(Source(), -1.0f);
+    }
+}
+
+// A hostile rate (NaN / inf / huge float from a corrupt preset) must fail
+// safe to phase 0 in the float domain — never reach the undefined (int) cast
+// in the per-block wrap (review finding on the 4.4 fix).
+TEST_F(LfoOscTest, HostileFreqFailsSafeToPhaseZeroNotUndefinedCast) {
+    Configure(LFO_TRIANGLE, 100.8f);
+    lfo_->midiClock(0, true);
+    const float hostileRates[] = { 1.0e30f, std::numeric_limits<float>::infinity(),
+                                   -std::numeric_limits<float>::infinity(),
+                                   std::numeric_limits<float>::quiet_NaN() };
+    for (float rate : hostileRates) {
+        lfo_->currentFreq = rate;
+        lfo_->phase = 0.25f;
+        for (int block = 0; block < 4; block++) {
+            lfo_->nextValueInMatrix();
+            EXPECT_TRUE(lfo_->phase >= 0.0f && lfo_->phase < 1.0f)
+                << "rate " << rate << " left phase at " << lfo_->phase;
+        }
+        EXPECT_LE(Source(), 1.0f);
+        EXPECT_GE(Source(), -1.0f);
     }
 }
 

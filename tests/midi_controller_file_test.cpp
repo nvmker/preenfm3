@@ -353,6 +353,27 @@ TEST_F(MidiControllerFileTest, HostilePersistedButtonTypeLoadsAsPush) {
     EXPECT_EQ(restored.state->getButton(0, 1)->buttonType, MIDI_BUTTON_TYPE_PUSH);
 }
 
+TEST_F(MidiControllerFileTest, HostilePersistedEncoderTypeLoadsAsCc) {
+    // Bugfix-phase4 folded-B: a corrupt encoderType byte (e.g. 9) must load
+    // as CC, never into state as an unknown type.
+    ZeroedController source;
+    ZeroedController restored;
+    differentiate(source.state, 47);
+    file_.saveConfig(source.state);
+
+    std::vector<uint8_t> bytes;
+    ASSERT_TRUE(fatfsShimExtract(MIDI_CONTROLLER_STATE_NAME, bytes));
+    const std::size_t encoder0Type = 2U + 20U + 6U + 2U;  // page0 encoder1 encoderType
+    bytes[encoder0Type] = 9;
+    bytes[encoder0Type + 1U] = 0;
+    fatfsShimReset();
+    fatfsShimMkdir("0:/pfm3");
+    fatfsShimInjectBytes(MIDI_CONTROLLER_STATE_NAME, bytes.data(), bytes.size());
+
+    file_.loadConfig(restored.state);
+    EXPECT_EQ(restored.state->getEncoder(0, 1)->encoderType, MIDI_ENCODER_TYPE_CC);
+}
+
 TEST_F(MidiControllerFileTest, TruncatedVersionOneBodyLeavesStateUnchanged) {
     // Bugfix-phase3 item 3.4: a valid V1 prefix with a truncated body must not
     // be deserialized — the record walk would read stale storageBuffer bytes.

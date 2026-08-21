@@ -170,20 +170,22 @@ void MixerState::getFullDefaultState(char *buffer, uint32_t *size, uint8_t mixNu
     buffer[index++] = 100;
 
 
-    // Master FX default value
-    buffer[index++] = (char)(GLOBALFX_PREDELAYTIME_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_PREDELAYMIX_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_SIZE_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_DIFFUSION_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_DAMPING_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_DECAY_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_LFODEPTH_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_LFOSPEED_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_INPUTBASE_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_INPUTWIDTH_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_NOTCHBASE_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_NOTCHSPREAD_DEFAULT * 100.0f);
-    buffer[index++] = (char)(GLOBALFX_LOOPHP_DEFAULT * 100.0f);
+    // Master FX default value — canonical v6 save/restore order (see
+    // getFullState above / restoreFullState below), lroundf-quantized like
+    // the save path so a default mix round-trips onto its own defaults.
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_PREDELAYTIME_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_DECAY_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_PREDELAYMIX_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_SIZE_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_DIFFUSION_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_DAMPING_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_LFODEPTH_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_LFOSPEED_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_INPUTBASE_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_INPUTWIDTH_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_LOOPHP_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_NOTCHBASE_DEFAULT * 100.0f));
+    buffer[index++] = static_cast<char>(__builtin_lroundf(GLOBALFX_NOTCHSPREAD_DEFAULT * 100.0f));
 
     *size = index;
 }

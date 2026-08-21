@@ -172,11 +172,22 @@ float* ScalaFile::applyScalaScale(MixerState* mixerState, int instrumentNumber) 
 	int firstC = 0;
 	int lastNote = 127;
 	for (int n = 60 - octaveDegree; n >=0; n = n - octaveDegree) {
-	    instrumentScalaFrequency[n] = instrumentScalaFrequency[n + octaveDegree]  / octaveRatio;
+	    float freq = instrumentScalaFrequency[n + octaveDegree] / octaveRatio;
+	    if (!isfinite(freq) || freq <= 0.0f) {
+	        // Extreme octave ratio (e.g. 1e30) under/overflows the ratio-written
+	        // entry at computation time: diatonic fallback, like a degenerate
+	        // interval.
+	        return diatonicScaleFrequency;
+	    }
+	    instrumentScalaFrequency[n] = freq;
 		firstC = n;
 	}
 	for (int n = 60 + octaveDegree; n <=127; n = n + octaveDegree) {
-	    instrumentScalaFrequency[n] = instrumentScalaFrequency[n - octaveDegree]  * octaveRatio;
+	    float freq = instrumentScalaFrequency[n - octaveDegree] * octaveRatio;
+	    if (!isfinite(freq) || freq <= 0.0f) {
+	        return diatonicScaleFrequency;
+	    }
+	    instrumentScalaFrequency[n] = freq;
 	}
 
 	// init unusable last 8 notes
@@ -188,7 +199,13 @@ float* ScalaFile::applyScalaScale(MixerState* mixerState, int instrumentNumber) 
 	for (int octave = firstC ; octave <= 127; octave += octaveDegree) {
 		for (int n = 1; n < numberOfDegrees[instrumentNumber]; n++) {
 			if (octave + n <= 127) {
-			    instrumentScalaFrequency[octave + n] = instrumentScalaFrequency[octave] * interval[instrumentNumber][n-1];
+			    float freq = instrumentScalaFrequency[octave] * interval[instrumentNumber][n-1];
+			    if (!isfinite(freq) || freq <= 0.0f) {
+			        // Extreme interval (e.g. 1e-30) collapses the ratio-written
+			        // entry to 0 at computation time: diatonic fallback.
+			        return diatonicScaleFrequency;
+			    }
+			    instrumentScalaFrequency[octave + n] = freq;
 				lastNote = octave + n;
 			}
 		}

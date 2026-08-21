@@ -389,4 +389,28 @@ TEST_F(FxBusTest, DeferredParamChangeBranchRecomputesCoefficients) {
     EXPECT_EQ(bus_->nextPresetNum, 0);
 }
 
+// FIXED (spec 4.3): with ALL reverb sends at 0 (totalSent == 0 on every
+// block), the deferred-change machine still advances and fires after 100
+// mixSumInit cycles — previously the early return starved the wait counter
+// and an armed preset/param change never fired.
+TEST_F(FxBusTest, DeferredPresetChangeFiresWithAllReverbSendsAtZero) {
+    bus_->masterfxConfig[GLOBALFX_SIZE] = 0.5f;  // sentinel, no preset value
+    bus_->paramChanged();
+    ASSERT_FLOAT_EQ(bus_->masterfxConfig[GLOBALFX_SIZE], 0.5f);
+
+    bus_->nextPresetNum = 6;
+    bus_->slowParamChange();
+    ASSERT_TRUE(bus_->somethingChanged);
+    ASSERT_EQ(bus_->waitCountBeforeChange, 100);
+
+    for (int i = 0; i < 100; i++) bus_->mixSumInit();  // no mixAdd: totalSent == 0
+    EXPECT_FLOAT_EQ(bus_->masterfxConfig[GLOBALFX_SIZE], 0.5f)
+        << "fired early: the wait counter was not honored";
+    EXPECT_EQ(bus_->waitCountBeforeChange, 0);
+
+    bus_->mixSumInit();  // 101st silent cycle: fires anyway
+    EXPECT_FALSE(bus_->somethingChanged) << "machine must disarm";
+    EXPECT_FLOAT_EQ(bus_->masterfxConfig[GLOBALFX_SIZE], 0.465f);
+}
+
 }  // namespace
