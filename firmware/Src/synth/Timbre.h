@@ -84,6 +84,9 @@ public:
     void preenNoteOn(char note, char velocity);
     inline void preenNoteOnUpdateMatrix(int voiceToUse, int note, int velocity);
     void preenNoteOff(char note);
+    void monoNotePush(char note, char velocity);
+    void monoNoteRemove(char note);
+    void monoNoteRecall();
 
     void numberOfVoicesChanged(uint8_t newNumberOfVoices) {
         if (likely(newNumberOfVoices > 0)) {
@@ -341,6 +344,17 @@ private:
     uint8_t lowerNote_;
     float lowerNoteFrequency;
     bool lowerNoteReleased_;
+
+    // MONO mode: LIFO stack of physically held notes (note + velocity) used
+    // to recall the most recent still-held note when the sounding note is
+    // released.
+    static const int MONO_STACK_SIZE = 16;
+    struct MonoHeldNote {
+        uint8_t note;
+        uint8_t velocity;
+    };
+    MonoHeldNote monoStack_[MONO_STACK_SIZE];
+    int monoStackSize_;
     // static
     static uint32_t voiceIndex_;
 
