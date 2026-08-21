@@ -239,10 +239,9 @@ TEST_F(SynthCore, MonoModeUsesASingleLegatoVoice) {
     EXPECT_GT(renderBlocks(4), kSilenceThreshold);
 }
 
-TEST_F(SynthCore, MonoModeNoteOffReleasesWithoutRecall) {
-    // CHARACTERIZATION: MONO mode has no note-stack recall in preenNoteOff —
-    // after the (single) sounding note is released, a previously-held lower
-    // note is NOT restarted. Locked as-is; a recall feature would flip this.
+TEST_F(SynthCore, MonoModeNoteOffRecallsHeldNote) {
+    // MONO note-stack recall: hold 60, play 67, release 67 — the most recent
+    // still-held note (60) resounds through the normal mono note-on path.
     auto* p = synth().getTimbre(0)->getParamRaw();
     p->engine1.playMode = PLAY_MODE_MONO;
     synth().noteOn(0, 60, 100);
@@ -250,13 +249,97 @@ TEST_F(SynthCore, MonoModeNoteOffReleasesWithoutRecall) {
     synth().noteOn(0, 67, 100);
     renderBlocks(3);
     synth().noteOff(0, 67);
+    EXPECT_GT(renderBlocks(4), kSilenceThreshold)
+        << "held note 60 was not recalled after releasing 67";
+    EXPECT_EQ(static_cast<int>(static_cast<uint8_t>(
+                  synth().hostVoice(voiceForSlot(0)).getNote())), 60)
+        << "recall must retrigger the previously held note, on the same voice";
+    // Releasing the recalled note with an empty stack goes silent (regression
+    // for the old no-recall behavior's premise).
+    synth().noteOff(0, 60);
     renderUntilSilent(2200);
     EXPECT_TRUE(renderIsSilent(8));
-    // (isPlaying() may stay true — same pendingNote+=128 stuck-flag quirk as
-    // the steal suite; the RENDER is silent and a fresh noteOn recovers.)
+    // ... and the timbre recovers on a fresh press.
     synth().noteOn(0, 72, 100);
     renderBlocks(3);
     EXPECT_GT(renderBlocks(4), kSilenceThreshold);
+}
+
+TEST_F(SynthCore, MonoModeRecallUsesLifoOrder) {
+    // Stack is LIFO: with 60, 64, 67 held, releasing 67 recalls 64 (the most
+    // recent still-held note), not 60 (the lowest).
+    auto* p = synth().getTimbre(0)->getParamRaw();
+    p->engine1.playMode = PLAY_MODE_MONO;
+    synth().noteOn(0, 60, 100);
+    synth().noteOn(0, 64, 100);
+    synth().noteOn(0, 67, 100);
+    renderBlocks(3);
+    synth().noteOff(0, 67);
+    renderBlocks(3);
+    EXPECT_EQ(static_cast<int>(static_cast<uint8_t>(
+                  synth().hostVoice(voiceForSlot(0)).getNote())), 64)
+        << "recall must be LIFO (most recent held), not lowest-note";
+    EXPECT_GT(renderBlocks(4), kSilenceThreshold);
+}
+
+TEST_F(SynthCore, MonoModePedalHeldNoteOffDoesNotRecall) {
+    // Pedal-held release: the voice is sustained by the pedal, no recall.
+    synth().setHoldPedal(0, 127);
+    auto* p = synth().getTimbre(0)->getParamRaw();
+    p->engine1.playMode = PLAY_MODE_MONO;
+    synth().noteOn(0, 60, 100);
+    renderBlocks(3);
+    synth().noteOn(0, 67, 100);
+    renderBlocks(3);
+    synth().noteOff(0, 67);
+    renderBlocks(20);
+    EXPECT_TRUE(synth().hostVoice(voiceForSlot(0)).isPlaying())
+        << "pedal-held release must sustain the voice";
+    EXPECT_EQ(static_cast<int>(static_cast<uint8_t>(
+                  synth().hostVoice(voiceForSlot(0)).getNote())), 67)
+        << "pedal-held release must NOT recall the lower note";
+    // Pedal up: nothing is held anymore, so the deferred release ends silent.
+    synth().setHoldPedal(0, 0);
+    renderUntilSilent(2200);
+    EXPECT_TRUE(renderIsSilent(8));
+}
+
+TEST_F(SynthCore, MonoModeGlideRecallGlidesBackDown) {
+    // With glide OVERLAP, the recall of a lower note after the glide to the
+    // upper note completes glides back down instead of hard-switching.
+    auto* p = synth().getTimbre(0)->getParamRaw();
+    p->engine1.playMode = PLAY_MODE_MONO;
+    p->engine2.glideType = GLIDE_TYPE_OVERLAP;
+    p->engine1.glideSpeed = 4.0f;
+    synth().noteOn(0, 60, 100);
+    renderBlocks(3);
+    synth().noteOn(0, 64, 100);   // glide 60 -> 64
+    synth().noteOn(0, 72, 100);   // glide 64 -> 72 (note field still tracks
+    renderBlocks(3);              // the glide-from note while gliding)
+    synth().noteOff(0, 72);
+    EXPECT_TRUE(synth().hostVoice(voiceForSlot(0)).isGliding())
+        << "recall of 64 must glide back down (glideType OVERLAP)";
+    EXPECT_GT(renderBlocks(4), kSilenceThreshold);
+    renderBlocks(600);   // let the glide back complete
+    EXPECT_EQ(static_cast<int>(static_cast<uint8_t>(
+                  synth().hostVoice(voiceForSlot(0)).getNote())), 64)
+        << "glide-mode recall must target the LIFO stack top (64), not the "
+           "lowest/original note";
+    EXPECT_GT(renderBlocks(4), kSilenceThreshold);
+}
+
+TEST_F(SynthCore, UnisonModeNoteOffDoesNotRecall) {
+    // Recall is MONO-only: in UNISON, releasing the sounding note with a
+    // lower note held still ends in silence.
+    auto* p = synth().getTimbre(0)->getParamRaw();
+    p->engine1.playMode = PLAY_MODE_UNISON;
+    synth().noteOn(0, 60, 100);
+    renderBlocks(3);
+    synth().noteOn(0, 67, 100);
+    renderBlocks(3);
+    synth().noteOff(0, 67);
+    renderUntilSilent(2200);
+    EXPECT_TRUE(renderIsSilent(8)) << "UNISON must not recall held notes";
 }
 
 TEST_F(SynthCore, UnisonModeOneNoteSoundsAllVoices) {
