@@ -545,8 +545,12 @@ void Voice::noteOn(short newNote, float newNoteFrequency, short velocity, uint32
 
 void Voice::endNoteOrBeginNextOne() {
     if (this->newNotePending) {
-        // pendingNote can be 255 : see Voice:noteOff
-        if (pendingNote <= 127) {
+        // pendingNote can be 255 : see Voice:noteOff.
+        // pendingNote is a signed char: the noteOff flag (+128) wraps into
+        // negative values, so the comparison MUST be unsigned - else the
+        // finish-now path below never runs and `playing` stays stuck true
+        // after the pending tail decays away.
+        if ((uint8_t)pendingNote <= 127) {
             noteOn(pendingNote, pendingNoteFrequency, pendingNoteVelocity, index, phase_);
         } else {
             noteOn(pendingNote - 128, pendingNoteFrequency, pendingNoteVelocity, index, phase_);

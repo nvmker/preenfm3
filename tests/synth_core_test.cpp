@@ -161,14 +161,12 @@ TEST_F(SynthCore, StolenOldestNoteIsGoneNoteOffsOfSoundingNotesDrainAll) {
     ASSERT_LT(drained, 2200) << "release never completed within the budget "
                                 "(regression: both releases stopped decaying)";
     EXPECT_TRUE(renderIsSilent(8));
-    // CHARACTERIZATION (quirk, NOT fixed): isPlaying() stays TRUE here — the
-    // voice that was mid-quick-die (newNotePending) when its noteOff arrived
-    // takes the `pendingNote += 128` branch (Voice.cpp:592-596) and its
-    // `playing` flag is never cleared, even after the render decays to
-    // silence. No stuck AUDIO (render is silent) and the voice is recoverable:
-    // a fresh noteOn steals it back and sounds normally.
-    EXPECT_TRUE(synth().isPlaying())
-        << "characterized stuck-playing flag unexpectedly cleared";
+    // FIXED (spec 4.6): the voice that was mid-quick-die (newNotePending)
+    // when its noteOff arrived takes the `pendingNote += 128` branch and its
+    // pending tail used to leave `playing` stuck true after decaying to
+    // silence. After the drain, isPlaying() must now be truthful.
+    EXPECT_FALSE(synth().isPlaying())
+        << "stuck-playing flag: pending-tail voice never cleared playing";
     synth().noteOn(0, 88, 100);
     renderBlocks(3);
     EXPECT_GT(renderBlocks(4), kSilenceThreshold) << "stuck-flag voice is stealable (no audible stuck note)";
