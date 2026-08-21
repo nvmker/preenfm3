@@ -441,6 +441,31 @@ TEST_F(LfoOscTest, MidiClockAllDivisionsSnapPhaseAndRate) {
         lfo_->midiClock(8, true);
         EXPECT_NEAR(lfo_->phase, c.expectedPhase, kTol);
         EXPECT_NEAR(lfo_->currentFreq, c.expectedFreq, kTol);
+
+        // Post-advance wrap: TIME_3/4/8 advance the phase by 3/2/4 per
+        // block; after several blocks the phase must stay in [0, 1).
+        for (int block = 0; block < 8; block++) {
+            lfo_->nextValueInMatrix();
+            EXPECT_GE(lfo_->phase, 0.0f) << "phase escaped [0,1) after block " << block;
+            EXPECT_LT(lfo_->phase, 1.0f) << "phase escaped [0,1) after block " << block;
+        }
+    }
+}
+
+// Regression for the pre-fix escape: TIME_8 advances the phase by 4 per
+// block, so the old per-waveform single `phase -= 1` left the phase in
+// [0,4) and the modulation out of range for several consecutive blocks.
+TEST_F(LfoOscTest, MidiClockTime8PhaseStaysWrappedOverManyBlocks) {
+    Configure(LFO_TRIANGLE, 100.8f);  // (int)(100.8*10+.05) == 1008: TIME_8
+    ASSERT_FALSE(lfo_->isNotMidiSynchronized);
+    lfo_->midiClock(0, true);
+    for (int block = 0; block < 32; block++) {
+        lfo_->nextValueInMatrix();
+        ASSERT_GE(lfo_->phase, 0.0f) << "phase escaped [0,1) after block " << block;
+        ASSERT_LT(lfo_->phase, 1.0f) << "phase escaped [0,1) after block " << block;
+        // Triangle value stays a valid waveform sample in [-1, 1].
+        EXPECT_LE(Source(), 1.0f);
+        EXPECT_GE(Source(), -1.0f);
     }
 }
 
