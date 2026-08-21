@@ -263,6 +263,24 @@ TEST_F(LfoStepSeqTest, MidiClockResyncsPhaseAndRatePerDivision) {
     }
 }
 
+// FIXED (spec 4.5): corrupt/unmatched sync bpm values (246-255, e.g. from a
+// bad bank) previously matched NO switch arm in midiClock, leaving a zero or
+// stale phaseStep. The default arm snaps them to TIME_4 (245) behavior —
+// the nearest supported division.
+TEST_F(LfoStepSeqTest, MidiClockCorruptBpmFallsBackToTime4) {
+    for (float bpm : {246.0f, 250.0f, 255.0f}) {
+        SCOPED_TRACE(bpm);
+        params_.bpm = bpm;
+        lfo_->init(&params_, &steps_, &matrix_, MATRIX_SOURCE_LFOSEQ1,
+                   LFOSEQ1_GATE);
+        lfo_->midiClock(8, true);
+        EXPECT_NEAR(lfo_->phase, (float)((8 << 1) & 0xF), 1e-6f)
+            << "phase must snap like TIME_4";
+        EXPECT_FLOAT_EQ(lfo_->phaseStep, 8.0f)
+            << "rate must snap like TIME_4";
+    }
+}
+
 // Odd songPositions are ignored by every division case ((songPosition & 1)
 // must be 0) — nothing moves. And with computeStep=false (midiClockContinue),
 // the phase still snaps but the rate (phaseStep) is NOT recomputed.
