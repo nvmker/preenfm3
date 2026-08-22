@@ -69,6 +69,22 @@ static FIL sequenceFile;
 extern SeqMidiAction actions[SEQ_ACTION_SIZE];
 extern StepSeqValue stepNotes[NUMBER_OF_STEP_SEQUENCES][256];
 
+// Payload loads are transactional: FatFs may return an error after copying a
+// short prefix, so reading directly into the live sequencer tables can expose
+// a mixed old/new state. Split the staging tables across SRAM regions with
+// enough verified linker headroom (16 KiB in D3, 24 KiB in D2B).
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d3")))
+#endif
+static SeqMidiAction stagedActions[SEQ_ACTION_SIZE];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+static StepSeqValue stagedStepNotes[NUMBER_OF_STEP_SEQUENCES][256];
+
+static_assert(sizeof(stagedActions) == 16384, "sequence action file layout changed");
+static_assert(sizeof(stagedStepNotes) == 24576, "sequence step file layout changed");
+
 SequenceBank::SequenceBank() {
     this->numberOfFilesMax_ = NUMBEROFPREENFMSEQUENCES;
     this->myFiles_ = preenFMSequenceAlloc;
@@ -162,26 +178,29 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
         return;
     }
 
-    // Review patch: read+validate every payload BEFORE any mutation of the
-    // sequencer. The 1024-byte state stays staged in storageBuffer and
-    // setFullState runs LAST so any single read failure leaves the core
-    // sequencer state untouched (actions/stepNotes are the sequencer's own
-    // arrays and cannot be staged on this RAM budget — the reorder is the
-    // achievable contract).
+    // Read every section into staging storage. No live sequencer state changes
+    // until all exact-length reads have succeeded.
     for (int i = 0; i < 1024; i++) {
         storageBuffer[i] = 0;
     }
 
-    // We load 1024 bytes for sequencer fullstate
     if (f_read(sequenceFile, storageBuffer, 1024, &byteRead) != FR_OK || byteRead != 1024) {
-        return;  // abort: sequencer state untouched
-    }
-    if (f_read(sequenceFile, actions, 16384, &byteRead) != FR_OK || byteRead != 16384) {
         return;
     }
-    if (f_read(sequenceFile, stepNotes, 12336, &byteRead) != FR_OK || byteRead != 12336) {
+    if (f_read(sequenceFile, stagedActions, sizeof(stagedActions), &byteRead) != FR_OK
+            || byteRead != sizeof(stagedActions)) {
         return;
     }
+    constexpr UINT version1StepSize = 12336;
+    if (f_read(sequenceFile, stagedStepNotes, version1StepSize, &byteRead) != FR_OK
+            || byteRead != version1StepSize) {
+        return;
+    }
+
+    __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
+    // V1 intentionally updates only its six-sequence payload span; preserve
+    // the historical behavior for the remaining V2-only live table bytes.
+    __builtin_memcpy(stepNotes, stagedStepNotes, version1StepSize);
     sequencer->setFullState((uint8_t*)storageBuffer);
 }
 
@@ -197,21 +216,24 @@ void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) 
         return;
     }
 
-    // Review patch: same mutation-last contract as the v1 loader.
     for (int i = 0; i < 1024; i++) {
         storageBuffer[i] = 0;
     }
 
-    // We load 1024 bytes for sequencer fullstate
     if (f_read(sequenceFile, storageBuffer, 1024, &byteRead) != FR_OK || byteRead != 1024) {
-        return;  // abort: sequencer state untouched
-    }
-    if (f_read(sequenceFile, actions, 16384, &byteRead) != FR_OK || byteRead != 16384) {
         return;
     }
-    if (f_read(sequenceFile, stepNotes, 24576, &byteRead) != FR_OK || byteRead != 24576) {
+    if (f_read(sequenceFile, stagedActions, sizeof(stagedActions), &byteRead) != FR_OK
+            || byteRead != sizeof(stagedActions)) {
         return;
     }
+    if (f_read(sequenceFile, stagedStepNotes, sizeof(stagedStepNotes), &byteRead) != FR_OK
+            || byteRead != sizeof(stagedStepNotes)) {
+        return;
+    }
+
+    __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
+    __builtin_memcpy(stepNotes, stagedStepNotes, sizeof(stagedStepNotes));
     sequencer->setFullState((uint8_t*)storageBuffer);
 }
 
@@ -333,10 +355,11 @@ void SequenceBank::createSequenceFile(const char* name) {
         while (numberOfZeros > 0) {
             UINT toWrite = numberOfZeros > 1024 ? 1024 : numberOfZeros;
             FRESULT writeResult = f_write(&sequenceFile, storageBuffer + 1024, toWrite, &byteWritten);
-            // A failed/short write would never advance the loop — bail out
-            // instead of spinning (and stalling in HAL_Delay on target).
+            // Stop the entire creation transaction. Continuing the outer slot
+            // loop would write every later slot at a shifted offset.
             if (writeResult != FR_OK || byteWritten != toWrite) {
-                break;
+                f_close(&sequenceFile);
+                return;
             }
             numberOfZeros -= byteWritten;
 #ifndef PFM3_HOST

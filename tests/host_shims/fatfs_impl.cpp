@@ -35,6 +35,9 @@ struct ShimState {
     /* Counting failure injection (fatfsShimFailNextNth): fn -> (err, n).
      * The nth call to that f_* function returns err; earlier calls succeed. */
     std::map<std::string, std::pair<FRESULT, int>> failNextNth;
+    /* Counting short-read injection: fn -> (maximum bytes, n). The nth call
+     * succeeds but reports/copies at most the configured byte count. */
+    std::map<std::string, std::pair<UINT, int>> shortReadNextNth;
 };
 
 ShimState& st() {
@@ -58,6 +61,15 @@ bool consumeFail(const char* fn, FRESULT& out) {
         return true;
     }
     return false;
+}
+
+UINT capShortRead(const char* fn, UINT requested) {
+    auto it = st().shortReadNextNth.find(fn);
+    if (it == st().shortReadNextNth.end()) return requested;
+    if (--it->second.second > 0) return requested;
+    UINT capped = std::min(requested, it->second.first);
+    st().shortReadNextNth.erase(it);
+    return capped;
 }
 
 /* Hard size ceiling: the largest real firmware artifact is the sequence
@@ -189,7 +201,7 @@ extern "C" FRESULT f_read(FIL* fp, void* buff, UINT btr, UINT* br) {
     }
     std::vector<uint8_t>& f = st().files[of->path];
     size_t avail = f.size() > fp->fptr ? f.size() - fp->fptr : 0;
-    size_t n = std::min<size_t>(btr, avail);
+    size_t n = std::min<size_t>(capShortRead("f_read", btr), avail);
     if (n && buff) std::copy(f.begin() + fp->fptr, f.begin() + fp->fptr + n,
                              static_cast<uint8_t*>(buff));
     if (br) *br = static_cast<UINT>(n);
@@ -357,6 +369,7 @@ void fatfsShimReset() {
     st().nextId = 1;
     st().failNext.clear();
     st().failNextNth.clear();
+    st().shortReadNextNth.clear();
 }
 
 void fatfsShimFailNext(const char* fn, FRESULT err) {
@@ -367,6 +380,11 @@ void fatfsShimFailNext(const char* fn, FRESULT err) {
 void fatfsShimFailNextNth(const char* fn, FRESULT err, int nth) {
     if (fn == nullptr || nth < 1) return;
     st().failNextNth[fn] = {err, nth};
+}
+
+void fatfsShimShortReadNextNth(const char* fn, UINT byteCount, int nth) {
+    if (fn == nullptr || nth < 1) return;
+    st().shortReadNextNth[fn] = {byteCount, nth};
 }
 
 void fatfsShimMkdir(const char* path) {
