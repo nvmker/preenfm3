@@ -239,8 +239,8 @@ void MixerState::setDefaultValues() {
     midiThru_ = 0;
     tuning_ = 440.0f;
     {
-        uint8_t outs[] = { 1, 1, 4, 4, 6, 8 };
-        uint8_t voices[] = { 3, 3, 3, 2, 1, 1 };
+        const uint8_t outs[] = { 1, 1, 4, 4, 6, 8 };
+        const uint8_t voices[] = { 3, 3, 3, 2, 1, 1 };
         for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
             instrumentState_[t].out = outs[t];
             instrumentState_[t].midiChannel = 1 + t;

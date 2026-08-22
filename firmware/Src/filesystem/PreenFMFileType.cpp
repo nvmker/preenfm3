@@ -17,8 +17,7 @@
 
 #include "PreenFMFileType.h"
 
-// 6.11: Common.h's strcmp declaration is C-linkage now, so <string.h> is
-// includable again — no more hand-declared strnlen prototype.
+// Keep the platform libc header authoritative for strnlen.
 #include <string.h>
 
 #ifndef PFM3_HOST
