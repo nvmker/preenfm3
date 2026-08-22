@@ -287,6 +287,17 @@ TEST_F(SequenceBankTest, LoadDefaultSequenceMissingFileIsTrueNoOp) {
     EXPECT_EQ(actions[0].when, 0xAAAA);  // untouched
 }
 
+TEST_F(SequenceBankTest, CreateSequenceFileReturnsAfterWriteStall) {
+    // Regression (5.6): a failed/short f_write must break the zero-fill loop
+    // instead of spinning forever on byteWritten == 0.
+    fatfsShimFailNext("f_write", FR_INT_ERR);
+    bank_.createSequenceFile("mybank123456");  // must simply RETURN (no hang)
+    EXPECT_TRUE(fatfsShimFileExists("0:/pfm3/mybank123456"));
+    // File stays short: full file would be 4 + 32 * (1024+16384+24576).
+    EXPECT_LT(fatfsShimFileSize("0:/pfm3/mybank123456"),
+              4u + 32u * (1024u + 16384u + 24576u));
+}
+
 TEST_F(SequenceBankTest, CreateSequenceFileWithoutEmptySlotBails) {
     // Pad by one entry because addEmptyFile's known/deferred condition-order
     // quirk reads slot cap before checking k < cap.

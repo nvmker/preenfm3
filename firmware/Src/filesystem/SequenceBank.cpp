@@ -274,7 +274,12 @@ void SequenceBank::createSequenceFile(const char* name) {
         int numberOfZeros = sizeof(actions) + sizeof(stepNotes);
         while (numberOfZeros > 0) {
             UINT toWrite = numberOfZeros > 1024 ? 1024 : numberOfZeros;
-            f_write(&sequenceFile, storageBuffer + 1024, toWrite, &byteWritten);
+            FRESULT writeResult = f_write(&sequenceFile, storageBuffer + 1024, toWrite, &byteWritten);
+            // A failed/short write would never advance the loop — bail out
+            // instead of spinning (and stalling in HAL_Delay on target).
+            if (writeResult != FR_OK || byteWritten != toWrite) {
+                break;
+            }
             numberOfZeros -= byteWritten;
 #ifndef PFM3_HOST
             HAL_Delay(1);
