@@ -39,8 +39,11 @@ void LfoStepSeq::midiClock(int songPosition, bool computeStep) {
     // Folded-B: a corrupt bank can hold a NaN/-Inf/+Inf bpm. The float->int
     // cast is UB for those, so reject non-finite values up front and route
     // them to the default/TIME_4 fail-safe (same as unmatched 246-255).
+    // Review patch: a finite-but-out-of-int-range bpm (1e30f) is also UB in
+    // the cast, so the guard covers the whole enum domain [0,255].
     float bpm = this->seqParams->bpm;
-    int bpmInt = __builtin_isfinite(bpm) ? (int)bpm : LFO_SEQ_MIDICLOCK_TIME_4;
+    int bpmInt = (__builtin_isfinite(bpm) && bpm >= 0.0f && bpm <= 255.0f)
+        ? (int)bpm : LFO_SEQ_MIDICLOCK_TIME_4;
     switch (bpmInt)  {
 	case LFO_SEQ_MIDICLOCK_DIV_4:
 		// Midi Clock  / 4
