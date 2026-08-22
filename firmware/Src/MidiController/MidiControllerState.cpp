@@ -70,7 +70,7 @@ void MidiControllerState::resetState() {
 void MidiControllerState::encoderDelta(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t encoderNumber, int delta) {
     // 6.8: bounds-check at the API boundary — current callers are UI-valid,
     // but an out-of-range index walked off midiPage_. No-op when invalid.
-    if (pageNumber >= MIDI_NUMBER_OF_PAGES || encoderNumber >= 6) {
+    if (pageNumber >= MIDI_NUMBER_OF_PAGES || encoderNumber >= MIDI_NUMBER_OF_ENCODERS) {
         return;
     }
     MidiEncoder* encoder =  &midiPage_[pageNumber].encoder_[encoderNumber];
@@ -100,28 +100,25 @@ void MidiControllerState::encoderDelta(uint8_t pageNumber, uint8_t globalMidiCha
 
 void MidiControllerState::buttonDown(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t buttonNumber) {
     // 6.8: API boundary bounds-check (see encoderDelta).
-    if (pageNumber >= MIDI_NUMBER_OF_PAGES || buttonNumber >= 6) {
+    if (pageNumber >= MIDI_NUMBER_OF_PAGES || buttonNumber >= MIDI_NUMBER_OF_BUTTONS) {
         return;
     }
     MidiButton* button =  &midiPage_[pageNumber].button_[buttonNumber];
-    if (button->buttonType == MIDI_BUTTON_TYPE_PUSH) {
-        button->value = 1;
-    } else if (button->buttonType == MIDI_BUTTON_TYPE_TOGGLE) {
-        button->value = (button->value == 0? 1 : 0);
-    } else {
+    if (button->buttonType != MIDI_BUTTON_TYPE_PUSH && button->buttonType != MIDI_BUTTON_TYPE_TOGGLE) {
         // Unknown type: no state change, no emission.
         return;
     }
-    // 6.9: reserve the full 3-byte CC before mutating state (all-or-nothing;
-    // see encoderDelta). A toggle with no room keeps its previous state.
+    // 6.9: reserve the full 3-byte CC BEFORE any state change — all-or-nothing
+    // (see encoderDelta). Review patch: checking up front (instead of mutating
+    // and rolling back) keeps an already-pressed PUSH button pressed on drop;
+    // the rollback form flipped it to 0 on a double-press.
     if (!usartBufferOut.hasRoomFor(3)) {
-        // Roll the state change back so value and stream stay consistent.
-        if (button->buttonType == MIDI_BUTTON_TYPE_PUSH) {
-            button->value = 0;
-        } else {
-            button->value = (button->value == 0 ? 1 : 0);
-        }
         return;
+    }
+    if (button->buttonType == MIDI_BUTTON_TYPE_PUSH) {
+        button->value = 1;
+    } else {
+        button->value = (button->value == 0 ? 1 : 0);
     }
     uint8_t midiChannel = resolveMidiChannel_(button->midiChannel, globalMidiChannel);
 
@@ -133,7 +130,7 @@ void MidiControllerState::buttonDown(uint8_t pageNumber, uint8_t globalMidiChann
 
 bool MidiControllerState::buttonUp(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t buttonNumber) {
     // 6.8: API boundary bounds-check (see encoderDelta).
-    if (pageNumber >= MIDI_NUMBER_OF_PAGES || buttonNumber >= 6) {
+    if (pageNumber >= MIDI_NUMBER_OF_PAGES || buttonNumber >= MIDI_NUMBER_OF_BUTTONS) {
         return false;
     }
     MidiButton* button =  &midiPage_[pageNumber].button_[buttonNumber];
