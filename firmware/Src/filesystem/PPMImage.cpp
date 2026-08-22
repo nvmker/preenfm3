@@ -37,6 +37,7 @@ extern uint16_t tftMemory[240 * 320];
 
 PPMImage::PPMImage() {
     cptImage = 0;
+    isInitialized = false;
 
     char imageTitlePattern[] = "0:/PPM/img_####.ppm";
     for (int i = 0; i < 32; i++) {
@@ -108,9 +109,14 @@ void PPMImage::saveImage() {
             int iIndex = (j * 240 + i) % 6400;
             uint16_t p = tftMemory[j * 240 + i];
             uint16_t pixel = (p >> 8) + (p << 8);
-            imagePPM[iIndex * 3 + 0] = (uint8_t) ((pixel & 0xF800) >> 11) << 3; /* red   */
-            imagePPM[iIndex * 3 + 1] = (uint8_t) ((pixel & 0x07E0) >> 5) << 2; /* green */
-            imagePPM[iIndex * 3 + 2] = (uint8_t) ((pixel & 0x001F) << 3); /* blue  */
+            /* 5/6/5 -> 8/8/8 expansion with low-bit replication so a full-scale
+             * channel (31 -> 0xFF, 63 -> 0xFF) stays full-scale. */
+            uint8_t red = (uint8_t)((pixel & 0xF800) >> 11);
+            uint8_t green = (uint8_t)((pixel & 0x07E0) >> 5);
+            uint8_t blue = (uint8_t)(pixel & 0x001F);
+            imagePPM[iIndex * 3 + 0] = (uint8_t)((red << 3) | (red >> 2));
+            imagePPM[iIndex * 3 + 1] = (uint8_t)((green << 2) | (green >> 4));
+            imagePPM[iIndex * 3 + 2] = (uint8_t)((blue << 3) | (blue >> 2));
             UINT byteWriten;
             if (iIndex == 6399) {
                 FRESULT fres = f_write(&imageFile, imagePPM, 6400 * 3, &byteWriten);
