@@ -162,6 +162,12 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
         return;
     }
 
+    // Review patch: read+validate every payload BEFORE any mutation of the
+    // sequencer. The 1024-byte state stays staged in storageBuffer and
+    // setFullState runs LAST so any single read failure leaves the core
+    // sequencer state untouched (actions/stepNotes are the sequencer's own
+    // arrays and cannot be staged on this RAM budget — the reorder is the
+    // achievable contract).
     for (int i = 0; i < 1024; i++) {
         storageBuffer[i] = 0;
     }
@@ -170,14 +176,13 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
     if (f_read(sequenceFile, storageBuffer, 1024, &byteRead) != FR_OK || byteRead != 1024) {
         return;  // abort: sequencer state untouched
     }
-    sequencer->setFullState((uint8_t*)storageBuffer);
-
     if (f_read(sequenceFile, actions, 16384, &byteRead) != FR_OK || byteRead != 16384) {
         return;
     }
     if (f_read(sequenceFile, stepNotes, 12336, &byteRead) != FR_OK || byteRead != 12336) {
         return;
     }
+    sequencer->setFullState((uint8_t*)storageBuffer);
 }
 
 void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) {
@@ -192,6 +197,7 @@ void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) 
         return;
     }
 
+    // Review patch: same mutation-last contract as the v1 loader.
     for (int i = 0; i < 1024; i++) {
         storageBuffer[i] = 0;
     }
@@ -200,14 +206,13 @@ void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) 
     if (f_read(sequenceFile, storageBuffer, 1024, &byteRead) != FR_OK || byteRead != 1024) {
         return;  // abort: sequencer state untouched
     }
-    sequencer->setFullState((uint8_t*)storageBuffer);
-
     if (f_read(sequenceFile, actions, 16384, &byteRead) != FR_OK || byteRead != 16384) {
         return;
     }
     if (f_read(sequenceFile, stepNotes, 24576, &byteRead) != FR_OK || byteRead != 24576) {
         return;
     }
+    sequencer->setFullState((uint8_t*)storageBuffer);
 }
 
 
