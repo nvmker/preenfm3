@@ -17,9 +17,9 @@
 
 #include "PreenFMFileType.h"
 
-// Common.h redeclares strcmp with C++ linkage, so <string.h> cannot be
-// included here; declare just strnlen with C linkage instead.
-extern "C" size_t strnlen(const char *s, size_t maxlen);
+// 6.11: Common.h's strcmp declaration is C-linkage now, so <string.h> is
+// includable again — no more hand-declared strnlen prototype.
+#include <string.h>
 
 #ifndef PFM3_HOST
 __attribute__((section(".ram_d2b")))

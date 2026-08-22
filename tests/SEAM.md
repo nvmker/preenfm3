@@ -363,16 +363,19 @@ diagnostic, not an attribute warning).
 `Osc.cpp` / `Env.cpp` / `FxBus.cpp` / `Lfo.cpp` / `Timbre.cpp` in the synth-math
 run — same pattern, copy it.
 
-### Correction 3 — `Common.h` redeclares `strcmp` (linkage conflict on host)
+### Correction 3 — `Common.h` redeclares `strcmp` (linkage conflict on host) — RESOLVED (6.11)
 
-`Common.h:~700` has a bare file-scope `int strcmp(const char*, const char*);`
+`Common.h:~700` had a bare file-scope `int strcmp(const char*, const char*);`
 (C++ linkage). Host libc's `<string.h>` — pulled transitively by libc++ —
-declares `strcmp` with C linkage → "different language linkage" error. This is
-also a latent firmware smell (libc functions should have C linkage).
+describes `strcmp` with C linkage → "different language linkage" error.
 
-**Remedy:** `#ifndef PFM3_HOST` guard around the redeclaration; host libc
-provides `strcmp`. The smell is **flagged, not fixed** (`extern "C"`), to keep
-the Arm build byte-identical.
+**History:** first `#ifndef PFM3_HOST`-guarded (flagged, not fixed). **Fixed
+in bug-fix Phase 6 item 6.11** (owner decision 2026-08-22): the declaration
+is now `extern "C"`, guarded by `#ifdef __cplusplus` for the C TUs that
+also include the header (`stm32h7xx_it.c`). `<string.h>`/`<cstring>` are
+includable after `Common.h` again — the hand-declared `strnlen` /
+`memcpy` workarounds in `PreenFMFileType.cpp` / `MidiControllerFile.cpp`
+were dropped.
 
 ### Correction 4 — `Voice.h` `__USAT` is ARM inline asm
 
@@ -412,7 +415,7 @@ behavior is preserved byte-for-byte. `PFM3_HOST` is still defined ONLY by
 | File | Change | Why |
 | --- | --- | --- |
 | `firmware/Src/midi/Sequencer.cpp` | `#ifndef PFM3_HOST` around the LED/`HAL_GetTick` block **and** around both `.ram_d3` section attributes | HAL calls; Mach-O section-attribute hard error |
-| `firmware/Src/synth/Common.h` | `#ifndef PFM3_HOST` around the file-scope `strcmp` redeclaration | libc linkage conflict |
+| `firmware/Src/synth/Common.h` | ~~`#ifndef PFM3_HOST` around the file-scope `strcmp` redeclaration~~ **removed (6.11):** `#ifdef __cplusplus` + `extern "C" strcmp` — C-linkage declaration coexists with `<string.h>` on host and target | libc linkage conflict (resolved)
 | `firmware/Src/synth/Voice.h` | `#ifdef PFM3_HOST` portable `__USAT` fallback | ARM inline-asm constraint |
 | `tests/CMakeLists.txt` | firmware include dirs (host_shims first), `PFM3_HOST`, `-Wno-attributes -Wno-macro-redefined -Wno-writable-strings`, `target_sources(Sequencer.cpp + stub)` | seam wiring |
 | `tests/host_shims/fatfs.h` | forward-declares `FIL`, omits SD-disk/HAL chain | the one justified host shim |
