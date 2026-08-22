@@ -33,6 +33,8 @@ public:
 
 
 private:
+	// 6.2: clamp a raw preset step value to the expValues[16] domain.
+	static int stepValue(int step);
 	StepSequencerParams* seqParams;
 	StepSequencerSteps* seqSteps;
 
