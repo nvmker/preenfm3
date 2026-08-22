@@ -154,7 +154,7 @@ protected:
     static float delay1Buffer[delay1BufferSize];
     int delay1WritePos     = 0;
     int delay1ReadPos     = 0;
-    float delay1DelayLen     = 0, delay1ReadLen;
+    float delay1DelayLen     = 0, delay1ReadLen = 0;
     float delay1FxTarget     = 0;
 
     static const int delay2BufferSize     = 3720 * _dattorroSampleRateMod;
@@ -162,7 +162,7 @@ protected:
     static float delay2Buffer[delay2BufferSize];
     int delay2WritePos     = 0;
     int delay2ReadPos      = 0;
-    float delay2DelayLen     = 0, delay2ReadLen;
+    float delay2DelayLen     = 0, delay2ReadLen = 0;
     float delay2FxTarget     = 0;
 
     static const int delay3BufferSize     = 4217 * _dattorroSampleRateMod;
@@ -170,7 +170,7 @@ protected:
     static float delay3Buffer[delay3BufferSize];
     int delay3WritePos     = 0;
     int delay3ReadPos     = 0;
-    float delay3DelayLen     = 0, delay3ReadLen;
+    float delay3DelayLen     = 0, delay3ReadLen = 0;
     float delay3FxTarget     = 0;
 
     static const int delay4BufferSize     = 3163 * _dattorroSampleRateMod;
@@ -178,7 +178,7 @@ protected:
     static float delay4Buffer[delay4BufferSize];
     int delay4WritePos     = 0;
     int delay4ReadPos      = 0;
-    float delay4DelayLen     = 0, delay4ReadLen;
+    float delay4DelayLen     = 0, delay4ReadLen = 0;
     float delay4FxTarget     = 0;
 
     const float dcBlockerCoef1 = 0.9973854301f;//~20 hz

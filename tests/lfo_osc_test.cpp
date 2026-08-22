@@ -393,6 +393,23 @@ TEST_F(LfoOscTest, HostileKeybRampClampsInvTabIndexInBounds) {
         EXPECT_LT(lfo_->ramp, 0.0f) << "ramp itself keeps its (negative) value";
     }
 
+    // Review patch: finite-but-huge POSITIVE ramps (1e30f) make
+    // keybRamp*50 overflow the int cast — the guard bounds the whole cast
+    // domain, so they clamp to invTab[0] like ramp 0 (no resync: positive).
+    const float hugePositiveRamps[] = {1e30f, 1e9f, 1e6f};
+    for (float ramp : hugePositiveRamps) {
+        SCOPED_TRACE(::testing::PrintToString(ramp));
+        Configure(LFO_TRIANGLE, 60.0f, /*bias=*/0.0f, /*keybRamp=*/ramp);
+        lfo_->noteOn();
+        for (int i = 0; i < 50; i++) lfo_->nextValueInMatrix();
+        ASSERT_GT(lfo_->phase, 0.0f) << "precondition: phase advanced";
+
+        lfo_->valueChanged(3);  // ENCODER_LFO_KSYNC
+        EXPECT_FLOAT_EQ(lfo_->rampInv, 50.0f)
+            << "huge positive ramp must clamp to invTab[0] (no UB cast)";
+        EXPECT_GT(lfo_->phase, 0.0f) << "positive ramp does not resync";
+    }
+
     // NaN: same index clamp, but the resync comparison (ramp < 0) is false —
     // the OOB read is fixed without changing comparison semantics.
     Configure(LFO_TRIANGLE, 60.0f, /*bias=*/0.0f,

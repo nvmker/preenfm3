@@ -273,12 +273,20 @@ TEST_F(MidiControllerStateTest, NearlyFullRingDropsWholeCcMessage) {
     EXPECT_EQ(usartBufferOut.getCount(), 61) << "no partial insert";
     EXPECT_EQ(encoder->value, 0) << "encoder state unchanged when dropped";
 
-    // buttonDown (toggle, page 1) must also roll back its flip.
+    // buttonDown (toggle, page 1) must also drop without flipping.
     MidiButton* button = state_->getButton(1, 0);
     button->midiChannel = 9;
     state_->buttonDown(1, 2, 0);
     EXPECT_EQ(usartBufferOut.getCount(), 61);
-    EXPECT_EQ(button->value, 0) << "toggle flip rolled back when dropped";
+    EXPECT_EQ(button->value, 0) << "toggle flip dropped, not rolled back";
+
+    // Review patch: an ALREADY-PRESSED PUSH button must stay pressed when
+    // its buttonDown is dropped (the old rollback form flipped it to 0).
+    state_->getButton(0, 0)->value = 1;
+    state_->buttonDown(0, 3, 0);
+    EXPECT_EQ(usartBufferOut.getCount(), 61);
+    EXPECT_EQ(state_->getButton(0, 0)->value, 1)
+        << "double-press drop must not clear a pressed PUSH button";
 
     // buttonUp on a PUSH keeps the button logically pressed.
     state_->getButton(0, 0)->value = 1;
