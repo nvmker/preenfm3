@@ -37,7 +37,6 @@ private:
     int fillUserEnvCurveFromTxt(int f, char *buffer, int filled, bool last);
     void loadUserEnvCurveFromBin(int f, const char *fileName);
     void saveUserEnvCurveToBin(int f, const char *fileName);
-    void interpolate(float *source, int sourceNumberOfSamples, int targetNumberOfSamples);
     void normalize(float *buffer, int numberOfSamples);
     int numberOfSampleError(int f);
 
