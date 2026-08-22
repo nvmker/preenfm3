@@ -65,8 +65,8 @@ struct MidiButton {
 };
 
 struct MidiPage {
-    MidiEncoder encoder_[6];
-    MidiButton button_[6];
+    MidiEncoder encoder_[MIDI_NUMBER_OF_ENCODERS];
+    MidiButton button_[MIDI_NUMBER_OF_BUTTONS];
 };
 
 class FMDisplayMidiController;
@@ -89,11 +89,11 @@ public:
         return (pageNumber >= 0 && pageNumber < MIDI_NUMBER_OF_PAGES) ? &midiPage_[pageNumber] : nullptr;
     }
     MidiEncoder* getEncoder(int pageNumber, int encoderNumber) {
-        if (pageNumber < 0 || pageNumber >= MIDI_NUMBER_OF_PAGES || encoderNumber < 0 || encoderNumber >= 6) return nullptr;
+        if (pageNumber < 0 || pageNumber >= MIDI_NUMBER_OF_PAGES || encoderNumber < 0 || encoderNumber >= MIDI_NUMBER_OF_ENCODERS) return nullptr;
         return &midiPage_[pageNumber].encoder_[encoderNumber];
     }
     MidiButton* getButton(int pageNumber, int buttonNumber) {
-        if (pageNumber < 0 || pageNumber >= MIDI_NUMBER_OF_PAGES || buttonNumber < 0 || buttonNumber >= 6) return nullptr;
+        if (pageNumber < 0 || pageNumber >= MIDI_NUMBER_OF_PAGES || buttonNumber < 0 || buttonNumber >= MIDI_NUMBER_OF_BUTTONS) return nullptr;
         return &midiPage_[pageNumber].button_[buttonNumber];
     }
 

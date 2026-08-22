@@ -36,8 +36,10 @@ MidiControllerState::~MidiControllerState() {
 
 void MidiControllerState::resetState() {
     int cpt = 1;
+    static_assert(MIDI_NUMBER_OF_ENCODERS == MIDI_NUMBER_OF_BUTTONS,
+            "resetState initializes paired encoder/button slots");
     for (int pageNumber = 0; pageNumber < MIDI_NUMBER_OF_PAGES; pageNumber++) {
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < MIDI_NUMBER_OF_ENCODERS; i++) {
             midiPage_[pageNumber].encoder_[i].controller = 15 + cpt;
             midiPage_[pageNumber].encoder_[i].value = (pageNumber & 0x1) == 0 ? 0 : 64;
             midiPage_[pageNumber].encoder_[i].midiChannel = 16;

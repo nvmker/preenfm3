@@ -2,10 +2,9 @@
 // user wavetable txt/bin load + the txt->bin conversion pipeline.
 //
 // CHARACTERIZATION suite (spec-test-coverage-phase4). FatFs via the shim.
-// Quirks pinned (deferred-work.md):
-//   * interpolate() reads buffer[iPos+1] ONE PAST the populated source
-//     window (iPos+1 == srcN happens for the last target sample) — value
-//     comes from stale/zero tail data, not the source wave.
+// Fixed behavior and remaining constraints (deferred-work.md):
+//   * FIXED (6.4): interpolate() clamps iPos+1 to the populated source
+//     window, so the final target sample cannot consume stale tail data.
 //   * the txt parser's numberOfSample must be 32..1024; outside -> '#' error
 //     name and NO waveform load.
 // userWaveform/waveTables are the REAL globals from Osc.cpp (already linked);

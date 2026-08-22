@@ -38,17 +38,22 @@ public:
             // out of bounds for anything below -0.02 (and the cast itself is
             // UB for NaN or out-of-int-range products — review patch: a
             // finite-but-huge ramp like 1e30f overflows the cast arm too).
-            // Guard the whole cast domain before casting — folded-B idiom.
-            // Valid ramps are byte-identical.
+            // Guard the whole cast domain before casting and keep the stored
+            // ramp coherent with the selected table index. Valid ramps are
+            // byte-identical.
             float keybRamp = lfo->keybRamp;
-            int rampIndex = (__builtin_isfinite(keybRamp) && keybRamp > 0.0f
-                             && keybRamp <= 2047.0f / 50.0f)
-                ? (int)(keybRamp * 50.0f) : 0;
-            if (rampIndex > 2047) {
-                rampIndex = 2047;
-            }
+            constexpr float maxRamp = 2047.0f / 50.0f;
+            // Keep negative values (including -Inf) as the established KSyn
+            // "off" sentinel. NaN, +Inf, and oversized positive ramps cannot
+            // form a coherent ramp/index pair, so fail safe to ramp 0 rather
+            // than applying invTab[0]'s gain to an unbounded duration.
+            float effectiveRamp = (keybRamp < 0.0f
+                                   || (keybRamp >= 0.0f && keybRamp <= maxRamp))
+                ? keybRamp : 0.0f;
+            int rampIndex = effectiveRamp > 0.0f
+                ? (int)(effectiveRamp * 50.0f) : 0;
             this->rampInv = 50 * invTab[rampIndex];
-            this->ramp = keybRamp;
+            this->ramp = effectiveRamp;
             if (this->ramp < 0 ) {
                 // resync all LFO
                 phase = 0;
