@@ -74,10 +74,10 @@ void UserEnvCurve::loadUserEnvCurves() {
                 loadUserEnvCurveFromTxt(f, fileName, sizeTxt);
 
                 if (numberOfSample > 0) {
-                    if (numberOfSample > 3 && numberOfSample < 64) {
-                        interpolate(userEnvCurves[f], numberOfSample, 64);
-                    }
-
+                    // 5.4: the old 3 < numberOfSample < 64 interpolate call
+                    // here was dead code — the txt parser only accepts
+                    // exactly 64 samples, so numberOfSample is always 64
+                    // (or an error) when this point is reached.
                     normalize(userEnvCurves[f], numberOfSample);
 
                     fsu_->copy_string(fileName, USERCURVE_FILENAME_BIN);
@@ -219,12 +219,3 @@ int UserEnvCurve::numberOfSampleError(int f) {
     return -1;
 }
 
-void UserEnvCurve::interpolate(float* buffer, int sourceNumberOfSamples, int targetNumberOfSamples) {
-    for (int i = targetNumberOfSamples-1; i>=0; i--) {
-        float pos = (float)i * (float)sourceNumberOfSamples / (float)targetNumberOfSamples;
-        int iPos = pos;
-        float decimal = pos - iPos;
-        buffer[i] = buffer[iPos] * (1 - decimal) + buffer[iPos + 1] * decimal;
-    }
-    numberOfSample = targetNumberOfSamples;
-}
