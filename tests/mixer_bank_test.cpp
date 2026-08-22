@@ -22,7 +22,6 @@
 #include "fatfs.h"
 
 #include <cstring>
-#include <string>
 #include <vector>
 
 extern const struct OneSynthParams preenMainPreset;
@@ -235,4 +234,112 @@ TEST_F(MixerBankTest, RemoveDefaultMixerDeletesFile) {
     ASSERT_TRUE(bank_.saveDefaultMixer());
     bank_.removeDefaultMixer();
     EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/mix.dfl"));
+}
+
+// ---- 6.1: truncated/unreadable mixer-state reads reject before mutation ----
+
+TEST_F(MixerBankTest, TruncatedMixerStateIsRejectedBeforeRestore) {
+    // Regression (6.1): a bank shorter than the mixer-STATE extent fed
+    // restoreFullState a short read past the populated bytes (unbounded
+    // per-version readers). The f_size pre-check now rejects BEFORE any
+    // mutation: load fails and the previous mixer state is untouched.
+    MixerState ms2;
+    strcpy(ms2.mixName_, "SENTINEL    ");
+    ms2.currentChannel_ = 7;
+    MixerBank bank2;
+    bank2.setFileSystemUtils(fsu_);
+    bank2.init(&timbres_[0], &timbres_[1], &timbres_[2],
+               &timbres_[3], &timbres_[4], &timbres_[5]);
+    bank2.setMixerState(&ms2);
+
+    std::vector<uint8_t> truncated(MIXER_SIZE - 1, 0xAB);  // one byte short
+    fatfsShimInjectBytes("0:/pfm3/truncmix", truncated.data(), truncated.size());
+    PFM3File bank;
+    strcpy(bank.name, "truncmix");
+    bank.fileType = FILE_OK;
+
+    EXPECT_FALSE(bank2.loadMixer(&bank, 0))
+        << "truncated state extent must be rejected";
+    EXPECT_EQ(strncmp(ms2.mixName_, "SENTINEL", 8), 0)
+        << "mixer state unchanged on rejection";
+    EXPECT_EQ(ms2.currentChannel_, 7);
+    // The timbre "##" marking must NOT have run either (load aborted).
+    EXPECT_EQ(timbres_[0].presetName[0], 'T');
+}
+
+TEST_F(MixerBankTest, MixerStateReadFailureRejectsBeforeRestore) {
+    // Regression (6.1): the f_read result and byteRead were ignored — an
+    // I/O failure consumed whatever stale bytes sat in storageBuffer.
+    // (Create a full-size bank first, then fail the read.)
+    bank_.createMixerBank("fullbank12345");
+    PFM3File bank;
+    strcpy(bank.name, "fullbank12345");
+    bank.fileType = FILE_OK;
+
+    MixerState ms2;
+    strcpy(ms2.mixName_, "SENTINEL    ");
+    MixerBank bank2;
+    bank2.setFileSystemUtils(fsu_);
+    bank2.init(&timbres_[0], &timbres_[1], &timbres_[2],
+               &timbres_[3], &timbres_[4], &timbres_[5]);
+    bank2.setMixerState(&ms2);
+
+    fatfsShimFailNext("f_read", FR_DISK_ERR);
+    EXPECT_FALSE(bank2.loadMixer(&bank, 0));
+    EXPECT_EQ(strncmp(ms2.mixName_, "SENTINEL", 8), 0)
+        << "state unchanged on read failure";
+}
+
+TEST_F(MixerBankTest, StateExtentButTruncatedPatchTailStillLoads) {
+    // Boundary of the 6.1 pre-check: it requires offset + MIXER_SIZE ONLY
+    // (not the full FULL_MIXER_SIZE slot) so a bank with a truncated patch
+    // tail still restores its state and marks timbres "##" (pinned
+    // ShortBankMarksTimbrePresetNameWithHashes behavior, here at slot > 0).
+    std::vector<uint8_t> bankBytes(FULL_MIXER_SIZE + MIXER_SIZE, 0);
+    // Slot 1 header: current version + a name at the v6 offsets.
+    char* slot1 = (char*)(bankBytes.data() + FULL_MIXER_SIZE);
+    slot1[0] = MIXER_BANK_CURRENT_VERSION;
+    memcpy(slot1 + 1, "TAILMIX     ", 12);
+    fatfsShimInjectBytes("0:/pfm3/tailmix", bankBytes.data(), bankBytes.size());
+    PFM3File bank;
+    strcpy(bank.name, "tailmix");
+    bank.fileType = FILE_OK;
+
+    MixerState ms2;
+    MixerBank bank2;
+    bank2.setFileSystemUtils(fsu_);
+    bank2.init(&timbres_[0], &timbres_[1], &timbres_[2],
+               &timbres_[3], &timbres_[4], &timbres_[5]);
+    bank2.setMixerState(&ms2);
+    ASSERT_TRUE(bank2.loadMixer(&bank, 1))
+        << "state extent present: must load despite missing patch tail";
+    EXPECT_EQ(strncmp(ms2.mixName_, "TAILMIX", 7), 0);
+    EXPECT_EQ(timbres_[0].presetName[0], '#');
+    EXPECT_EQ(timbres_[0].presetName[1], '#');
+}
+
+// ---- 6.6: bounded mixer-name copy ------------------------------------------
+
+TEST_F(MixerBankTest, ShortMixerNameIsZeroPaddedNotOverread) {
+    // Regression (6.6): saveMixer copied 12 bytes regardless of the source
+    // length — bytes past the caller's NUL leaked in. The bounded copy pads
+    // with zeros and terminates at [12].
+    bank_.createMixerBank("namebank1234");
+    PFM3File bank;
+    strcpy(bank.name, "namebank1234");
+    bank.fileType = FILE_OK;
+
+    char shortName[] = "SHORT";  // 5 chars + NUL: old copy read past it
+    ASSERT_TRUE(bank_.saveMixer(&bank, 0, shortName));
+    EXPECT_STREQ(ms_.mixName_, "SHORT")
+        << "name must stop at the source NUL";
+    EXPECT_EQ(ms_.mixName_[5], 0);
+    EXPECT_EQ(ms_.mixName_[11], 0);
+    EXPECT_EQ(ms_.mixName_[12], 0) << "mixName_[12] always NUL";
+    // And the padded name round-trips through the bank.
+    EXPECT_STREQ(bank_.loadMixerName(&bank, 0), "SHORT");
+    // Full-width names are still copied byte-for-byte (12 chars, no NUL).
+    char fullName[] = "SLOTTHREE   ";
+    ASSERT_TRUE(bank_.saveMixer(&bank, 3, fullName));
+    EXPECT_EQ(strncmp(ms_.mixName_, "SLOTTHREE   ", 12), 0);
 }
