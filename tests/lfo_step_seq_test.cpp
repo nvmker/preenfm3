@@ -38,6 +38,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 // Global 16-entry exponential ratio table (LfoStepSeq.cpp:21). Read-only here.
@@ -269,6 +270,43 @@ TEST_F(LfoStepSeqTest, MidiClockResyncsPhaseAndRatePerDivision) {
 // the nearest supported division.
 TEST_F(LfoStepSeqTest, MidiClockCorruptBpmFallsBackToTime4) {
     for (float bpm : {246.0f, 250.0f, 255.0f}) {
+        SCOPED_TRACE(bpm);
+        params_.bpm = bpm;
+        lfo_->init(&params_, &steps_, &matrix_, MATRIX_SOURCE_LFOSEQ1,
+                   LFOSEQ1_GATE);
+        lfo_->midiClock(8, true);
+        EXPECT_NEAR(lfo_->phase, (float)((8 << 1) & 0xF), 1e-6f)
+            << "phase must snap like TIME_4";
+        EXPECT_FLOAT_EQ(lfo_->phaseStep, 8.0f)
+            << "rate must snap like TIME_4";
+    }
+}
+
+// FIXED (spec folded-B): a NaN/-Inf/+Inf bpm previously hit the UB
+// float->int cast in midiClock's switch dispatch. Non-finite values now
+// fail-safe to the TIME_4 arm before the cast — same behavior as the
+// unmatched 246-255 corrupt values above.
+// Review patch: finite-but-out-of-int-range bpms (1e30f, -1e30f, 300) are
+// still UB in the (int) cast — the guard now covers the [0,255] enum domain,
+// so they fail-safe to the TIME_4 arm like the NaN/Inf cases above.
+TEST_F(LfoStepSeqTest, MidiClockOutOfRangeFiniteBpmFallsBackToTime4) {
+    for (float bpm : {1e30f, -1e30f, 300.0f}) {
+        SCOPED_TRACE(bpm);
+        params_.bpm = bpm;
+        lfo_->init(&params_, &steps_, &matrix_, MATRIX_SOURCE_LFOSEQ1,
+                   LFOSEQ1_GATE);
+        lfo_->midiClock(8, true);
+        EXPECT_NEAR(lfo_->phase, (float)((8 << 1) & 0xF), 1e-6f)
+            << "phase must snap like TIME_4";
+        EXPECT_FLOAT_EQ(lfo_->phaseStep, 8.0f)
+            << "rate must snap like TIME_4";
+    }
+}
+
+TEST_F(LfoStepSeqTest, MidiClockNonFiniteBpmFallsBackToTime4) {
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    for (float bpm : {inf, -inf, nan}) {
         SCOPED_TRACE(bpm);
         params_.bpm = bpm;
         lfo_->init(&params_, &steps_, &matrix_, MATRIX_SOURCE_LFOSEQ1,

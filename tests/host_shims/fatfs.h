@@ -147,6 +147,8 @@ FRESULT f_stat(const TCHAR* path, FILINFO* fno);
 
 void        fatfsShimReset();
 void        fatfsShimFailNext(const char* fn, FRESULT err);     /* one-shot: next call to fn returns err */
+void        fatfsShimFailNextNth(const char* fn, FRESULT err, int nth); /* nth call to fn returns err */
+void        fatfsShimShortReadNextNth(const char* fn, UINT byteCount, int nth); /* nth call succeeds short */
 void        fatfsShimMkdir(const char* path);                 /* recursive  */
 void        fatfsShimInjectBytes(const char* path, const void* data, size_t len);
 void        fatfsShimInjectString(const char* path, const char* content);

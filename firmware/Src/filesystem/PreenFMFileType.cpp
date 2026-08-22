@@ -208,7 +208,7 @@ int PreenFMFileType::initFiles() {
             }
             if (!(fno.fattrib & AM_DIR)) {
                 if (isCorrectFile((char*) fno.fname, fno.fsize)) {
-                    for (int k = 0; k < 13; k++) {
+                    for (int k = 0; k < 12; k++) {
                         if (fno.fname[k] == ' ') {
                             myFiles_[numberOfFiles_].name[k] = '_';
                         } else if (fno.fname[k] == 0 && beforePoint) {
@@ -220,6 +220,7 @@ int PreenFMFileType::initFiles() {
                             myFiles_[numberOfFiles_].name[k] = fno.fname[k];
                         }
                     }
+                    myFiles_[numberOfFiles_].name[12] = 0;
                     if (fno.fname[0] == '_' || isReadOnly(&myFiles_[numberOfFiles_])) {
                         myFiles_[numberOfFiles_].fileType = FILE_READ_ONLY;
                     } else {

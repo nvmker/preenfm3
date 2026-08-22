@@ -116,11 +116,9 @@ const char* PatchBank::loadPatchName(const struct PFM3File *bank, int patchNumbe
         default: {
             // VERSION 1
             FlashSynthParams *flashSynthParams = (FlashSynthParams*) storageBuffer;
-#ifndef PFM3_HOST
-            namePosition = (int) (((unsigned int) flashSynthParams->presetName) - (unsigned int) flashSynthParams);
-#else
+            // presetName is a fixed array member: pointer subtraction is
+            // bit-identical on target and host — no PFM3_HOST arm needed.
             namePosition = (int) (((char*) flashSynthParams->presetName) - (char*) flashSynthParams);
-#endif
             break;
         }
     }
