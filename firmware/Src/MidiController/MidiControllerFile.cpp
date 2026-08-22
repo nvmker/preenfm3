@@ -18,7 +18,11 @@
 
 #include "MidiControllerFile.h"
 
-#include <string.h>
+// <string.h> cannot be included here: synth/Common.h declares strcmp with
+// C++ linkage (firmware-wide idiom, see filesystem/PreenFMFileType.cpp).
+// <stddef.h> supplies size_t only — no string declarations to clash.
+#include <stddef.h>
+extern "C" void* memcpy(void* dest, const void* src, size_t n);
 
 namespace {
 
