@@ -31,14 +31,28 @@ public:
 
 	void valueChanged(int encoder) {
 	    switch (encoder) {
-	    case ENCODER_LFO_KSYNC:
-            this->rampInv = 50 * invTab[(int)(lfo->keybRamp * 50.0f)];
-            this->ramp = lfo->keybRamp;
+	    case ENCODER_LFO_KSYNC: {
+            // 6.3: keybRamp can be negative (UI "off" is -0.01) or exceed the
+            // display's [0,2] range (PAD random presets reach 4.0, the DX7
+            // import ~6.6). The raw (int)(keybRamp*50) indexes invTab[2048]
+            // out of bounds for anything below -0.02 (and the cast itself is
+            // UB for NaN/huge values). Guard before the cast — folded-B
+            // idiom — then clamp: hostile ramps behave like ramp 0.
+            // Valid ramps are byte-identical.
+            float keybRamp = lfo->keybRamp;
+            int rampIndex = (__builtin_isfinite(keybRamp) && keybRamp > 0.0f)
+                ? (int)(keybRamp * 50.0f) : 0;
+            if (rampIndex > 2047) {
+                rampIndex = 2047;
+            }
+            this->rampInv = 50 * invTab[rampIndex];
+            this->ramp = keybRamp;
             if (this->ramp < 0 ) {
                 // resync all LFO
                 phase = 0;
             }
             break;
+        }
 	    case ENCODER_LFO_FREQ:
 	        isNotMidiSynchronized = ((lfo->freq * 10.0f) < LFO_MIDICLOCK_MC_DIV_16);
 	        break;
