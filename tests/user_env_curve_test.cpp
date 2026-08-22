@@ -6,10 +6,9 @@
 // FIXED in bugfix-phase1 (item 1.3): non-finite samples are sanitized,
 // finite flat curves early out untouched, and non-flat curves scale into 0..1.
 // Still-pinned quirks (deferred-work.md):
-//   * interpolate() reads buffer[iPos+1] one past the populated source
-//     window (same shape as UserWaveform).
 //   * the txt parser requires EXACTLY 64 samples; anything else -> '#'
-//     error and no load.
+//     error and no load. (The dead interpolate() member — including its
+//     one-past-source read — was removed in bugfix-phase5 item 5.4.)
 // userEnvCurves is the REAL global from Env.cpp (already linked); envCurveNames
 // comes from the Phase-4 stub table.
 // pi-lens-ignore: fatal error
@@ -226,15 +225,7 @@ TEST_F(UserEnvCurveTest, OppositeFiniteExtremaNormalizeWithoutRangeOverflow) {
     }
 }
 
-TEST_F(UserEnvCurveTest, InterpolateReadsOnePastPopulatedSourceQuirk) {
-    float buf[64];
-    for (int i = 0; i < 16; i++) buf[i] = 1.0f;
-    for (int i = 16; i < 64; i++) buf[i] = 0.0f;
-    uec_.interpolate(buf, 16, 64);
-    // last target sample reads buf[15]..buf[16] where 16 == srcN (unpopulated)
-    float pos = 63.0f * 16.0f / 64.0f;   // 15.75
-    int iPos = (int)pos;
-    float decimal = pos - iPos;
-    EXPECT_FLOAT_EQ(buf[63], 1.0f * (1 - decimal) + 0.0f * decimal);
-    EXPECT_EQ(uec_.numberOfSample, 64);
-}
+// 5.4 removed the never-reachable 3 < n < 64 interpolate branch (and the
+// interpolate member itself): the txt parser rejects anything but exactly
+// 64 samples, so the branch could never run. TxtCountOtherThan64IsRejected
+// above pins that contract; no interpolate regression test is possible.
