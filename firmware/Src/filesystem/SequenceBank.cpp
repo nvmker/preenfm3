@@ -149,6 +149,11 @@ void SequenceBank::loadSequence(const struct PFM3File* bank, int patchNumber) {
 }
 
 void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) {
+    // folded-A: a truncated file must be rejected BEFORE any setFullState
+    // mutation. Slot payload = 1024 state + 16384 actions + 12336 stepNotes.
+    if (f_size(sequenceFile) < 4 + (FSIZE_t)(1024 + 16384 + 12336) * (patchNumber + 1)) {
+        return;
+    }
     UINT byteRead;
     f_lseek(sequenceFile, 4 + ((1024 + 16384 + 12336) * patchNumber));
 
@@ -157,14 +162,25 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
     }
 
     // We load 1024 bytes for sequencer fullstate
-    f_read(sequenceFile, storageBuffer, 1024, &byteRead);
+    if (f_read(sequenceFile, storageBuffer, 1024, &byteRead) != FR_OK || byteRead != 1024) {
+        return;  // abort: sequencer state untouched
+    }
     sequencer->setFullState((uint8_t*)storageBuffer);
 
-    f_read(sequenceFile, actions, 16384, &byteRead);
-    f_read(sequenceFile, stepNotes, 12336, &byteRead);
+    if (f_read(sequenceFile, actions, 16384, &byteRead) != FR_OK || byteRead != 16384) {
+        return;
+    }
+    if (f_read(sequenceFile, stepNotes, 12336, &byteRead) != FR_OK || byteRead != 12336) {
+        return;
+    }
 }
 
 void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) {
+    // folded-A: a truncated file must be rejected BEFORE any setFullState
+    // mutation. Slot payload = 1024 state + 16384 actions + 24576 stepNotes.
+    if (f_size(sequenceFile) < 4 + (FSIZE_t)(1024 + 16384 + 24576) * (patchNumber + 1)) {
+        return;
+    }
     UINT byteRead;
     f_lseek(sequenceFile, 4 + ((1024 + 16384 + 24576) * patchNumber));
 
@@ -173,11 +189,17 @@ void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) 
     }
 
     // We load 1024 bytes for sequencer fullstate
-    f_read(sequenceFile, storageBuffer, 1024, &byteRead);
+    if (f_read(sequenceFile, storageBuffer, 1024, &byteRead) != FR_OK || byteRead != 1024) {
+        return;  // abort: sequencer state untouched
+    }
     sequencer->setFullState((uint8_t*)storageBuffer);
 
-    f_read(sequenceFile, actions, 16384, &byteRead);
-    f_read(sequenceFile, stepNotes, 24576, &byteRead);
+    if (f_read(sequenceFile, actions, 16384, &byteRead) != FR_OK || byteRead != 16384) {
+        return;
+    }
+    if (f_read(sequenceFile, stepNotes, 24576, &byteRead) != FR_OK || byteRead != 24576) {
+        return;
+    }
 }
 
 
@@ -199,27 +221,35 @@ const char* SequenceBank::loadSequenceName(const struct PFM3File* bank, int patc
 
         switch (bankVersion) {
             case SEQUENCE_BANK_VERSION1: {
-                f_lseek(&sequenceFile, 4 + (1024 + 16384 + 12336) * patchNumber);
-                f_read(&sequenceFile, storageBuffer, 20, &byteRead);
-                const char* sequenceNameInBuffer = sequencer->getSequenceNameInBuffer(storageBuffer);
-                for (int s = 0; s < 12; s++) {
-                    sequenceName[s] = sequenceNameInBuffer[s];
+                // folded-A: exact-length name read on a big-enough file;
+                // any failure falls through to the "##" fallback.
+                if (f_size(&sequenceFile) >= 4 + (FSIZE_t)(1024 + 16384 + 12336) * (patchNumber + 1)
+                        && f_lseek(&sequenceFile, 4 + (1024 + 16384 + 12336) * patchNumber) == FR_OK
+                        && f_read(&sequenceFile, storageBuffer, 20, &byteRead) == FR_OK
+                        && byteRead == 20) {
+                    const char* sequenceNameInBuffer = sequencer->getSequenceNameInBuffer(storageBuffer);
+                    for (int s = 0; s < 12; s++) {
+                        sequenceName[s] = sequenceNameInBuffer[s];
+                    }
+                    sequenceName[12] = 0;
+                    f_close(&sequenceFile);
+                    return sequenceName;
                 }
-                sequenceName[12] = 0;
-                f_close(&sequenceFile);
-                return sequenceName;
                 break;
             }
             case SEQUENCE_BANK_VERSION2: {
-                f_lseek(&sequenceFile, 4 + (1024 + 16384 + 24576) * patchNumber);
-                f_read(&sequenceFile, storageBuffer, 20, &byteRead);
-                const char* sequenceNameInBuffer = sequencer->getSequenceNameInBuffer(storageBuffer);
-                for (int s = 0; s < 12; s++) {
-                    sequenceName[s] = sequenceNameInBuffer[s];
+                if (f_size(&sequenceFile) >= 4 + (FSIZE_t)(1024 + 16384 + 24576) * (patchNumber + 1)
+                        && f_lseek(&sequenceFile, 4 + (1024 + 16384 + 24576) * patchNumber) == FR_OK
+                        && f_read(&sequenceFile, storageBuffer, 20, &byteRead) == FR_OK
+                        && byteRead == 20) {
+                    const char* sequenceNameInBuffer = sequencer->getSequenceNameInBuffer(storageBuffer);
+                    for (int s = 0; s < 12; s++) {
+                        sequenceName[s] = sequenceNameInBuffer[s];
+                    }
+                    sequenceName[12] = 0;
+                    f_close(&sequenceFile);
+                    return sequenceName;
                 }
-                sequenceName[12] = 0;
-                f_close(&sequenceFile);
-                return sequenceName;
                 break;
             }
         }

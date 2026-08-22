@@ -298,6 +298,85 @@ TEST_F(SequenceBankTest, CreateSequenceFileReturnsAfterWriteStall) {
               4u + 32u * (1024u + 16384u + 24576u));
 }
 
+// ---- folded-A: payload reads are validated before mutating state -----------
+
+TEST_F(SequenceBankTest, TruncatedV2PayloadIsRejectedBeforeMutation) {
+    // Valid 4-byte v2 header but a short payload (full state, no actions/
+    // stepNotes): the f_size pre-check must reject BEFORE setFullState runs.
+    std::vector<uint8_t> data(4 + 1024, 0);
+    uint32_t v2 = SEQUENCE_BANK_VERSION2;
+    memcpy(data.data(), &v2, 4);
+    fatfsShimInjectBytes("0:/pfm3/trunc2", data.data(), data.size());
+    PFM3File bank;
+    strcpy(bank.name, "trunc2");
+    bank.fileType = FILE_OK;
+
+    StampState();
+    bank_.loadSequence(&bank, 0);
+    EXPECT_EQ(actions[0].when, 0x1234);            // nothing loaded
+    EXPECT_EQ(actions[0].actionType, 0x55);
+    EXPECT_EQ(stepNotes[3][100].full, 0xAABBCCDDu);
+    EXPECT_EQ(strncmp(seq_->getSequenceName(), "MYSEQ      ", 11), 0);
+    EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");  // too short for name
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
+}
+
+TEST_F(SequenceBankTest, TruncatedV1PayloadIsRejectedBeforeMutation) {
+    // Valid v1 header, payload shorter than 1024+16384+12336.
+    std::vector<uint8_t> data(4 + 16384, 0);
+    uint32_t v1 = SEQUENCE_BANK_VERSION1;
+    memcpy(data.data(), &v1, 4);
+    fatfsShimInjectBytes("0:/pfm3/trunc1", data.data(), data.size());
+    PFM3File bank;
+    strcpy(bank.name, "trunc1");
+    bank.fileType = FILE_OK;
+
+    StampState();
+    memset(actions, 0, sizeof(actions));
+    memset(stepNotes, 0, sizeof(stepNotes));
+    bank_.loadSequence(&bank, 0);
+    EXPECT_EQ(actions[0].when, 0);                 // rejected, nothing loaded
+    EXPECT_EQ(stepNotes[3][100].full, 0u);
+    EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
+}
+
+TEST_F(SequenceBankTest, FailedPayloadReadLeavesStateUnchanged) {
+    // Full-size valid v2 file, but the payload state read fails: the load
+    // must abort without touching the sequencer (one-shot f_read hook fires
+    // on the first read after the 4-byte version header).
+    bank_.createSequenceFile("mybank123456");
+    PFM3File bank;
+    strcpy(bank.name, "mybank123456");
+    bank.fileType = FILE_OK;
+    StampState();
+    char sequenceName[] = "FIFTHSEQ   ";
+    bank_.saveSequence(&bank, 0, sequenceName);
+    // Wipe the tables so any successful load would be visible.
+    memset(actions, 0, sizeof(actions));
+    memset(stepNotes, 0, sizeof(stepNotes));
+
+    fatfsShimFailNext("f_read", FR_DISK_ERR);
+    bank_.loadSequence(&bank, 0);
+    EXPECT_EQ(actions[0].when, 0);                 // no actions/stepNotes read
+    EXPECT_EQ(stepNotes[3][100].full, 0u);
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
+}
+
+TEST_F(SequenceBankTest, NameReadFailureReturnsHashHash) {
+    // Full-size valid v2 bank, but the 20-byte name read fails.
+    bank_.createSequenceFile("mybank123456");
+    PFM3File bank;
+    strcpy(bank.name, "mybank123456");
+    bank.fileType = FILE_OK;
+    char sequenceName[] = "FIFTHSEQ   ";
+    bank_.saveSequence(&bank, 0, sequenceName);
+
+    fatfsShimFailNext("f_read", FR_INT_ERR);
+    EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
+}
+
 TEST_F(SequenceBankTest, CreateSequenceFileWithoutEmptySlotBails) {
     // Pad by one entry because addEmptyFile's known/deferred condition-order
     // quirk reads slot cap before checking k < cap.
