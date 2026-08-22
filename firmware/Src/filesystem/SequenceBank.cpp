@@ -243,10 +243,17 @@ const char* SequenceBank::loadSequenceName(const struct PFM3File* bank, int patc
                         && f_lseek(&sequenceFile, 4 + (1024 + 16384 + 12336) * patchNumber) == FR_OK
                         && f_read(&sequenceFile, storageBuffer, 20, &byteRead) == FR_OK
                         && byteRead == 20) {
+                    // NUL-aware copy: getSequenceNameInBuffer can return the
+                    // 3-byte "##" literal fallback; a fixed 12-byte copy
+                    // would read past it. Real 12-char names (space-padded,
+                    // no NUL) copy identically.
                     const char* sequenceNameInBuffer = sequencer->getSequenceNameInBuffer(storageBuffer);
-                    for (int s = 0; s < 12; s++) {
+                    int s = 0;
+                    while (s < 12 && sequenceNameInBuffer[s] != '\0') {
                         sequenceName[s] = sequenceNameInBuffer[s];
+                        s++;
                     }
+                    sequenceName[s] = 0;
                     sequenceName[12] = 0;
                     f_close(&sequenceFile);
                     return sequenceName;
@@ -259,10 +266,14 @@ const char* SequenceBank::loadSequenceName(const struct PFM3File* bank, int patc
                         && f_lseek(&sequenceFile, 4 + (1024 + 16384 + 24576) * patchNumber) == FR_OK
                         && f_read(&sequenceFile, storageBuffer, 20, &byteRead) == FR_OK
                         && byteRead == 20) {
+                    // NUL-aware copy, as in the v1 arm ("##" fallback bound).
                     const char* sequenceNameInBuffer = sequencer->getSequenceNameInBuffer(storageBuffer);
-                    for (int s = 0; s < 12; s++) {
+                    int s = 0;
+                    while (s < 12 && sequenceNameInBuffer[s] != '\0') {
                         sequenceName[s] = sequenceNameInBuffer[s];
+                        s++;
                     }
+                    sequenceName[s] = 0;
                     sequenceName[12] = 0;
                     f_close(&sequenceFile);
                     return sequenceName;
