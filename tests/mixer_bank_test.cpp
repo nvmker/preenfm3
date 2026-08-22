@@ -271,9 +271,9 @@ TEST_F(MixerBankTest, MixerStateReadFailureRejectsBeforeRestore) {
     // Regression (6.1): the f_read result and byteRead were ignored — an
     // I/O failure consumed whatever stale bytes sat in storageBuffer.
     // (Create a full-size bank first, then fail the read.)
-    bank_.createMixerBank("fullbank12345");
+    bank_.createMixerBank("fullbank1234");
     PFM3File bank;
-    strcpy(bank.name, "fullbank12345");
+    strcpy(bank.name, "fullbank1234");  // 12 chars: name[13] fits 12+NUL
     bank.fileType = FILE_OK;
 
     MixerState ms2;
