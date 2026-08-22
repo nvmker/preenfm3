@@ -363,6 +363,34 @@ TEST_F(SequenceBankTest, FailedPayloadReadLeavesStateUnchanged) {
     EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
 }
 
+// Review patch 4: a bank truncated inside a slot's payload must still
+// yield the readable name (only the name's own extent is required), while
+// the data load of that slot still rejects.
+TEST_F(SequenceBankTest, TruncatedPayloadStillYieldsReadableName) {
+    constexpr size_t kSlot = 1024 + 16384 + 24576;
+    std::vector<uint8_t> data(4 + 20 + 512, 0);  // name intact, payload cut
+    uint32_t v2 = SEQUENCE_BANK_VERSION2;
+    memcpy(data.data(), &v2, 4);
+    data[4] = 2;  // SEQ_VERSION2: name lives at state offset 1
+    memcpy(data.data() + 5, "MYSEQ      ", 12);
+    fatfsShimInjectBytes("0:/pfm3/midtrunc", data.data(), data.size());
+    PFM3File bank;
+    strcpy(bank.name, "midtrunc");
+    bank.fileType = FILE_OK;
+
+    EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "MYSEQ      ");
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
+
+    // Data load of the truncated slot still rejects: state unchanged.
+    StampState();
+    memset(actions, 0, sizeof(actions));
+    memset(stepNotes, 0, sizeof(stepNotes));
+    bank_.loadSequence(&bank, 0);
+    EXPECT_EQ(actions[0].when, 0);
+    EXPECT_EQ(stepNotes[3][100].full, 0u);
+    EXPECT_EQ(strncmp(seq_->getSequenceName(), "MYSEQ      ", 11), 0);
+}
+
 // Review patch 3: any single payload-read failure must precede the core
 // state mutation — setFullState now runs LAST. Within loadSequence the
 // f_read order is: header (1), actions (2), stepNotes (3), fullstate (4);
