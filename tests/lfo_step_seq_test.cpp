@@ -213,7 +213,7 @@ TEST_F(LfoStepSeqTest, HostileStepCharsClampIntoExpValuesDomain) {
     const int hostile[] = {100, -5, 127, -128};
     for (int h : hostile) {
         SCOPED_TRACE(h);
-        for (int i = 0; i < 16; i++) steps_.steps[i] = (char)h;
+        for (int i = 0; i < 16; i++) steps_.steps[i] = static_cast<int8_t>(h);
         lfo_->init(&params_, &steps_, &matrix_, MATRIX_SOURCE_LFOSEQ1,
                    LFOSEQ1_GATE);
         lfo_->noteOn();

@@ -158,8 +158,8 @@ void LfoStepSeq::nextValueInMatrix() {
 }
 
 int LfoStepSeq::stepValue(int step) {
-	// 6.2: steps[] holds raw chars from the preset — the UI clamps to [0,15]
-	// but a corrupt bank does not; a hostile char (<0 or >15) used to index
+	// 6.2: steps[] holds signed bytes from the preset — the UI clamps to [0,15]
+	// but a corrupt bank does not; a hostile value (<0 or >15) used to index
 	// expValues[16] out of bounds. Clamp the step VALUE at the use site (4.5
 	// fallback idiom): a corrupt step fails safe to an in-table value.
 	if (step < 0) {

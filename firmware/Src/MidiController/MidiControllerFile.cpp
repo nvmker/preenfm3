@@ -132,7 +132,7 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
             return;
         }
         for (int pageNumber = 0; pageNumber < MIDI_NUMBER_OF_PAGES; pageNumber++) {
-            for (int e = 0; e < 6; e++) {
+            for (int e = 0; e < MIDI_NUMBER_OF_ENCODERS; e++) {
                 MidiEncoder *encoder = midiControllerState->getEncoder(pageNumber, e);
                 for (int c = 0; c < 6 ; c++) {
                     encoder->name[c] = *(p++);
@@ -155,7 +155,7 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
                 encoder->maxValue = rdU16(p);
                 encoder->minValue = rdU16(p);
             }
-            for (int b = 0; b < 6; b++) {
+            for (int b = 0; b < MIDI_NUMBER_OF_BUTTONS; b++) {
                 MidiButton *button = midiControllerState->getButton(pageNumber, b);
                 for (int c = 0; c < 6 ; c++) {
                     button->name[c] = *(p++);
@@ -196,7 +196,7 @@ void MidiControllerFile::saveConfig(MidiControllerState* midiControllerState) {
     wrU16(p, MIDI_CONTROLLER_CURRENT_VERSION);
 
     for (int pageNumber = 0; pageNumber < MIDI_NUMBER_OF_PAGES; pageNumber++) {
-        for (int e = 0; e < 6; e++) {
+        for (int e = 0; e < MIDI_NUMBER_OF_ENCODERS; e++) {
             MidiEncoder *encoder = midiControllerState->getEncoder(pageNumber, e);
             for (int c = 0; c < 6 ; c++) {
                 *(p++) = encoder->name[c];
@@ -210,7 +210,7 @@ void MidiControllerFile::saveConfig(MidiControllerState* midiControllerState) {
             wrU16(p, encoder->maxValue);
             wrU16(p, encoder->minValue);
         }
-        for (int b = 0; b < 6; b++) {
+        for (int b = 0; b < MIDI_NUMBER_OF_BUTTONS; b++) {
             MidiButton *button = midiControllerState->getButton(pageNumber, b);
             for (int c = 0; c < 6 ; c++) {
                 *(p++) = button->name[c];
