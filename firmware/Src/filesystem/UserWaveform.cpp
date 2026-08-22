@@ -245,7 +245,15 @@ void UserWaveform::interpolate(float* buffer, int sourceNumberOfSamples, int tar
         float pos = (float)i * (float)sourceNumberOfSamples /  (float)targetNumberOfSamples;
         int iPos = pos;
         float decimal = pos - iPos;
-        buffer[i] = buffer[iPos] * (1-decimal) + buffer[iPos+1] * decimal;
+        // 6.4: for the last target sample iPos+1 can equal
+        // sourceNumberOfSamples — one past the window the txt parse
+        // populated; the stale/zero tail silently leaked in. Clamp the
+        // upper read to the last populated sample.
+        int iPosNext = iPos + 1;
+        if (iPosNext >= sourceNumberOfSamples) {
+            iPosNext = sourceNumberOfSamples - 1;
+        }
+        buffer[i] = buffer[iPos] * (1-decimal) + buffer[iPosNext] * decimal;
     }
     numberOfSample = targetNumberOfSamples;
 }
