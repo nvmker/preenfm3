@@ -57,6 +57,13 @@ public:
 	    return count;
 	}
 
+	// 6.9: can n more elements be inserted without overwriting unread data?
+	// The ring sacrifices one slot (isFull() at count == size-1), so usable
+	// capacity is size-1 and room-for-n means count + n <= size-1.
+	bool hasRoomFor(int n) {
+	    return getCount() + n < size;
+	}
+
 	void appendBlock(T* block, int number) {
 		for (int k=0; k<number ; k++) {
 			insert(block[k]);
