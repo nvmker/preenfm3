@@ -38,6 +38,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <vector>
 
 // Global 16-entry exponential ratio table (LfoStepSeq.cpp:21). Read-only here.
@@ -303,8 +304,8 @@ TEST_F(LfoStepSeqTest, MidiClockOutOfRangeFiniteBpmFallsBackToTime4) {
 }
 
 TEST_F(LfoStepSeqTest, MidiClockNonFiniteBpmFallsBackToTime4) {
-    const float inf = INFINITY;
-    const float nan = NAN;
+    const float inf = std::numeric_limits<float>::infinity();
+    const float nan = std::numeric_limits<float>::quiet_NaN();
     for (float bpm : {inf, -inf, nan}) {
         SCOPED_TRACE(bpm);
         params_.bpm = bpm;

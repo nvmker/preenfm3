@@ -288,14 +288,15 @@ TEST_F(SequenceBankTest, LoadDefaultSequenceMissingFileIsTrueNoOp) {
 }
 
 TEST_F(SequenceBankTest, CreateSequenceFileReturnsAfterWriteStall) {
-    // Regression (5.6): a failed/short f_write must break the zero-fill loop
-    // instead of spinning forever on byteWritten == 0.
-    fatfsShimFailNext("f_write", FR_INT_ERR);
-    bank_.createSequenceFile("mybank123456");  // must simply RETURN (no hang)
+    // Regression (5.6): writes 1 and 2 are the header and first state block;
+    // fail the first zero-fill write specifically. Creation must stop instead
+    // of spinning or continuing later slots at shifted offsets.
+    fatfsShimFailNextNth("f_write", FR_INT_ERR, 3);
+    bank_.createSequenceFile("mybank123456");
     EXPECT_TRUE(fatfsShimFileExists("0:/pfm3/mybank123456"));
-    // File stays short: full file would be 4 + 32 * (1024+16384+24576).
-    EXPECT_LT(fatfsShimFileSize("0:/pfm3/mybank123456"),
-              4u + 32u * (1024u + 16384u + 24576u));
+    EXPECT_EQ(fatfsShimFileSize("0:/pfm3/mybank123456"), 4u + 1024u)
+        << "no later slot may be appended after the failed zero fill";
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
 }
 
 // ---- folded-A: payload reads are validated before mutating state -----------
@@ -391,11 +392,11 @@ TEST_F(SequenceBankTest, TruncatedPayloadStillYieldsReadableName) {
     EXPECT_EQ(strncmp(seq_->getSequenceName(), "MYSEQ      ", 11), 0);
 }
 
-// Review patch 3: any single payload-read failure must precede the core
-// state mutation — setFullState now runs LAST. Within loadSequence the
-// f_read order is: header (1), actions (2), stepNotes (3), fullstate (4);
-// the counting injection targets each payload read in turn.
-TEST_F(SequenceBankTest, PerReadFailureLeavesCoreStateUnchanged) {
+// Every payload read is staged before the live state is committed. Within
+// loadSequence the f_read order is: header (1), fullstate (2), actions (3),
+// stepNotes (4). A failure at any payload read must preserve all three live
+// sections, not only the 1024-byte core state.
+TEST_F(SequenceBankTest, PerReadFailureLeavesAllStateUnchanged) {
     for (int nth : {2, 3, 4}) {
         SCOPED_TRACE(nth);
         fatfsShimReset();
@@ -409,13 +410,19 @@ TEST_F(SequenceBankTest, PerReadFailureLeavesCoreStateUnchanged) {
         StampState();
         char sequenceName[] = "FIFTHSEQ   ";
         bank_.saveSequence(&bank, 0, sequenceName);
-        // Stamp a KNOWN different core state so a mutation would be visible.
+
+        // Make every live section differ from the saved payload so even a
+        // complete earlier read before a later failure is observable.
         seq_->setSequenceName("MUTATED     ");
+        memset(actions, 0x5A, sizeof(actions));
+        memset(stepNotes, 0xA5, sizeof(stepNotes));
 
         fatfsShimFailNextNth("f_read", FR_INT_ERR, nth);
         bank_.loadSequence(&bank, 0);
-        EXPECT_EQ(strncmp(seq_->getSequenceName(), "MUTATED     ", 11), 0)
-            << "setFullState must not run after read " << (nth - 1);
+        EXPECT_EQ(strncmp(seq_->getSequenceName(), "MUTATED     ", 11), 0);
+        EXPECT_EQ(actions[0].when, 0x5A5A);
+        EXPECT_EQ(actions[0].actionType, 0x5A);
+        EXPECT_EQ(stepNotes[3][100].full, 0xA5A5A5A5A5A5A5A5ull);
         EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
     }
 }
@@ -442,7 +449,8 @@ TEST_F(SequenceBankTest, FailedSlotSeekLeavesStateUnchanged) {
 }
 
 TEST_F(SequenceBankTest, NameReadFailureReturnsHashHash) {
-    // Full-size valid v2 bank, but the 20-byte name read fails.
+    // Full-size valid v2 bank. The header is read 1; target the 20-byte name
+    // payload on read 2 for both an error and a successful short read.
     bank_.createSequenceFile("mybank123456");
     PFM3File bank;
     strcpy(bank.name, "mybank123456");
@@ -450,7 +458,32 @@ TEST_F(SequenceBankTest, NameReadFailureReturnsHashHash) {
     char sequenceName[] = "FIFTHSEQ   ";
     bank_.saveSequence(&bank, 0, sequenceName);
 
-    fatfsShimFailNext("f_read", FR_INT_ERR);
+    fatfsShimFailNextNth("f_read", FR_INT_ERR, 2);
+    EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");
+    fatfsShimShortReadNextNth("f_read", 19, 2);
+    EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
+}
+
+TEST_F(SequenceBankTest, Version1NameReadFailureReturnsHashHash) {
+    // Pin the same exact-read contract for the V1 dispatch arm.
+    std::vector<uint8_t> data(4 + 20, 0);
+    uint32_t v1 = SEQUENCE_BANK_VERSION1;
+    memcpy(data.data(), &v1, 4);
+    uint8_t state[1024]{};
+    uint32_t stateSize = 0;
+    seq_->setSequenceName("OLDV1SEQ    ");
+    seq_->getFullState(state, &stateSize);
+    memcpy(data.data() + 4, state, 20);
+    fatfsShimInjectBytes("0:/pfm3/v1name", data.data(), data.size());
+    PFM3File bank;
+    strcpy(bank.name, "v1name");
+    bank.fileType = FILE_OK;
+
+    ASSERT_STREQ(bank_.loadSequenceName(&bank, 0), "OLDV1SEQ    ");
+    fatfsShimFailNextNth("f_read", FR_INT_ERR, 2);
+    EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");
+    fatfsShimShortReadNextNth("f_read", 19, 2);
     EXPECT_STREQ(bank_.loadSequenceName(&bank, 0), "##");
     EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
 }
