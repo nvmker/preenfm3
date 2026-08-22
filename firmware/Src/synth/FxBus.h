@@ -161,7 +161,7 @@ protected:
     static const int delay2BufferSizeM1    = delay2BufferSize - 1;
     static float delay2Buffer[delay2BufferSize];
     int delay2WritePos     = 0;
-    int delay2ReadPos;
+    int delay2ReadPos      = 0;
     float delay2DelayLen     = 0, delay2ReadLen;
     float delay2FxTarget     = 0;
 
@@ -177,7 +177,7 @@ protected:
     static const int delay4BufferSizeM1    = delay4BufferSize - 1;
     static float delay4Buffer[delay4BufferSize];
     int delay4WritePos     = 0;
-    int delay4ReadPos;
+    int delay4ReadPos      = 0;
     float delay4DelayLen     = 0, delay4ReadLen;
     float delay4FxTarget     = 0;
 
