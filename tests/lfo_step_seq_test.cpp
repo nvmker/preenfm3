@@ -205,6 +205,34 @@ TEST_F(LfoStepSeqTest, GateAtOrBelowZeroForcesTargetZero) {
     EXPECT_FLOAT_EQ(Source(), 0.0f) << "and it must STAY 0";
 }
 
+TEST_F(LfoStepSeqTest, HostileStepCharsClampIntoExpValuesDomain) {
+    // Regression (6.2): steps[] holds raw chars from the preset; the UI
+    // clamps to [0,15] but a corrupt bank does not. A hostile char (<0 or
+    // >15) used to read expValues[] out of bounds. The step VALUE is now
+    // clamped at the use site — every emitted source stays in the table.
+    const int hostile[] = {100, -5, 127, -128};
+    for (int h : hostile) {
+        SCOPED_TRACE(h);
+        for (int i = 0; i < 16; i++) steps_.steps[i] = static_cast<int8_t>(h);
+        lfo_->init(&params_, &steps_, &matrix_, MATRIX_SOURCE_LFOSEQ1,
+                   LFOSEQ1_GATE);
+        lfo_->noteOn();
+        for (int i = 0; i < kAdvanceCalls; i++) lfo_->nextValueInMatrix();
+        // Walked all the way to the clamped target and never left the table.
+        int expected = h < 0 ? 0 : 15;
+        EXPECT_FLOAT_EQ(Source(), expValues[expected])
+            << "hostile step " << h << " must clamp to expValues[" << expected
+            << "]";
+        // Intermediate catch-down walk: every intermediate source is a table
+        // entry (indices are ints, so compare against the full table).
+        bool inTable = false;
+        for (int t = 0; t < 16; t++) {
+            if (Source() == expValues[t]) inTable = true;
+        }
+        EXPECT_TRUE(inTable) << "emitted value must always be in expValues[]";
+    }
+}
+
 // The gate length is modulated by the matrix destination the LFO was inited
 // with (matrixGateDestination = LFOSEQ1_GATE): gate + destination is the
 // effective gate. Routing 0.3 into LFOSEQ1_GATE with param gate 0.2 must chop

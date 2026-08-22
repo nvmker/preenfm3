@@ -143,12 +143,27 @@ bool MixerBank::loadMixerData(FIL* file, uint8_t mixerNumber) {
     UINT byteRead;
     UINT result;
 
+    // 6.1: f_size pre-check (folded-A idiom) — a truncated slot would feed
+    // restoreFullState a read past the populated bytes. Require the
+    // mixer-STATE extent only (offset + MIXER_SIZE): the per-timbre patch
+    // reads below have their own short-read "##" fallback, so a bank with a
+    // truncated patch tail must still load (pinned behavior).
+    if (f_size(file) < (FSIZE_t)mixerNumber * FULL_MIXER_SIZE + (FSIZE_t)MIXER_SIZE) {
+        return false;
+    }
+
     for (uint32_t i = 0; i < PROPERTY_FILE_SIZE; i++) {
         storageBuffer[i] = 0;
     }
 
-    f_lseek(file, mixerNumber * FULL_MIXER_SIZE);
-    f_read(file, storageBuffer, MIXER_SIZE, &byteRead);
+    if (f_lseek(file, mixerNumber * FULL_MIXER_SIZE) != FR_OK) {
+        return false;
+    }
+    result = f_read(file, storageBuffer, MIXER_SIZE, &byteRead);
+    // 6.1: exact-length validation before touching mixer state.
+    if (result != FR_OK || byteRead != MIXER_SIZE) {
+        return false;
+    }
     mixerState->restoreFullState(storageBuffer);
 
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
@@ -180,8 +195,9 @@ bool MixerBank::loadMixerData(FIL* file, uint8_t mixerNumber) {
 bool MixerBank::loadDefaultMixer() {
     FRESULT result = f_open(&mixerFile, getFileName(DEFAULT_MIXER), FA_READ);
     if (result == FR_OK) {
-		loadMixerData(&mixerFile, 0);
+        bool loaded = loadMixerData(&mixerFile, 0);
         f_close(&mixerFile);
+        return loaded;
     } else {
         return false;
     }
@@ -237,8 +253,9 @@ bool MixerBank::loadMixer(const struct PFM3File* mixer, int mixerNumber) {
     FRESULT result = f_open(&mixerFile, fullBankName, FA_READ);
     if (result == FR_OK) {
         // Point to asked mixer
-        loadMixerData(&mixerFile, mixerNumber);
+        bool loaded = loadMixerData(&mixerFile, mixerNumber);
         f_close(&mixerFile);
+        return loaded;
     } else {
         return false;
     }
@@ -259,7 +276,18 @@ const char* MixerBank::loadMixerName(const struct PFM3File* mixer, int mixerNumb
 bool MixerBank::saveMixer(const struct PFM3File* mixer, int mixerNumber, char* mixerName) {
     const char* fullBankName = getFullName(mixer->name);
 
-    fsu_->copy(this->mixerState->mixName_, mixerName, 12);
+    // 6.6: bounded name copy (2.1(b) idiom) — the fixed 12-byte copy read
+    // past a shorter caller string's NUL; copy up to the NUL, zero-pad the
+    // remainder, and always terminate at [12].
+    int n = 0;
+    while (n < 12 && mixerName[n] != 0) {
+        this->mixerState->mixName_[n] = mixerName[n];
+        n++;
+    }
+    for (int k = n; k < 12; k++) {
+        this->mixerState->mixName_[k] = 0;
+    }
+    this->mixerState->mixName_[12] = 0;
 
     FRESULT result = f_open(&mixerFile, fullBankName, FA_WRITE);
     if (result == FR_OK) {

@@ -136,7 +136,7 @@ void SynthState::encoderTurnedForStepSequencer(int row, int encoder4, int encode
         propagateNewParamValue(currentTimbre, row, encoder4, (ParameterDisplay*) NULL, oldPos, stepSelect[whichStepSeq]);
 
     } else if (encoder6 == 4) {
-        char *step = &seqSteps->steps[(int) stepSelect[whichStepSeq]];
+        int8_t *step = &seqSteps->steps[(int) stepSelect[whichStepSeq]];
         int oldValue = (int) (*step);
 
         int newValue = (*step) + ticks;

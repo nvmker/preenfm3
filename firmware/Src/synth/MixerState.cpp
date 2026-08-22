@@ -217,6 +217,47 @@ void MixerState::restoreFullState(char *buffer) {
 }
 
 void MixerState::setDefaultValues() {
+    // 6.7 (owner decision: reset core too): unknown mixer versions used to
+    // keep the previous mixer's serialized core (name/channels/tuning/
+    // routing) while resetting only the defaulted fields — stale state from
+    // a mixer that is no longer there. The core defaults now mirror
+    // getFullDefaultState ("Mix 01", mixNumber 1) exactly. Known-version
+    // restores are unaffected: restoreFullState runs this first and every
+    // version reader overwrites the fields it reads.
+    for (int i = 0; i < 13; i++) {
+        mixName_[i] = 0;
+    }
+    mixName_[0] = 'M';
+    mixName_[1] = 'i';
+    mixName_[2] = 'x';
+    mixName_[3] = ' ';
+    mixName_[4] = '0';
+    mixName_[5] = '1';
+    MPE_inst1_ = 0;
+    currentChannel_ = 0;
+    globalChannel_ = 0;
+    midiThru_ = 0;
+    tuning_ = 440.0f;
+    {
+        const uint8_t outs[] = { 1, 1, 4, 4, 6, 8 };
+        const uint8_t voices[] = { 3, 3, 3, 2, 1, 1 };
+        for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+            instrumentState_[t].out = outs[t];
+            instrumentState_[t].midiChannel = 1 + t;
+            instrumentState_[t].firstNote = 0;
+            instrumentState_[t].lastNote = 127;
+            instrumentState_[t].shiftNote = 0;
+            instrumentState_[t].numberOfVoices = voices[t];
+            instrumentState_[t].scalaEnable = 0;
+            instrumentState_[t].scalaMapping = 0;
+            instrumentState_[t].scaleScaleNumber = 0;
+            for (int s = 0; s < 12; s++) {
+                instrumentState_[t].scalaScaleFileName[s] = 0;
+            }
+            instrumentState_[t].volume = 1.0f;
+        }
+    }
+
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
         instrumentState_[t].pan = 0;
         instrumentState_[t].send = 0;

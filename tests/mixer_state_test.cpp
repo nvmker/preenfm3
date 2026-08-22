@@ -368,30 +368,82 @@ TEST_F(MixerStateTest, DefaultPredelayByte54RemainsStableAcrossCycles) {
 // Unknown version: only setDefaultValues() runs — the mixer's serialized
 // core (name/channels/tuning/instrument core) is left UNTOUCHED from the
 // previous state, everything else resets to defaults. No crash, no garbage.
-TEST_F(MixerStateTest, UnknownVersionFallsBackToDefaultsOnly) {
+TEST_F(MixerStateTest, UnknownVersionResetsEverythingToDefaults) {
+    // FIXED (6.7, owner decision: reset core too): unknown versions used to
+    // retain the PREVIOUS mixer's serialized core (name/channels/tuning/
+    // routing) while resetting only the defaulted fields. The core now
+    // resets too — values mirror getFullDefaultState ("Mix 01").
     MixBuf mb = BuildVersionBuffer(1);
     ms_.restoreFullState(mb.b);
     ASSERT_EQ(std::string(ms_.mixName_, 4), std::string("Unit"));
+    ASSERT_EQ(ms_.currentChannel_, 3);
+    ASSERT_EQ(ms_.instrumentState_[0].out, 1);  // PutTimbre sentinel (1+t)
 
     char bad[64];
     std::memset(bad, 0xAB, sizeof(bad));
     bad[0] = 99;  // unknown version
     ms_.restoreFullState(bad);
-    // Serialized core retained from the previous (v1) restore...
-    EXPECT_EQ(std::string(ms_.mixName_, 4), std::string("Unit"))
-        << "unknown version must not touch the serialized core";
-    EXPECT_EQ(ms_.currentChannel_, 3);
-    // ...but the defaulted fields reset.
+    // Serialized core = defaults, nothing stale survives.
+    EXPECT_EQ(std::string(ms_.mixName_, 6), std::string("Mix 01"))
+        << "unknown version resets the mix name";
+    EXPECT_EQ(ms_.mixName_[12], 0);
+    EXPECT_EQ(ms_.currentChannel_, 0);
+    EXPECT_EQ(ms_.globalChannel_, 0);
+    EXPECT_EQ(ms_.midiThru_, 0);
+    EXPECT_EQ(ms_.MPE_inst1_, 0);
+    EXPECT_FLOAT_EQ(ms_.tuning_, 440.0f);
+    const uint8_t outs[] = {1, 1, 4, 4, 6, 8};
+    const uint8_t voices[] = {3, 3, 3, 2, 1, 1};
+    for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+        EXPECT_EQ(ms_.instrumentState_[t].out, outs[t]) << "timbre " << t;
+        EXPECT_EQ(ms_.instrumentState_[t].midiChannel, 1 + t) << "timbre " << t;
+        EXPECT_EQ(ms_.instrumentState_[t].firstNote, 0) << "timbre " << t;
+        EXPECT_EQ(ms_.instrumentState_[t].lastNote, 127) << "timbre " << t;
+        EXPECT_EQ(ms_.instrumentState_[t].shiftNote, 0) << "timbre " << t;
+        EXPECT_EQ(ms_.instrumentState_[t].numberOfVoices, voices[t]) << "timbre " << t;
+        EXPECT_EQ(ms_.instrumentState_[t].scalaEnable, 0) << "timbre " << t;
+        EXPECT_EQ(ms_.instrumentState_[t].scalaMapping, 0) << "timbre " << t;
+        EXPECT_EQ(ms_.instrumentState_[t].scaleScaleNumber, 0) << "timbre " << t;
+        EXPECT_EQ(ms_.instrumentState_[t].scalaScaleFileName[0], 0) << "timbre " << t;
+        EXPECT_FLOAT_EQ(ms_.instrumentState_[t].volume, 1.0f) << "timbre " << t;
+    }
+    // ...and the defaulted fields still reset.
     EXPECT_EQ(ms_.userCC_[0], 34);
     EXPECT_EQ(ms_.reverbPreset_, 7);
     EXPECT_EQ(ms_.instrumentState_[0].compressorType, 2);
     EXPECT_EQ(ms_.instrumentState_[0].pan, 0);
     EXPECT_EQ(ms_.instrumentState_[0].send, 0.0f);
-    EXPECT_EQ(ms_.MPE_inst1_, 0);
     // Version 0 is equally unknown.
     bad[0] = 0;
     ms_.restoreFullState(bad);
+    EXPECT_EQ(std::string(ms_.mixName_, 6), std::string("Mix 01"));
     EXPECT_EQ(ms_.reverbPreset_, 7);
+}
+
+TEST_F(MixerStateTest, KnownVersionRestoreStillOverwritesCoreDefaults) {
+    // 6.7 companion: setDefaultValues now writes core defaults BEFORE the
+    // per-version reader runs — every known version must still overwrite
+    // all of them with the buffer's values (no default leaking through).
+    for (int v = 1; v <= 6; v++) {
+        SCOPED_TRACE(v);
+        MixBuf mb = BuildVersionBuffer(v);
+        ms_.restoreFullState(mb.b);
+        EXPECT_EQ(std::string(ms_.mixName_, 4), std::string("Unit"))
+            << "version " << v << " must overwrite the default name";
+        EXPECT_EQ(ms_.currentChannel_, 3);
+        EXPECT_EQ(ms_.globalChannel_, 2);
+        EXPECT_EQ(ms_.midiThru_, 1);
+        EXPECT_FLOAT_EQ(ms_.tuning_, 442.5f);
+        EXPECT_EQ(ms_.instrumentState_[0].out, 1);
+        EXPECT_EQ(ms_.instrumentState_[0].midiChannel, 2);
+        EXPECT_EQ(ms_.instrumentState_[0].firstNote, 0);
+        EXPECT_EQ(ms_.instrumentState_[0].lastNote, 100);
+        EXPECT_EQ(ms_.instrumentState_[5].numberOfVoices, 5 % 4);
+        EXPECT_FLOAT_EQ(ms_.instrumentState_[5].volume, 0.5f + 0.1f * 5);
+        EXPECT_EQ(ms_.instrumentState_[0].scalaScaleFileName[0], 'a');
+        EXPECT_EQ(ms_.instrumentState_[5].scalaScaleFileName[0], 'a' + 5);
+        EXPECT_EQ(ms_.instrumentState_[5].scaleScaleNumber, (1 << 8) + 5);
+    }
 }
 
 // getMixNameFromFile: the name is at a fixed offset (+1) in every version.

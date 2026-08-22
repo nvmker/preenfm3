@@ -27,11 +27,12 @@
 //     wrap; noise[0] is SET EXPLICITLY per test (and changed mid-test to prove
 //     the sample-and-hold timing). Shared-state hygiene: never rely on
 //     leftover noise[] contents.
-//   * HAZARD (documented, NOT exercised): keybRamp <= -0.02 makes the inline
+//   * FIXED (6.3): keybRamp <= -0.02 used to make the inline
 //     valueChanged(ENCODER_LFO_KSYNC) compute invTab[(int)(keybRamp*50.0f)]
-//     with a NEGATIVE index (LfoOsc.h) — an OOB global read. Tests stay in
-//     the safe range (see NegativeKeybRampResyncsPhaseAndSkipsRamp); fixing
-//     the indexing is a firmware-owner decision.
+//     with a NEGATIVE index (LfoOsc.h) — an OOB global read. The index is
+//     now clamped to the invTab[2048] domain; hostile ramps are exercised
+//     in NegativeKeybRampResyncsPhaseAndSkipsRamp (and valid ramps up to 4.0
+//     from the PAD random preset are covered by KeyboardSyncRampScalesOutput).
 //   * Private-state access (phase/currentFreq/ramp flags) via the scoped
 //     `#define private public` include pattern from midi_decoder_test.cpp;
 //     every header LfoOsc.h reaches (Lfo.h, Osc.h) is pre-included first.
@@ -52,6 +53,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -363,6 +365,78 @@ TEST_F(LfoOscTest, NegativeKeybRampResyncsPhaseAndSkipsRamp) {
         lfo_->nextValueInMatrix();
         EXPECT_NEAR(Source(), ShapeValue(LFO_TRIANGLE, phase), kTol)
             << "unscaled output, sample " << i;
+    }
+}
+
+TEST_F(LfoOscTest, HostileKeybRampClampsInvTabIndexInBounds) {
+    // Regression (6.3): keybRamp <= -0.02 made valueChanged(KSYNC) compute
+    // invTab[negative] — an OOB global read (ASAN-clean only by luck of the
+    // adjacent global layout); the cast itself was UB for NaN/huge values.
+    // The index is now guarded before the cast and clamped to [0, 2047].
+    // Every hostile ramp must yield rampInv = 50 * invTab[0] = 50, like the
+    // safe -0.01 "off" case. Negative ramps additionally resync the phase;
+    // invalid non-negative ramps normalize to 0 so they cannot apply that
+    // gain for an unbounded duration.
+    const float hostileRamps[] = {
+        -0.02f, -0.5f, -1.0f, -12345.0f,
+        -std::numeric_limits<float>::infinity(),
+    };
+    for (float ramp : hostileRamps) {
+        SCOPED_TRACE(::testing::PrintToString(ramp));
+        Configure(LFO_TRIANGLE, 60.0f, /*bias=*/0.0f, /*keybRamp=*/ramp);
+        lfo_->noteOn();
+        for (int i = 0; i < 50; i++) lfo_->nextValueInMatrix();
+        ASSERT_GT(lfo_->phase, 0.0f) << "precondition: phase advanced";
+
+        lfo_->valueChanged(3);  // ENCODER_LFO_KSYNC
+        EXPECT_FLOAT_EQ(lfo_->rampInv, 50.0f)
+            << "hostile ramp must clamp to invTab[0], like the -0.01 off case";
+        EXPECT_FLOAT_EQ(lfo_->phase, 0.0f) << "negative ramp resyncs phase";
+        EXPECT_LT(lfo_->ramp, 0.0f) << "ramp itself keeps its (negative) value";
+    }
+
+    // Review patch: huge positive ramps make keybRamp*50 overflow the int
+    // cast, and retaining the raw ramp with invTab[0] would make modulation
+    // gain grow without bound. Normalize the effective ramp and index to 0.
+    const float hugePositiveRamps[] = {
+        1e30f, 1e9f, 1e6f, std::numeric_limits<float>::infinity()
+    };
+    for (float ramp : hugePositiveRamps) {
+        SCOPED_TRACE(::testing::PrintToString(ramp));
+        Configure(LFO_TRIANGLE, 60.0f, /*bias=*/0.0f, /*keybRamp=*/ramp);
+        lfo_->noteOn();
+        for (int i = 0; i < 50; i++) lfo_->nextValueInMatrix();
+        ASSERT_GT(lfo_->phase, 0.0f) << "precondition: phase advanced";
+
+        lfo_->valueChanged(3);  // ENCODER_LFO_KSYNC
+        EXPECT_FLOAT_EQ(lfo_->rampInv, 50.0f)
+            << "huge positive ramp must clamp to invTab[0] (no UB cast)";
+        EXPECT_FLOAT_EQ(lfo_->ramp, 0.0f)
+            << "effective ramp must match the safe index fallback";
+        EXPECT_GT(lfo_->phase, 0.0f) << "positive ramp does not resync";
+        lfo_->noteOn();
+        for (int i = 0; i < 100; i++) {
+            lfo_->nextValueInMatrix();
+            EXPECT_TRUE(std::isfinite(Source()));
+            EXPECT_LE(std::fabs(Source()), 1.0f);
+        }
+    }
+
+    // NaN uses the same coherent ramp/index fallback without resync.
+    Configure(LFO_TRIANGLE, 60.0f, /*bias=*/0.0f,
+              /*keybRamp=*/std::numeric_limits<float>::quiet_NaN());
+    lfo_->noteOn();
+    for (int i = 0; i < 50; i++) lfo_->nextValueInMatrix();
+    lfo_->valueChanged(3);
+    EXPECT_FLOAT_EQ(lfo_->rampInv, 50.0f)
+        << "NaN ramp must clamp to invTab[0]";
+    EXPECT_FLOAT_EQ(lfo_->ramp, 0.0f)
+        << "NaN effective ramp must match the safe index fallback";
+    EXPECT_GT(lfo_->phase, 0.0f) << "NaN is not negative: no resync";
+    lfo_->noteOn();
+    for (int i = 0; i < 100; i++) {
+        lfo_->nextValueInMatrix();
+        EXPECT_TRUE(std::isfinite(Source()));
     }
 }
 

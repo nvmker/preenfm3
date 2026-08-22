@@ -363,16 +363,18 @@ diagnostic, not an attribute warning).
 `Osc.cpp` / `Env.cpp` / `FxBus.cpp` / `Lfo.cpp` / `Timbre.cpp` in the synth-math
 run — same pattern, copy it.
 
-### Correction 3 — `Common.h` redeclares `strcmp` (linkage conflict on host)
+### Correction 3 — `Common.h` redeclared `strcmp` (libc conflict on host) — RESOLVED
 
-`Common.h:~700` has a bare file-scope `int strcmp(const char*, const char*);`
-(C++ linkage). Host libc's `<string.h>` — pulled transitively by libc++ —
-declares `strcmp` with C linkage → "different language linkage" error. This is
-also a latent firmware smell (libc functions should have C linkage).
+`Common.h:~700` had a file-scope `strcmp` declaration. It originally used C++
+linkage; Phase 6 item 6.11 changed it to `extern "C"`, but glibc's C++ header
+also specifies `noexcept`, so the hand declaration still conflicted when
+`<string.h>` was included after `Common.h`.
 
-**Remedy:** `#ifndef PFM3_HOST` guard around the redeclaration; host libc
-provides `strcmp`. The smell is **flagged, not fixed** (`extern "C"`), to keep
-the Arm build byte-identical.
+**Final resolution:** remove the unused declaration entirely. Platform libc
+headers now own `strcmp`'s linkage and exception specification on host and
+target alike. `<string.h>`/`<cstring>` remain includable after `Common.h`, and
+`PreenFMFileType.cpp` / `MidiControllerFile.cpp` obtain `strnlen` / `memcpy`
+from the platform header rather than hand-written prototypes.
 
 ### Correction 4 — `Voice.h` `__USAT` is ARM inline asm
 
@@ -412,7 +414,7 @@ behavior is preserved byte-for-byte. `PFM3_HOST` is still defined ONLY by
 | File | Change | Why |
 | --- | --- | --- |
 | `firmware/Src/midi/Sequencer.cpp` | `#ifndef PFM3_HOST` around the LED/`HAL_GetTick` block **and** around both `.ram_d3` section attributes | HAL calls; Mach-O section-attribute hard error |
-| `firmware/Src/synth/Common.h` | `#ifndef PFM3_HOST` around the file-scope `strcmp` redeclaration | libc linkage conflict |
+| `firmware/Src/synth/Common.h` | removed the unused file-scope `strcmp` redeclaration; platform headers are authoritative | libc linkage / exception-specification conflict (resolved) |
 | `firmware/Src/synth/Voice.h` | `#ifdef PFM3_HOST` portable `__USAT` fallback | ARM inline-asm constraint |
 | `tests/CMakeLists.txt` | firmware include dirs (host_shims first), `PFM3_HOST`, `-Wno-attributes -Wno-macro-redefined -Wno-writable-strings`, `target_sources(Sequencer.cpp + stub)` | seam wiring |
 | `tests/host_shims/fatfs.h` | forward-declares `FIL`, omits SD-disk/HAL chain | the one justified host shim |
@@ -526,8 +528,8 @@ links clean.
 | `tests/stubs/*` | **none added** | Hexter's functions are pure over the `OneSynthParams` POD — no collaborator symbols to satisfy (contrast Sequencer's 13-method stub) |
 
 No new host-incompatible constructs surfaced in `Hexter.cpp`. The `fatfs.h`
-shim, the `Common.h` `strcmp` guard, the `Voice.h` `__USAT` fallback, and the
-section-attribute/Mach-O guards from the Target #1 appendix all carry over
+shim, the `Common.h` libc-redeclaration removal, the `Voice.h` `__USAT`
+fallback, and the section-attribute/Mach-O guards from the Target #1 appendix all carry over
 unchanged — Targets #3 and #4 inherit them as-is.
 
 ---
@@ -648,8 +650,8 @@ checks stay exact.
 | `tests/stubs/*` | **none added** | Osc/Env/Matrix have no out-of-line collaborator-method symbols; all link deps are real data TUs |
 
 No NEW host-incompatible construct beyond the three predicted section
-attributes. The `fatfs.h` shim, `Common.h` `strcmp` guard, `Voice.h` `__USAT`
-fallback, and the Sequencer section-attribute guards all carry over unchanged.
+attributes. The `fatfs.h` shim, `Common.h` libc-redeclaration removal,
+`Voice.h` `__USAT` fallback, and the Sequencer section-attribute guards all carry over unchanged.
 Target #4 (MidiDecoder) remains the only target needing a header guard
 (`usbd_midi.h`) and HW-helper stubs.
 
