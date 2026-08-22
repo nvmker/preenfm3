@@ -363,6 +363,27 @@ TEST_F(SequenceBankTest, FailedPayloadReadLeavesStateUnchanged) {
     EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
 }
 
+// Review patch 2: a failed slot seek must abort the load before any payload
+// read — previously reads continued from the wrong offset.
+TEST_F(SequenceBankTest, FailedSlotSeekLeavesStateUnchanged) {
+    bank_.createSequenceFile("mybank123456");
+    PFM3File bank;
+    strcpy(bank.name, "mybank123456");
+    bank.fileType = FILE_OK;
+    StampState();
+    char sequenceName[] = "FIFTHSEQ   ";
+    bank_.saveSequence(&bank, 0, sequenceName);
+    bank_.saveSequence(&bank, 1, sequenceName);  // known different slot
+    memset(actions, 0, sizeof(actions));
+    memset(stepNotes, 0, sizeof(stepNotes));
+
+    fatfsShimFailNext("f_lseek", FR_INT_ERR);
+    bank_.loadSequence(&bank, 1);
+    EXPECT_EQ(actions[0].when, 0);
+    EXPECT_EQ(stepNotes[3][100].full, 0u);
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
+}
+
 TEST_F(SequenceBankTest, NameReadFailureReturnsHashHash) {
     // Full-size valid v2 bank, but the 20-byte name read fails.
     bank_.createSequenceFile("mybank123456");
