@@ -36,11 +36,13 @@ public:
             // display's [0,2] range (PAD random presets reach 4.0, the DX7
             // import ~6.6). The raw (int)(keybRamp*50) indexes invTab[2048]
             // out of bounds for anything below -0.02 (and the cast itself is
-            // UB for NaN/huge values). Guard before the cast — folded-B
-            // idiom — then clamp: hostile ramps behave like ramp 0.
+            // UB for NaN or out-of-int-range products — review patch: a
+            // finite-but-huge ramp like 1e30f overflows the cast arm too).
+            // Guard the whole cast domain before casting — folded-B idiom.
             // Valid ramps are byte-identical.
             float keybRamp = lfo->keybRamp;
-            int rampIndex = (__builtin_isfinite(keybRamp) && keybRamp > 0.0f)
+            int rampIndex = (__builtin_isfinite(keybRamp) && keybRamp > 0.0f
+                             && keybRamp <= 2047.0f / 50.0f)
                 ? (int)(keybRamp * 50.0f) : 0;
             if (rampIndex > 2047) {
                 rampIndex = 2047;

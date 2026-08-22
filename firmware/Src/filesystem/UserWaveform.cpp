@@ -241,6 +241,11 @@ void UserWaveform::normalize(float* buffer, int numberOfSamples) {
 }
 
 void UserWaveform::interpolate(float* buffer, int sourceNumberOfSamples, int targetNumberOfSamples) {
+    // Review patch: callers pass 33..1023 (loadUserWaveforms guards), but a
+    // zero/negative source would read buffer[-1] below — bail instead.
+    if (sourceNumberOfSamples <= 0 || targetNumberOfSamples <= 0) {
+        return;
+    }
     for (int i = targetNumberOfSamples-1; i>=0; i--) {
         float pos = (float)i * (float)sourceNumberOfSamples /  (float)targetNumberOfSamples;
         int iPos = pos;

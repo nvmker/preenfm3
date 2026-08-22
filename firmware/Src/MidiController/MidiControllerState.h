@@ -21,6 +21,9 @@
 #include "Common.h"
 
 #define MIDI_NUMBER_OF_PAGES 5
+// Controls per page (MidiPage array bound — file format depends on 6).
+#define MIDI_NUMBER_OF_ENCODERS 6
+#define MIDI_NUMBER_OF_BUTTONS 6
 
 enum {
     MIDI_CONTROLLER_VERSION_1 = 1
