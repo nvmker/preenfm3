@@ -27,7 +27,7 @@ context: ['{project-root}/_bmad-output/planning-artifacts/firmware-bug-fix-plan.
 ## I/O & Edge-Case Matrix
 
 | Scenario | Input / State | Expected Behavior | Error Handling |
-|----------|--------------|-------------------|----------------|
+| ---------- | -------------- | ------------------- | ---------------- |
 | Dotless 8.3 name | `plainname` (no dot) | `name` = "plainname~~~" + NUL at [12] | N/A |
 | Read-only dotless | `_readonly` | "_readonly~~~" + NUL, `FILE_READ_ONLY` | N/A |
 | PPM color expand | RGB565 0x1F/0x3F channels | 0xFF/0xFF after replication (31→`<<3\|>>2`, 63→`<<2\|>>4`) | N/A |
@@ -57,6 +57,7 @@ context: ['{project-root}/_bmad-output/planning-artifacts/firmware-bug-fix-plan.
 ## Tasks & Acceptance
 
 **Execution:**
+
 - [x] `firmware-bug-fix-plan.md` — docs commit: Phase 4 ✅ COMPLETE (PR #29), Phase 5 in-progress note; 5.1 correction recorded — RESULT: `3fa809c`; note: `_bmad-output` is gitignored, so the plan doc was force-added (`git add -f`) to honor the docs-commit contract
 - [x] `PreenFMFileType.cpp` + `preenfm_file_type_test.cpp` — pad `~` to k<12, `name[12]=0`; flip `DotlessTstNamesGetTildePadding` — 5.2 — RESULT: `0f1e8e1`; loop bounded to k<12 + `name[12]=0`, '_'/'.'/beforePoint logic untouched; test flipped to NUL-terminated expectations + 12-char full-length regression; 573/573
 - [x] `LfoStepSeq.cpp` + `lfo_step_seq_test.cpp` — reject non-finite `bpm` before the cast → TIME_4 arm; NaN/±Inf regression test — folded-B — RESULT: `5b949bc`; `__builtin_isfinite` guard maps NaN/±Inf to TIME_4 before the cast (matching the Synth.cpp 3.10 idiom), default arm's `(int)bpm` reuse replaced with the guarded int; finite BPMs byte-identical; NaN/±Inf test mirrors 246-255; 574/574
@@ -68,6 +69,7 @@ context: ['{project-root}/_bmad-output/planning-artifacts/firmware-bug-fix-plan.
 - [x] `PPMImage.cpp` + `ppm_image_test.cpp` — ctor sets `isInitialized = false`; low-bit replication in R/G/B expansion; flip `BitExpansionShiftsWithoutLowBitReplication`, fix stale quirk comments, drop the placement-new BSS workaround — 5.1 — RESULT: ctor adds `isInitialized = false` (every member now ctor-initialized: cptImage, imageTitle, isInitialized; sharpIndexInName set by init() before use) so the placement-new BSS workaround was dropped for plain stack instances (`<new>` include removed); expansion replicates low bits (R/B `v<<3|v>>2`, G `v<<2|v>>4`) with the 12-flush ring cadence untouched; helpers re-derived, test renamed `BitExpansionReplicatesLowBits` asserting 31→0xFF / 63→0xFF; quirk comments reworded — ring flush documented as intentional streaming, 15+12×6400×3 byte-count assertion kept; 578/578
 
 **Acceptance Criteria:**
+
 - Given a dotless 8.3 name, when listed, then `name` is NUL-terminated at [12] with `~` padding only in `[len,12)`
 - Given a truncated/corrupt `.seq` file, when loaded, then sequencer state is unchanged (or name = `"##"`) and no infinite loop or partial mutation occurs
 - Given NaN/±Inf `bpm`, when `midiClock` runs, then behavior matches the TIME_4 fallback with no UB cast
@@ -96,6 +98,7 @@ context: ['{project-root}/_bmad-output/planning-artifacts/firmware-bug-fix-plan.
 ## Verification
 
 **Commands:**
+
 - `make test` — expected: 100% pass; flipped tests assert fixed behavior
 - `make test-asan` — expected: clean incl. new hostile/truncated inputs
 - `make test-cov` — expected: TOTAL ≥ 89 (5.4 removal should lift)
