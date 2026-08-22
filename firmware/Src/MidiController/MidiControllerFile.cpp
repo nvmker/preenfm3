@@ -18,8 +18,7 @@
 
 #include "MidiControllerFile.h"
 
-// 6.11: Common.h's strcmp declaration is C-linkage now, so <string.h> is
-// includable again — no more hand-declared memcpy prototype.
+// Keep the platform libc header authoritative for memcpy.
 #include <string.h>
 
 namespace {
