@@ -32,6 +32,9 @@ struct ShimState {
      * NEXT call to that f_* function returns. Cleared on consumption and by
      * fatfsShimReset(). Test-fixture only — real FatFs never sees this. */
     std::map<std::string, FRESULT> failNext;
+    /* Counting failure injection (fatfsShimFailNextNth): fn -> (err, n).
+     * The nth call to that f_* function returns err; earlier calls succeed. */
+    std::map<std::string, std::pair<FRESULT, int>> failNextNth;
 };
 
 ShimState& st() {
@@ -42,10 +45,19 @@ ShimState& st() {
 /* One-shot injected failure for the next call to fn (see ShimState::failNext). */
 bool consumeFail(const char* fn, FRESULT& out) {
     auto it = st().failNext.find(fn);
-    if (it == st().failNext.end()) return false;
-    out = it->second;
-    st().failNext.erase(it);
-    return true;
+    if (it != st().failNext.end()) {
+        out = it->second;
+        st().failNext.erase(it);
+        return true;
+    }
+    auto itn = st().failNextNth.find(fn);
+    if (itn != st().failNextNth.end()) {
+        if (--itn->second.second > 0) return false;
+        out = itn->second.first;
+        st().failNextNth.erase(itn);
+        return true;
+    }
+    return false;
 }
 
 /* Hard size ceiling: the largest real firmware artifact is the sequence
@@ -344,11 +356,17 @@ void fatfsShimReset() {
     st().open.clear();
     st().nextId = 1;
     st().failNext.clear();
+    st().failNextNth.clear();
 }
 
 void fatfsShimFailNext(const char* fn, FRESULT err) {
     if (fn == nullptr) return;
     st().failNext[fn] = err;
+}
+
+void fatfsShimFailNextNth(const char* fn, FRESULT err, int nth) {
+    if (fn == nullptr || nth < 1) return;
+    st().failNextNth[fn] = {err, nth};
 }
 
 void fatfsShimMkdir(const char* path) {
