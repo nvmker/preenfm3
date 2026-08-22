@@ -125,14 +125,19 @@ TEST_F(PreenFMFileTypeTest, DotlessTstNamesGetTildePadding) {
     p.setListing(pf, 4);
     fatfsShimInjectString("0:/pfm3/test/plainname", "x");
     fatfsShimInjectString("0:/pfm3/test/_readonly", "x");
-    EXPECT_EQ(p.initFiles(), 2);
-    // QUIRK GOLDEN: dotless names get '~' substituted for EVERY trailing NUL
-    // (beforePoint is only cleared by '.'), filling all 13 name bytes — the
-    // resulting name is NOT NUL-terminated. Leading '_' -> FILE_READ_ONLY.
-    EXPECT_EQ(memcmp(p.getFile(0)->name, "_readonly~~~~", 13), 0);
+    fatfsShimInjectString("0:/pfm3/test/twelvechar12", "x");  // exactly 12 chars
+    EXPECT_EQ(p.initFiles(), 3);
+    // FIXED (5.2): dotless names get '~' padding only in [len, 12) and the
+    // name is always NUL-terminated at [12] — no read past the 13-byte
+    // array. Leading '_' -> FILE_READ_ONLY.
+    EXPECT_STREQ(p.getFile(0)->name, "_readonly~~~");
     EXPECT_EQ(p.getFile(0)->fileType, FILE_READ_ONLY);
-    EXPECT_EQ(memcmp(p.getFile(1)->name, "plainname~~~~", 13), 0);
+    EXPECT_STREQ(p.getFile(1)->name, "plainname~~~");
     EXPECT_EQ(p.getFile(1)->fileType, FILE_OK);
+    // Full-length name: no tilde at all, NUL still lands at [12].
+    const char fullLen[13] = {'t','w','e','l','v','e','c','h','a','r','1','2','\0'};
+    EXPECT_EQ(memcmp(p.getFile(2)->name, fullLen, 13), 0);
+    EXPECT_EQ(p.getFile(2)->fileType, FILE_OK);
 }
 
 TEST_F(PreenFMFileTypeTest, GetFullNameJoinsFolderAndFile) {
