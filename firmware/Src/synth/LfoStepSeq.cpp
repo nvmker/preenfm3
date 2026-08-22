@@ -36,7 +36,12 @@ void LfoStepSeq::midiClock(int songPosition, bool computeStep) {
 
 	ticks &= 0x7ff;
 
-    switch ((int)this->seqParams->bpm)  {
+    // Folded-B: a corrupt bank can hold a NaN/-Inf/+Inf bpm. The float->int
+    // cast is UB for those, so reject non-finite values up front and route
+    // them to the default/TIME_4 fail-safe (same as unmatched 246-255).
+    float bpm = this->seqParams->bpm;
+    int bpmInt = __builtin_isfinite(bpm) ? (int)bpm : LFO_SEQ_MIDICLOCK_TIME_4;
+    switch (bpmInt)  {
 	case LFO_SEQ_MIDICLOCK_DIV_4:
 		// Midi Clock  / 4
 		if ((songPosition & 0x1)==0) {
@@ -81,7 +86,7 @@ void LfoStepSeq::midiClock(int songPosition, bool computeStep) {
 		// Corrupt/unmatched sync values (e.g. 246-255 from a bad bank)
 		// fall back to the nearest supported division (TIME_4). Values
 		// below the sync range are free-run: keep the valueChanged rate.
-		if ((int)this->seqParams->bpm < LFO_SEQ_MIDICLOCK_TIME_4) {
+		if (bpmInt < LFO_SEQ_MIDICLOCK_TIME_4) {
 			break;
 		}
 		if ((songPosition & 0x1)==0) {
