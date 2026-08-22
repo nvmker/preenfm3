@@ -140,11 +140,11 @@ void LfoStepSeq::nextValueInMatrix() {
 		}
 		// End of gate ?
 		if (gated && phaseDecimal < gatePlusMatrix) {
-			target = seqSteps->steps[(int)phase]; // 16 steps
+			target = stepValue(seqSteps->steps[(int)phase]); // 16 steps
 			gated = false;
 		}
 	} else {
-		target = seqSteps->steps[(int)phase];
+		target = stepValue(seqSteps->steps[(int)phase]);
 	}
 
 	if (currentValue < target) {
@@ -157,10 +157,24 @@ void LfoStepSeq::nextValueInMatrix() {
 	matrix->setSource((enum SourceEnum)source, expValues[currentValue]);
 }
 
+int LfoStepSeq::stepValue(int step) {
+	// 6.2: steps[] holds raw chars from the preset — the UI clamps to [0,15]
+	// but a corrupt bank does not; a hostile char (<0 or >15) used to index
+	// expValues[16] out of bounds. Clamp the step VALUE at the use site (4.5
+	// fallback idiom): a corrupt step fails safe to an in-table value.
+	if (step < 0) {
+		return 0;
+	}
+	if (step > 15) {
+		return 15;
+	}
+	return step;
+}
+
 void LfoStepSeq::noteOn() {
 	if (seqParams->bpm < LFO_SEQ_MIDICLOCK_DIV_4) {
 		phase = 0;
-		target = seqSteps->steps[0];
+		target = stepValue(seqSteps->steps[0]);
 	}
 }
 
