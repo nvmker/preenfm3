@@ -700,17 +700,6 @@ enum DestinationEnum {
     DESTINATION_MAX
 };
 
-// 6.11: this file-scope strcmp declaration used to carry C++ linkage,
-// which made <string.h>/<cstring> unusable for every C++ TU in this include
-// chain ("different language linkage" on the host libc declaration) — each
-// new libc string user had to hand-declare extern "C" prototypes instead.
-// libc functions have C linkage; declared that way it coexists with
-// <string.h> on host and target alike. Guarded for the C TUs (stm32h7xx_it.c
-// and friends) that also include this header — extern "C" is C++-only.
-#ifdef __cplusplus
-extern "C" int strcmp(const char *s1, const char *s2);
-#endif
-
 
 
 enum {
