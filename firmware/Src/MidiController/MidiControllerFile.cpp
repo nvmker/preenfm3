@@ -18,12 +18,29 @@
 
 #include "MidiControllerFile.h"
 
+#include <string.h>
+
 namespace {
 
 const char* const MIDI_CONTROLLER_STATE_CANONICAL = MIDI_CONTROLLER_STATE_NAME;
 const char* const MIDI_CONTROLLER_STATE_TMP = "0:/pfm3/MidiCtl1.tmp";
 const char* const MIDI_CONTROLLER_STATE_BACKUP = "0:/pfm3/MidiCtl1.bak";
 constexpr int MIDI_CONTROLLER_STATE_V1_SIZE = 2 + MIDI_NUMBER_OF_PAGES * 12 * 20;
+
+// Byte-exact uint16 access over the char storage buffer: memcpy avoids any
+// uint16_t* aliasing a char array (strict-aliasing UB), while keeping the
+// on-disk layout byte-identical to the previous pointer walk.
+uint16_t rdU16(const char*& p) {
+    uint16_t v;
+    memcpy(&v, p, sizeof(v));
+    p += sizeof(v);
+    return v;
+}
+
+void wrU16(char*& p, uint16_t v) {
+    memcpy(p, &v, sizeof(v));
+    p += sizeof(v);
+}
 
 } // namespace
 
@@ -102,8 +119,8 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
         return;
     }
     // First int is the version
-    uint16_t* p = (uint16_t*)reachableProperties;
-    int version = (int)*(p++);
+    const char* p = reachableProperties;
+    int version = (int)rdU16(p);
 
     switch (version) {
     case MIDI_CONTROLLER_VERSION_1: {
@@ -115,51 +132,49 @@ void MidiControllerFile::loadConfig(MidiControllerState* midiControllerState) {
         for (int pageNumber = 0; pageNumber < MIDI_NUMBER_OF_PAGES; pageNumber++) {
             for (int e = 0; e < 6; e++) {
                 MidiEncoder *encoder = midiControllerState->getEncoder(pageNumber, e);
-                char *nameP = (char*)p;
                 for (int c = 0; c < 6 ; c++) {
-                    encoder->name[c] = *(nameP++);
+                    encoder->name[c] = *(p++);
                 }
-                // Let skip 8 bytes
-                p += 4;
-                encoder->encoderType = (MidiEncoderType)*(p++);
+                // Skip the 2 padding bytes after the 6-byte name
+                p += 2;
+                encoder->encoderType = (MidiEncoderType)rdU16(p);
                 if (encoder->encoderType != MIDI_ENCODER_TYPE_CC
                         && encoder->encoderType != MIDI_ENCODER_TYPE_NRPN) {
                     // Corrupt byte: fail safe to the CC default.
                     encoder->encoderType = MIDI_ENCODER_TYPE_CC;
                 }
-                encoder->midiChannel = *(p++);
+                encoder->midiChannel = rdU16(p);
                 if (encoder->midiChannel > 16) {
                     // Corrupt byte: fail safe to the 'use global' sentinel.
                     encoder->midiChannel = 16;
                 }
-                encoder->controller = *(p++);
-                encoder->value = *(p++);
-                encoder->maxValue = *(p++);
-                encoder->minValue = *(p++);
+                encoder->controller = rdU16(p);
+                encoder->value = rdU16(p);
+                encoder->maxValue = rdU16(p);
+                encoder->minValue = rdU16(p);
             }
             for (int b = 0; b < 6; b++) {
                 MidiButton *button = midiControllerState->getButton(pageNumber, b);
-                char *nameP = (char*)p;
                 for (int c = 0; c < 6 ; c++) {
-                    button->name[c] = *(nameP++);
+                    button->name[c] = *(p++);
                 }
-                // Let skip 8 bytes
-                p += 4;
-                button->buttonType = (MidiButtonType)*(p++);
+                // Skip the 2 padding bytes after the 6-byte name
+                p += 2;
+                button->buttonType = (MidiButtonType)rdU16(p);
                 if (button->buttonType != MIDI_BUTTON_TYPE_PUSH
                         && button->buttonType != MIDI_BUTTON_TYPE_TOGGLE) {
                     // Corrupt byte: fail safe to the PUSH default.
                     button->buttonType = MIDI_BUTTON_TYPE_PUSH;
                 }
-                button->midiChannel = *(p++);
+                button->midiChannel = rdU16(p);
                 if (button->midiChannel > 16) {
                     // Corrupt byte: fail safe to the 'use global' sentinel.
                     button->midiChannel = 16;
                 }
-                button->controller = *(p++);
-                button->value = *(p++);
-                button->valueOff = *(p++);
-                button->valueOn = *(p++);
+                button->controller = rdU16(p);
+                button->value = rdU16(p);
+                button->valueOff = rdU16(p);
+                button->valueOn = rdU16(p);
             }
         }
         break;
@@ -175,47 +190,41 @@ void MidiControllerFile::saveConfig(MidiControllerState* midiControllerState) {
         reachableProperties[i] = 0;
     }
 
-    uint16_t* p = (uint16_t*)reachableProperties;
-    *(p++) = MIDI_CONTROLLER_CURRENT_VERSION;
+    char* p = reachableProperties;
+    wrU16(p, MIDI_CONTROLLER_CURRENT_VERSION);
 
     for (int pageNumber = 0; pageNumber < MIDI_NUMBER_OF_PAGES; pageNumber++) {
         for (int e = 0; e < 6; e++) {
             MidiEncoder *encoder = midiControllerState->getEncoder(pageNumber, e);
-            char *nameP = (char*)p;
             for (int c = 0; c < 6 ; c++) {
-                *(nameP++) = encoder->name[c];
+                *(p++) = encoder->name[c];
             }
-            // Let skip 8 bytes
-            p += 4;
-            *(p++) = encoder->encoderType;
-            *(p++) = encoder->midiChannel;
-            *(p++) = encoder->controller;
-            *(p++) = encoder->value;
-            *(p++) = encoder->maxValue;
-            *(p++) = encoder->minValue;
+            // Skip the 2 padding bytes after the 6-byte name
+            p += 2;
+            wrU16(p, encoder->encoderType);
+            wrU16(p, encoder->midiChannel);
+            wrU16(p, encoder->controller);
+            wrU16(p, encoder->value);
+            wrU16(p, encoder->maxValue);
+            wrU16(p, encoder->minValue);
         }
         for (int b = 0; b < 6; b++) {
             MidiButton *button = midiControllerState->getButton(pageNumber, b);
-            char *nameP = (char*)p;
             for (int c = 0; c < 6 ; c++) {
-                *(nameP++) = button->name[c];
+                *(p++) = button->name[c];
             }
-            // Let skip 8 bytes
-            p += 4;
-            *(p++) = button->buttonType;
-            *(p++) = button->midiChannel;
-            *(p++) = button->controller;
-            *(p++) = button->value;
-            *(p++) = button->valueOff;
-            *(p++) = button->valueOn;
+            // Skip the 2 padding bytes after the 6-byte name
+            p += 2;
+            wrU16(p, button->buttonType);
+            wrU16(p, button->midiChannel);
+            wrU16(p, button->controller);
+            wrU16(p, button->value);
+            wrU16(p, button->valueOff);
+            wrU16(p, button->valueOn);
         }
     }
 
-#ifdef PFM3_HOST
-    int size = reinterpret_cast<char*>(p) - reachableProperties;
-#else
-    int size = ((uint32_t)p) -  ((uint32_t)reachableProperties);
-#endif
+    int size = p - reachableProperties;
     // Recover an interrupted previous save before starting another. If a
     // valid fallback cannot be restored to the canonical name, leave it alone
     // so loadConfig() can still use it directly.
