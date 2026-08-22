@@ -510,7 +510,10 @@ struct StepSequencerParams {
 };
 
 struct StepSequencerSteps {
-    char steps[16];
+    // Serialized as signed 8-bit values on every target. Plain char is
+    // unsigned under arm-none-eabi, which made corrupt-byte fallback differ
+    // from the signed-char host regression.
+    int8_t steps[16];
 };
 
 struct EffectRowParams {

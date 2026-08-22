@@ -53,6 +53,7 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -374,7 +375,8 @@ TEST_F(LfoOscTest, HostileKeybRampClampsInvTabIndexInBounds) {
     // The index is now guarded before the cast and clamped to [0, 2047].
     // Every hostile ramp must yield rampInv = 50 * invTab[0] = 50, like the
     // safe -0.01 "off" case. Negative ramps additionally resync the phase;
-    // NaN does not (NaN < 0 is false — comparison semantics, not the bug).
+    // invalid non-negative ramps normalize to 0 so they cannot apply that
+    // gain for an unbounded duration.
     const float hostileRamps[] = {
         -0.02f, -0.5f, -1.0f, -12345.0f,
         -std::numeric_limits<float>::infinity(),
@@ -393,10 +395,12 @@ TEST_F(LfoOscTest, HostileKeybRampClampsInvTabIndexInBounds) {
         EXPECT_LT(lfo_->ramp, 0.0f) << "ramp itself keeps its (negative) value";
     }
 
-    // Review patch: finite-but-huge POSITIVE ramps (1e30f) make
-    // keybRamp*50 overflow the int cast — the guard bounds the whole cast
-    // domain, so they clamp to invTab[0] like ramp 0 (no resync: positive).
-    const float hugePositiveRamps[] = {1e30f, 1e9f, 1e6f};
+    // Review patch: huge positive ramps make keybRamp*50 overflow the int
+    // cast, and retaining the raw ramp with invTab[0] would make modulation
+    // gain grow without bound. Normalize the effective ramp and index to 0.
+    const float hugePositiveRamps[] = {
+        1e30f, 1e9f, 1e6f, std::numeric_limits<float>::infinity()
+    };
     for (float ramp : hugePositiveRamps) {
         SCOPED_TRACE(::testing::PrintToString(ramp));
         Configure(LFO_TRIANGLE, 60.0f, /*bias=*/0.0f, /*keybRamp=*/ramp);
@@ -407,11 +411,18 @@ TEST_F(LfoOscTest, HostileKeybRampClampsInvTabIndexInBounds) {
         lfo_->valueChanged(3);  // ENCODER_LFO_KSYNC
         EXPECT_FLOAT_EQ(lfo_->rampInv, 50.0f)
             << "huge positive ramp must clamp to invTab[0] (no UB cast)";
+        EXPECT_FLOAT_EQ(lfo_->ramp, 0.0f)
+            << "effective ramp must match the safe index fallback";
         EXPECT_GT(lfo_->phase, 0.0f) << "positive ramp does not resync";
+        lfo_->noteOn();
+        for (int i = 0; i < 100; i++) {
+            lfo_->nextValueInMatrix();
+            EXPECT_TRUE(std::isfinite(Source()));
+            EXPECT_LE(std::fabs(Source()), 1.0f);
+        }
     }
 
-    // NaN: same index clamp, but the resync comparison (ramp < 0) is false —
-    // the OOB read is fixed without changing comparison semantics.
+    // NaN uses the same coherent ramp/index fallback without resync.
     Configure(LFO_TRIANGLE, 60.0f, /*bias=*/0.0f,
               /*keybRamp=*/std::numeric_limits<float>::quiet_NaN());
     lfo_->noteOn();
@@ -419,7 +430,14 @@ TEST_F(LfoOscTest, HostileKeybRampClampsInvTabIndexInBounds) {
     lfo_->valueChanged(3);
     EXPECT_FLOAT_EQ(lfo_->rampInv, 50.0f)
         << "NaN ramp must clamp to invTab[0]";
+    EXPECT_FLOAT_EQ(lfo_->ramp, 0.0f)
+        << "NaN effective ramp must match the safe index fallback";
     EXPECT_GT(lfo_->phase, 0.0f) << "NaN is not negative: no resync";
+    lfo_->noteOn();
+    for (int i = 0; i < 100; i++) {
+        lfo_->nextValueInMatrix();
+        EXPECT_TRUE(std::isfinite(Source()));
+    }
 }
 
 // noteOn resets the phase to the params' initPhase pointer (the per-voice
