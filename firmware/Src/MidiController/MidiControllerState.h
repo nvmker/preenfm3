@@ -79,9 +79,20 @@ public:
     void buttonDown(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t buttonNumber);
     bool buttonUp(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t buttonNumber);
 
-    MidiPage* getMidiPage(int pageNumber) { return &midiPage_[pageNumber]; }
-    MidiEncoder* getEncoder(int pageNumber, int encoderNumber) { return &midiPage_[pageNumber].encoder_[encoderNumber]; }
-    MidiButton* getButton(int pageNumber, int buttonNumber) { return &midiPage_[pageNumber].button_[buttonNumber]; }
+    // 6.8: bounds-check at the API boundary — UI callers are always valid,
+    // but the getters hand out raw pointers; out-of-range indexes return
+    // nullptr instead of walking off midiPage_.
+    MidiPage* getMidiPage(int pageNumber) {
+        return (pageNumber >= 0 && pageNumber < MIDI_NUMBER_OF_PAGES) ? &midiPage_[pageNumber] : nullptr;
+    }
+    MidiEncoder* getEncoder(int pageNumber, int encoderNumber) {
+        if (pageNumber < 0 || pageNumber >= MIDI_NUMBER_OF_PAGES || encoderNumber < 0 || encoderNumber >= 6) return nullptr;
+        return &midiPage_[pageNumber].encoder_[encoderNumber];
+    }
+    MidiButton* getButton(int pageNumber, int buttonNumber) {
+        if (pageNumber < 0 || pageNumber >= MIDI_NUMBER_OF_PAGES || buttonNumber < 0 || buttonNumber >= 6) return nullptr;
+        return &midiPage_[pageNumber].button_[buttonNumber];
+    }
 
 private:
     void sendMidiDin5Out();

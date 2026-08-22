@@ -68,6 +68,11 @@ void MidiControllerState::resetState() {
 }
 
 void MidiControllerState::encoderDelta(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t encoderNumber, int delta) {
+    // 6.8: bounds-check at the API boundary — current callers are UI-valid,
+    // but an out-of-range index walked off midiPage_. No-op when invalid.
+    if (pageNumber >= MIDI_NUMBER_OF_PAGES || encoderNumber >= 6) {
+        return;
+    }
     MidiEncoder* encoder =  &midiPage_[pageNumber].encoder_[encoderNumber];
     // Accumulate in 64-bit: encoder->value + delta could overflow int (UB).
     int64_t newValue = static_cast<int64_t>(encoder->value) + static_cast<int64_t>(delta);
@@ -75,6 +80,13 @@ void MidiControllerState::encoderDelta(uint8_t pageNumber, uint8_t globalMidiCha
     newValue = newValue > encoder->maxValue ? encoder->maxValue : newValue;
 
     if (newValue != encoder->value) {
+        // 6.9: a CC message is 3 bytes emitted as three independent inserts;
+        // near a full ring that could tear the message mid-stream. Reserve
+        // room for the whole message BEFORE any state change — all-or-nothing:
+        // no room means no emission and encoder->value stays as it was.
+        if (!usartBufferOut.hasRoomFor(3)) {
+            return;
+        }
         encoder->value = newValue;
         uint8_t midiChannel = resolveMidiChannel_(encoder->midiChannel, globalMidiChannel);
         usartBufferOut.insert((uint8_t)(0xb0 + midiChannel));
@@ -87,6 +99,10 @@ void MidiControllerState::encoderDelta(uint8_t pageNumber, uint8_t globalMidiCha
 
 
 void MidiControllerState::buttonDown(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t buttonNumber) {
+    // 6.8: API boundary bounds-check (see encoderDelta).
+    if (pageNumber >= MIDI_NUMBER_OF_PAGES || buttonNumber >= 6) {
+        return;
+    }
     MidiButton* button =  &midiPage_[pageNumber].button_[buttonNumber];
     if (button->buttonType == MIDI_BUTTON_TYPE_PUSH) {
         button->value = 1;
@@ -94,6 +110,17 @@ void MidiControllerState::buttonDown(uint8_t pageNumber, uint8_t globalMidiChann
         button->value = (button->value == 0? 1 : 0);
     } else {
         // Unknown type: no state change, no emission.
+        return;
+    }
+    // 6.9: reserve the full 3-byte CC before mutating state (all-or-nothing;
+    // see encoderDelta). A toggle with no room keeps its previous state.
+    if (!usartBufferOut.hasRoomFor(3)) {
+        // Roll the state change back so value and stream stay consistent.
+        if (button->buttonType == MIDI_BUTTON_TYPE_PUSH) {
+            button->value = 0;
+        } else {
+            button->value = (button->value == 0 ? 1 : 0);
+        }
         return;
     }
     uint8_t midiChannel = resolveMidiChannel_(button->midiChannel, globalMidiChannel);
@@ -105,8 +132,17 @@ void MidiControllerState::buttonDown(uint8_t pageNumber, uint8_t globalMidiChann
 }
 
 bool MidiControllerState::buttonUp(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t buttonNumber) {
+    // 6.8: API boundary bounds-check (see encoderDelta).
+    if (pageNumber >= MIDI_NUMBER_OF_PAGES || buttonNumber >= 6) {
+        return false;
+    }
     MidiButton* button =  &midiPage_[pageNumber].button_[buttonNumber];
     if (button->buttonType == MIDI_BUTTON_TYPE_PUSH) {
+        // 6.9: reserve the full 3-byte CC before mutating state (all-or-nothing;
+        // see encoderDelta). No room: button stays logically pressed.
+        if (!usartBufferOut.hasRoomFor(3)) {
+            return true;
+        }
         button->value = 0;
 
         uint8_t midiChannel = resolveMidiChannel_(button->midiChannel, globalMidiChannel);
