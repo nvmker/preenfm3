@@ -363,6 +363,35 @@ TEST_F(SequenceBankTest, FailedPayloadReadLeavesStateUnchanged) {
     EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
 }
 
+// Review patch 3: any single payload-read failure must precede the core
+// state mutation — setFullState now runs LAST. Within loadSequence the
+// f_read order is: header (1), actions (2), stepNotes (3), fullstate (4);
+// the counting injection targets each payload read in turn.
+TEST_F(SequenceBankTest, PerReadFailureLeavesCoreStateUnchanged) {
+    for (int nth : {2, 3, 4}) {
+        SCOPED_TRACE(nth);
+        fatfsShimReset();
+        fatfsShimMkdir("0:/pfm3");
+        bank_.setFileSystemUtils(fsu_);
+        bank_.setSequencer(seq_.get());
+        bank_.createSequenceFile("mybank123456");
+        PFM3File bank;
+        strcpy(bank.name, "mybank123456");
+        bank.fileType = FILE_OK;
+        StampState();
+        char sequenceName[] = "FIFTHSEQ   ";
+        bank_.saveSequence(&bank, 0, sequenceName);
+        // Stamp a KNOWN different core state so a mutation would be visible.
+        seq_->setSequenceName("MUTATED     ");
+
+        fatfsShimFailNextNth("f_read", FR_INT_ERR, nth);
+        bank_.loadSequence(&bank, 0);
+        EXPECT_EQ(strncmp(seq_->getSequenceName(), "MUTATED     ", 11), 0)
+            << "setFullState must not run after read " << (nth - 1);
+        EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
+    }
+}
+
 // Review patch 2: a failed slot seek must abort the load before any payload
 // read — previously reads continued from the wrong offset.
 TEST_F(SequenceBankTest, FailedSlotSeekLeavesStateUnchanged) {
