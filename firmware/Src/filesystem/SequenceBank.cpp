@@ -236,7 +236,10 @@ const char* SequenceBank::loadSequenceName(const struct PFM3File* bank, int patc
             case SEQUENCE_BANK_VERSION1: {
                 // folded-A: exact-length name read on a big-enough file;
                 // any failure falls through to the "##" fallback.
-                if (f_size(&sequenceFile) >= 4 + (FSIZE_t)(1024 + 16384 + 12336) * (patchNumber + 1)
+                // Review patch: the name needs only its own extent
+                // (4 + slotSize*N + 20) — a bank truncated mid-slot still
+                // yields the readable name.
+                if (f_size(&sequenceFile) >= 4 + (FSIZE_t)(1024 + 16384 + 12336) * patchNumber + 20
                         && f_lseek(&sequenceFile, 4 + (1024 + 16384 + 12336) * patchNumber) == FR_OK
                         && f_read(&sequenceFile, storageBuffer, 20, &byteRead) == FR_OK
                         && byteRead == 20) {
@@ -251,7 +254,8 @@ const char* SequenceBank::loadSequenceName(const struct PFM3File* bank, int patc
                 break;
             }
             case SEQUENCE_BANK_VERSION2: {
-                if (f_size(&sequenceFile) >= 4 + (FSIZE_t)(1024 + 16384 + 24576) * (patchNumber + 1)
+                // Review patch: name's own extent, as in the v1 arm.
+                if (f_size(&sequenceFile) >= 4 + (FSIZE_t)(1024 + 16384 + 24576) * patchNumber + 20
                         && f_lseek(&sequenceFile, 4 + (1024 + 16384 + 24576) * patchNumber) == FR_OK
                         && f_read(&sequenceFile, storageBuffer, 20, &byteRead) == FR_OK
                         && byteRead == 20) {
