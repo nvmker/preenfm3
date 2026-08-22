@@ -299,6 +299,30 @@ TEST_F(SequenceBankTest, CreateSequenceFileReturnsAfterWriteStall) {
     EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
 }
 
+TEST_F(SequenceBankTest, CreateSequenceFileStopsOnHeaderWriteFailure) {
+    // Regression (6.5): fail write #1 (the 4-byte version header). Creation
+    // must stop with an empty bank — appending state blocks after a missing
+    // header would produce a malformed bank (state at offset 0).
+    fatfsShimFailNextNth("f_write", FR_INT_ERR, 1);
+    bank_.createSequenceFile("mybank123456");
+    EXPECT_TRUE(fatfsShimFileExists("0:/pfm3/mybank123456"));
+    EXPECT_EQ(fatfsShimFileSize("0:/pfm3/mybank123456"), 0u)
+        << "nothing may follow a failed header write";
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
+}
+
+TEST_F(SequenceBankTest, CreateSequenceFileStopsOnStateBlockWriteFailure) {
+    // Regression (6.5): fail write #2 (the first 1024-byte state block). The
+    // file must stop at the header — later slots at shifted offsets would
+    // corrupt every subsequent sequence.
+    fatfsShimFailNextNth("f_write", FR_INT_ERR, 2);
+    bank_.createSequenceFile("mybank123456");
+    EXPECT_TRUE(fatfsShimFileExists("0:/pfm3/mybank123456"));
+    EXPECT_EQ(fatfsShimFileSize("0:/pfm3/mybank123456"), 4u)
+        << "no state block may be appended after a failed state write";
+    EXPECT_EQ(fatfsShimOpenFileCount(), 0u);
+}
+
 // ---- folded-A: payload reads are validated before mutating state -----------
 
 TEST_F(SequenceBankTest, TruncatedV2PayloadIsRejectedBeforeMutation) {

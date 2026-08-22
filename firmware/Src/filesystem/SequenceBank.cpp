@@ -332,7 +332,14 @@ void SequenceBank::createSequenceFile(const char* name) {
     }
 
     uint32_t bankVersion = (uint32_t)SEQUENCE_BANK_CURRENT_VERSION;
-    f_write(&sequenceFile, (void *)&bankVersion, 4, &byteWritten);
+    FRESULT headerResult = f_write(&sequenceFile, (void *)&bankVersion, 4, &byteWritten);
+    // 6.5: a failed/short header write leaves a malformed bank — stop the
+    // whole creation transaction instead of appending state blocks at a
+    // shifted offset (same contract as the guarded zero-fill loop below).
+    if (headerResult != FR_OK || byteWritten != 4) {
+        f_close(&sequenceFile);
+        return;
+    }
 
     for (int i = 0; i < PROPERTY_FILE_SIZE; i++) {
         storageBuffer[i] = 0;
@@ -348,7 +355,13 @@ void SequenceBank::createSequenceFile(const char* name) {
 
         sequencer->getFullDefaultState((uint8_t*)storageBuffer, &seqStatesize, s + 1);
         // We save 1024 bytes for sequencer fullstate
-        f_write(&sequenceFile, storageBuffer, 1024, &byteWritten);
+        FRESULT stateResult = f_write(&sequenceFile, storageBuffer, 1024, &byteWritten);
+        // 6.5: same bail as the header and the zero-fill loop — a short state
+        // block would shift every later slot.
+        if (stateResult != FR_OK || byteWritten != 1024) {
+            f_close(&sequenceFile);
+            return;
+        }
 
         // we save the sizes of the current version
         int numberOfZeros = sizeof(actions) + sizeof(stepNotes);
