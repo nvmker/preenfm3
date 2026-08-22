@@ -2,7 +2,7 @@
 title: 'Firmware bug-fix Phase 5 — cosmetic, dormant, file-format oddities (+2 folded review findings)'
 type: 'bugfix'
 created: '2026-08-22'
-status: 'in-progress' # draft | ready-for-dev | in-progress | in-review | done
+status: 'in-review' # draft | ready-for-dev | in-progress | in-review | done
 review_loop_iteration: 0
 baseline_commit: '317313b'
 context: ['{project-root}/_bmad-output/planning-artifacts/firmware-bug-fix-plan.md', '{project-root}/_bmad-output/implementation-artifacts/deferred-work.md']
@@ -74,6 +74,13 @@ context: ['{project-root}/_bmad-output/planning-artifacts/firmware-bug-fix-plan.
 - Given the controller save/load round-trip, then on-disk bytes are identical pre/post 5.7 rewrite
 
 ### Review Findings
+
+- [x] [Review][Patch] Folded-B guard misses finite-but-out-of-int-range bpm (1e30f): `(int)bpm` is still UB — extend the guard to the [0,255] enum domain (all in-range finite behavior unchanged) + ±1e30 regression cases [`firmware/Src/synth/LfoStepSeq.cpp:43`]
+- [x] [Review][Patch] `f_lseek` result ignored in `loadSequenceDataVersion1/2` — seek failure reads wrong-slot bytes and mutates state; check result like the name path does + injected-seek-failure regression [`firmware/Src/filesystem/SequenceBank.cpp:160/:176`]
+- [x] [Review][Patch] `setFullState` runs after read 1 of 3 — mid-load failure on actions/stepNotes aborts AFTER core-state mutation; reorder: actions → stepNotes → staged 1024 read → `setFullState` last, so any single-read failure precedes mutation; per-read failure injection tests [`firmware/Src/filesystem/SequenceBank.cpp`]
+- [x] [Review][Patch] Name-load `f_size` pre-check over-strict (demands full slot payload; name needs only `4 + N*slotSize + 20`) — a name-readable slot in a mid-slot-truncated bank regressed to `"##"`; relax to the name's own extent + truncated-tail test [`firmware/Src/filesystem/SequenceBank.cpp:203/:215`]
+- [x] [Review][Defer] `synth/Common.h:707` declares `strcmp` with C++ linkage, so no file in its include chain can include `<string.h>` — each new libc string user must hand-declare `extern "C"` (strnlen in PreenFMFileType, memcpy in MidiControllerFile this phase) — deferred
+- Rejected after verification: PPM expectation-helper mirrors implementation (pre-existing idiom; literal constants asserted in the flip test); 5.2 k<12 truncation (strictly safer for 8.3 AND LFN — NUL-termination was the task); `__builtin_isfinite` non-standard (spec-sanctioned, matches the 3.10 `__builtin_lroundf` idiom); 5.6 partial bank file left on disk (folded-A's f_size check rejects it on load — fail-safe by construction in this phase); SCOPED_TRACE-with-NaN + TIME_4-equivalence-via-neighbor-test cosmetics (mirrors the 246–255 test shape by design).
 
 ## Spec Change Log
 
