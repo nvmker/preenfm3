@@ -155,7 +155,12 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
         return;
     }
     UINT byteRead;
-    f_lseek(sequenceFile, 4 + ((1024 + 16384 + 12336) * patchNumber));
+    // Review patch: an unchecked seek failure would leave reads continuing
+    // from the wrong offset — exact-length reads then "succeed" on
+    // wrong-slot bytes and mutate state. Abort before any read.
+    if (f_lseek(sequenceFile, 4 + ((1024 + 16384 + 12336) * patchNumber)) != FR_OK) {
+        return;
+    }
 
     for (int i = 0; i < 1024; i++) {
         storageBuffer[i] = 0;
@@ -182,7 +187,10 @@ void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) 
         return;
     }
     UINT byteRead;
-    f_lseek(sequenceFile, 4 + ((1024 + 16384 + 24576) * patchNumber));
+    // Review patch: same checked-seek contract as the v1 loader.
+    if (f_lseek(sequenceFile, 4 + ((1024 + 16384 + 24576) * patchNumber)) != FR_OK) {
+        return;
+    }
 
     for (int i = 0; i < 1024; i++) {
         storageBuffer[i] = 0;
