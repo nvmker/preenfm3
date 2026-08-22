@@ -69,6 +69,22 @@ static FIL sequenceFile;
 extern SeqMidiAction actions[SEQ_ACTION_SIZE];
 extern StepSeqValue stepNotes[NUMBER_OF_STEP_SEQUENCES][256];
 
+// Payload loads are transactional: FatFs may return an error after copying a
+// short prefix, so reading directly into the live sequencer tables can expose
+// a mixed old/new state. Split the staging tables across SRAM regions with
+// enough verified linker headroom (16 KiB in D3, 24 KiB in D2B).
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d3")))
+#endif
+static SeqMidiAction stagedActions[SEQ_ACTION_SIZE];
+#ifndef PFM3_HOST
+__attribute__((section(".ram_d2b")))
+#endif
+static StepSeqValue stagedStepNotes[NUMBER_OF_STEP_SEQUENCES][256];
+
+static_assert(sizeof(stagedActions) == 16384, "sequence action file layout changed");
+static_assert(sizeof(stagedStepNotes) == 24576, "sequence step file layout changed");
+
 SequenceBank::SequenceBank() {
     this->numberOfFilesMax_ = NUMBEROFPREENFMSEQUENCES;
     this->myFiles_ = preenFMSequenceAlloc;
@@ -149,35 +165,76 @@ void SequenceBank::loadSequence(const struct PFM3File* bank, int patchNumber) {
 }
 
 void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) {
+    // folded-A: a truncated file must be rejected BEFORE any setFullState
+    // mutation. Slot payload = 1024 state + 16384 actions + 12336 stepNotes.
+    if (f_size(sequenceFile) < 4 + (FSIZE_t)(1024 + 16384 + 12336) * (patchNumber + 1)) {
+        return;
+    }
     UINT byteRead;
-    f_lseek(sequenceFile, 4 + ((1024 + 16384 + 12336) * patchNumber));
+    // Review patch: an unchecked seek failure would leave reads continuing
+    // from the wrong offset — exact-length reads then "succeed" on
+    // wrong-slot bytes and mutate state. Abort before any read.
+    if (f_lseek(sequenceFile, 4 + ((1024 + 16384 + 12336) * patchNumber)) != FR_OK) {
+        return;
+    }
 
+    // Read every section into staging storage. No live sequencer state changes
+    // until all exact-length reads have succeeded.
     for (int i = 0; i < 1024; i++) {
         storageBuffer[i] = 0;
     }
 
-    // We load 1024 bytes for sequencer fullstate
-    f_read(sequenceFile, storageBuffer, 1024, &byteRead);
-    sequencer->setFullState((uint8_t*)storageBuffer);
+    if (f_read(sequenceFile, storageBuffer, 1024, &byteRead) != FR_OK || byteRead != 1024) {
+        return;
+    }
+    if (f_read(sequenceFile, stagedActions, sizeof(stagedActions), &byteRead) != FR_OK
+            || byteRead != sizeof(stagedActions)) {
+        return;
+    }
+    constexpr UINT version1StepSize = 12336;
+    if (f_read(sequenceFile, stagedStepNotes, version1StepSize, &byteRead) != FR_OK
+            || byteRead != version1StepSize) {
+        return;
+    }
 
-    f_read(sequenceFile, actions, 16384, &byteRead);
-    f_read(sequenceFile, stepNotes, 12336, &byteRead);
+    __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
+    // V1 intentionally updates only its six-sequence payload span; preserve
+    // the historical behavior for the remaining V2-only live table bytes.
+    __builtin_memcpy(stepNotes, stagedStepNotes, version1StepSize);
+    sequencer->setFullState((uint8_t*)storageBuffer);
 }
 
 void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) {
+    // folded-A: a truncated file must be rejected BEFORE any setFullState
+    // mutation. Slot payload = 1024 state + 16384 actions + 24576 stepNotes.
+    if (f_size(sequenceFile) < 4 + (FSIZE_t)(1024 + 16384 + 24576) * (patchNumber + 1)) {
+        return;
+    }
     UINT byteRead;
-    f_lseek(sequenceFile, 4 + ((1024 + 16384 + 24576) * patchNumber));
+    // Review patch: same checked-seek contract as the v1 loader.
+    if (f_lseek(sequenceFile, 4 + ((1024 + 16384 + 24576) * patchNumber)) != FR_OK) {
+        return;
+    }
 
     for (int i = 0; i < 1024; i++) {
         storageBuffer[i] = 0;
     }
 
-    // We load 1024 bytes for sequencer fullstate
-    f_read(sequenceFile, storageBuffer, 1024, &byteRead);
-    sequencer->setFullState((uint8_t*)storageBuffer);
+    if (f_read(sequenceFile, storageBuffer, 1024, &byteRead) != FR_OK || byteRead != 1024) {
+        return;
+    }
+    if (f_read(sequenceFile, stagedActions, sizeof(stagedActions), &byteRead) != FR_OK
+            || byteRead != sizeof(stagedActions)) {
+        return;
+    }
+    if (f_read(sequenceFile, stagedStepNotes, sizeof(stagedStepNotes), &byteRead) != FR_OK
+            || byteRead != sizeof(stagedStepNotes)) {
+        return;
+    }
 
-    f_read(sequenceFile, actions, 16384, &byteRead);
-    f_read(sequenceFile, stepNotes, 24576, &byteRead);
+    __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
+    __builtin_memcpy(stepNotes, stagedStepNotes, sizeof(stagedStepNotes));
+    sequencer->setFullState((uint8_t*)storageBuffer);
 }
 
 
@@ -199,27 +256,50 @@ const char* SequenceBank::loadSequenceName(const struct PFM3File* bank, int patc
 
         switch (bankVersion) {
             case SEQUENCE_BANK_VERSION1: {
-                f_lseek(&sequenceFile, 4 + (1024 + 16384 + 12336) * patchNumber);
-                f_read(&sequenceFile, storageBuffer, 20, &byteRead);
-                const char* sequenceNameInBuffer = sequencer->getSequenceNameInBuffer(storageBuffer);
-                for (int s = 0; s < 12; s++) {
-                    sequenceName[s] = sequenceNameInBuffer[s];
+                // folded-A: exact-length name read on a big-enough file;
+                // any failure falls through to the "##" fallback.
+                // Review patch: the name needs only its own extent
+                // (4 + slotSize*N + 20) — a bank truncated mid-slot still
+                // yields the readable name.
+                if (f_size(&sequenceFile) >= 4 + (FSIZE_t)(1024 + 16384 + 12336) * patchNumber + 20
+                        && f_lseek(&sequenceFile, 4 + (1024 + 16384 + 12336) * patchNumber) == FR_OK
+                        && f_read(&sequenceFile, storageBuffer, 20, &byteRead) == FR_OK
+                        && byteRead == 20) {
+                    // NUL-aware copy: getSequenceNameInBuffer can return the
+                    // 3-byte "##" literal fallback; a fixed 12-byte copy
+                    // would read past it. Real 12-char names (space-padded,
+                    // no NUL) copy identically.
+                    const char* sequenceNameInBuffer = sequencer->getSequenceNameInBuffer(storageBuffer);
+                    int s = 0;
+                    while (s < 12 && sequenceNameInBuffer[s] != '\0') {
+                        sequenceName[s] = sequenceNameInBuffer[s];
+                        s++;
+                    }
+                    sequenceName[s] = 0;
+                    sequenceName[12] = 0;
+                    f_close(&sequenceFile);
+                    return sequenceName;
                 }
-                sequenceName[12] = 0;
-                f_close(&sequenceFile);
-                return sequenceName;
                 break;
             }
             case SEQUENCE_BANK_VERSION2: {
-                f_lseek(&sequenceFile, 4 + (1024 + 16384 + 24576) * patchNumber);
-                f_read(&sequenceFile, storageBuffer, 20, &byteRead);
-                const char* sequenceNameInBuffer = sequencer->getSequenceNameInBuffer(storageBuffer);
-                for (int s = 0; s < 12; s++) {
-                    sequenceName[s] = sequenceNameInBuffer[s];
+                // Review patch: name's own extent, as in the v1 arm.
+                if (f_size(&sequenceFile) >= 4 + (FSIZE_t)(1024 + 16384 + 24576) * patchNumber + 20
+                        && f_lseek(&sequenceFile, 4 + (1024 + 16384 + 24576) * patchNumber) == FR_OK
+                        && f_read(&sequenceFile, storageBuffer, 20, &byteRead) == FR_OK
+                        && byteRead == 20) {
+                    // NUL-aware copy, as in the v1 arm ("##" fallback bound).
+                    const char* sequenceNameInBuffer = sequencer->getSequenceNameInBuffer(storageBuffer);
+                    int s = 0;
+                    while (s < 12 && sequenceNameInBuffer[s] != '\0') {
+                        sequenceName[s] = sequenceNameInBuffer[s];
+                        s++;
+                    }
+                    sequenceName[s] = 0;
+                    sequenceName[12] = 0;
+                    f_close(&sequenceFile);
+                    return sequenceName;
                 }
-                sequenceName[12] = 0;
-                f_close(&sequenceFile);
-                return sequenceName;
                 break;
             }
         }
@@ -274,7 +354,13 @@ void SequenceBank::createSequenceFile(const char* name) {
         int numberOfZeros = sizeof(actions) + sizeof(stepNotes);
         while (numberOfZeros > 0) {
             UINT toWrite = numberOfZeros > 1024 ? 1024 : numberOfZeros;
-            f_write(&sequenceFile, storageBuffer + 1024, toWrite, &byteWritten);
+            FRESULT writeResult = f_write(&sequenceFile, storageBuffer + 1024, toWrite, &byteWritten);
+            // Stop the entire creation transaction. Continuing the outer slot
+            // loop would write every later slot at a shifted offset.
+            if (writeResult != FR_OK || byteWritten != toWrite) {
+                f_close(&sequenceFile);
+                return;
+            }
             numberOfZeros -= byteWritten;
 #ifndef PFM3_HOST
             HAL_Delay(1);
