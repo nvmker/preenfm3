@@ -2,7 +2,7 @@
 title: 'Firmware bug-fix Phase 5 — cosmetic, dormant, file-format oddities (+2 folded review findings)'
 type: 'bugfix'
 created: '2026-08-22'
-status: 'in-review' # draft | ready-for-dev | in-progress | in-review | done
+status: 'done' # draft | ready-for-dev | in-progress | in-review | done
 review_loop_iteration: 0
 baseline_commit: '317313b'
 context: ['{project-root}/_bmad-output/planning-artifacts/firmware-bug-fix-plan.md', '{project-root}/_bmad-output/implementation-artifacts/deferred-work.md']
@@ -103,3 +103,54 @@ context: ['{project-root}/_bmad-output/planning-artifacts/firmware-bug-fix-plan.
 - `make golden-regen` — expected: null diff (no render-path change for valid input); any diff = HALT + Ask First
 
 **Manual checks:** none (PPM output verified via shim-extracted bytes in gtest).
+
+## Suggested Review Order
+
+**SequenceBank validation & durability (5.6, folded-A + 3 review patches)**
+
+- Entry point: f_size pre-check rejects truncation before any mutation; checked seek; setFullState LAST
+  [`SequenceBank.cpp:152`](../../firmware/Src/filesystem/SequenceBank.cpp#L152)
+
+- Bounded zero-fill loop: write stalls break instead of spinning
+  [`SequenceBank.cpp:333`](../../firmware/Src/filesystem/SequenceBank.cpp#L333)
+
+- Name extent = its own 20 bytes, not the whole slot (review patch 4)
+  [`SequenceBank.cpp:239`](../../firmware/Src/filesystem/SequenceBank.cpp#L239)
+
+- NUL-aware copies bound the `"##"` fallback literal (ASAN-surfaced, `738f6cc`)
+  [`SequenceBank.cpp:281`](../../firmware/Src/filesystem/SequenceBank.cpp#L281)
+
+**Corrupt-input guards (folded-B + review patch 1)**
+
+- bpm domain guard [0,255]: finite out-of-range and NaN/Inf both fail safe to TIME_4
+  [`LfoStepSeq.cpp:45`](../../firmware/Src/synth/LfoStepSeq.cpp#L45)
+
+**Persistence byte-exactness (5.5, 5.7)**
+
+- offsetof-style offset, host/target single form, shim removed
+  [`PatchBank.cpp:121`](../../firmware/Src/filesystem/PatchBank.cpp#L121)
+
+- memcpy-based uint16 walk replaces the type-punning casts (on-disk identical)
+  [`MidiControllerFile.cpp:37`](../../firmware/Src/MidiController/MidiControllerFile.cpp#L37)
+
+- extern-C memcpy declaration forced by Common.h's C++-linkage strcmp (deferred)
+  [`MidiControllerFile.cpp:25`](../../firmware/Src/MidiController/MidiControllerFile.cpp#L25)
+
+**Filesystem hygiene (5.1, 5.2, 5.4)**
+
+- Ring cadence untouched; ctor inits the flag; low bits replicated 31→0xFF
+  [`PPMImage.cpp:117`](../../firmware/Src/filesystem/PPMImage.cpp#L117)
+
+- Tilde padding bounded to k<12 with explicit NUL at name[12]
+  [`PreenFMFileType.cpp:211`](../../firmware/Src/filesystem/PreenFMFileType.cpp#L211)
+
+- Dead interpolate branch removed; parser contract unchanged
+  [`UserEnvCurve.cpp:77`](../../firmware/Src/filesystem/UserEnvCurve.cpp#L77)
+
+**Peripherals**
+
+- Tests: sequence-bank failure-injection suite, bpm fallback cases, PPM replication flip
+  [`sequence_bank_test.cpp:221`](../../tests/sequence_bank_test.cpp#L221)
+
+- Plan doc: phase 4 marked complete, 5.1 mischaracterization corrected
+  [`firmware-bug-fix-plan.md:1`](../planning-artifacts/firmware-bug-fix-plan.md#L1)
