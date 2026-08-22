@@ -17,9 +17,8 @@
 
 #include "PreenFMFileType.h"
 
-// Common.h redeclares strcmp with C++ linkage, so <string.h> cannot be
-// included here; declare just strnlen with C linkage instead.
-extern "C" size_t strnlen(const char *s, size_t maxlen);
+// Keep the platform libc header authoritative for strnlen.
+#include <string.h>
 
 #ifndef PFM3_HOST
 __attribute__((section(".ram_d2b")))
@@ -208,11 +207,20 @@ int PreenFMFileType::initFiles() {
             }
             if (!(fno.fattrib & AM_DIR)) {
                 if (isCorrectFile((char*) fno.fname, fno.fsize)) {
+                    bool terminated = false;
                     for (int k = 0; k < 12; k++) {
+                        if (terminated) {
+                            // Past the NUL: don't read fno.fname further —
+                            // stale bytes from a longer previously-read name
+                            // sit there. Pad with '~' while still dotless.
+                            myFiles_[numberOfFiles_].name[k] = beforePoint ? '~' : 0;
+                            continue;
+                        }
                         if (fno.fname[k] == ' ') {
                             myFiles_[numberOfFiles_].name[k] = '_';
-                        } else if (fno.fname[k] == 0 && beforePoint) {
-                            myFiles_[numberOfFiles_].name[k] = '~';
+                        } else if (fno.fname[k] == 0) {
+                            terminated = true;
+                            myFiles_[numberOfFiles_].name[k] = beforePoint ? '~' : 0;
                         } else {
                             if (fno.fname[k] == '.') {
                                 beforePoint = false;

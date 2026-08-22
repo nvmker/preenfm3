@@ -2,10 +2,9 @@
 // user wavetable txt/bin load + the txt->bin conversion pipeline.
 //
 // CHARACTERIZATION suite (spec-test-coverage-phase4). FatFs via the shim.
-// Quirks pinned (deferred-work.md):
-//   * interpolate() reads buffer[iPos+1] ONE PAST the populated source
-//     window (iPos+1 == srcN happens for the last target sample) — value
-//     comes from stale/zero tail data, not the source wave.
+// Fixed behavior and remaining constraints (deferred-work.md):
+//   * FIXED (6.4): interpolate() clamps iPos+1 to the populated source
+//     window, so the final target sample cannot consume stale tail data.
 //   * the txt parser's numberOfSample must be 32..1024; outside -> '#' error
 //     name and NO waveform load.
 // userWaveform/waveTables are the REAL globals from Osc.cpp (already linked);
@@ -137,18 +136,23 @@ TEST_F(UserWaveformTest, TxtBadSampleCountMarksErrorAndSkips) {
     EXPECT_EQ(uw_.userWaveFormNames[4][0], '#');
 }
 
-TEST_F(UserWaveformTest, InterpolateReadsOnePastPopulatedSourceQuirk) {
-    // QUIRK GOLDEN: target[1023] interpolates buffer[599]..buffer[600] where
-    // 600 == srcN (never populated by the txt parse). With a clean zero tail
-    // the last sample is v[599]*(1-decimal); we pin the exact value.
+TEST_F(UserWaveformTest, InterpolateLastSampleStaysInsidePopulatedWindow) {
+    // FIXED (6.4): target[1023] used to interpolate buffer[599]..buffer[600]
+    // where 600 == srcN (never populated by the txt parse — a stale/zero
+    // tail leaked into the last sample). The upper read is now clamped to
+    // the last populated sample: the final target interpolates
+    // buf[599]..buf[599] == buf[599] exactly.
     float buf[1024];
     for (int i = 0; i < 600; i++) buf[i] = 1.0f;
-    for (int i = 600; i < 1024; i++) buf[i] = 0.0f;  // firmware tail state
+    for (int i = 600; i < 1024; i++) buf[i] = -7.0f;  // hostile tail must NOT leak
     uw_.interpolate(buf, 600, 1024);
-    float pos = 1023.0f * 600.0f / 1024.0f;
+    EXPECT_FLOAT_EQ(buf[1023], 1.0f)
+        << "last sample interpolates only populated source samples";
+    // Second-to-last still two-sample interpolation (iPos 598..599).
+    float pos = 1022.0f * 600.0f / 1024.0f;
     int iPos = (int)pos;
     float decimal = pos - iPos;
-    EXPECT_FLOAT_EQ(buf[1023], 1.0f * (1 - decimal) + 0.0f * decimal);
+    EXPECT_FLOAT_EQ(buf[1022], 1.0f * (1 - decimal) + 1.0f * decimal);
     EXPECT_EQ(uw_.numberOfSample, 1024);  // side effect of interpolate()
 }
 

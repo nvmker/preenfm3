@@ -228,3 +228,92 @@ TEST_F(MidiControllerStateTest, ToggleDownFlipsAndUpDoesNotEmit) {
     state_->buttonDown(1, 2, 0);
     EXPECT_EQ((std::vector<uint8_t>{0xB9, 66, 0}), drain());
 }
+
+// ---- 6.8: API boundary bounds-checks ---------------------------------------
+
+TEST_F(MidiControllerStateTest, OutOfRangeIndexesAreNoOps) {
+    // Regression (6.8): page/encoder/button indexes were used unchecked —
+    // an out-of-range call walked off midiPage_. All three mutators now
+    // no-op, and the getters return nullptr instead of a wild pointer.
+    state_->encoderDelta(MIDI_NUMBER_OF_PAGES, 3, 0, 100);
+    state_->encoderDelta(0, 3, 6, 100);
+    state_->encoderDelta(0, 3, 999999, 100);
+    state_->buttonDown(MIDI_NUMBER_OF_PAGES, 3, 0);
+    state_->buttonDown(0, 3, 6);
+    EXPECT_FALSE(state_->buttonUp(MIDI_NUMBER_OF_PAGES, 3, 0));
+    EXPECT_FALSE(state_->buttonUp(0, 3, 6));
+    EXPECT_TRUE(drain().empty()) << "no emission from any out-of-range call";
+
+    EXPECT_EQ(state_->getMidiPage(MIDI_NUMBER_OF_PAGES), nullptr);
+    EXPECT_EQ(state_->getMidiPage(-1), nullptr);
+    EXPECT_EQ(state_->getEncoder(MIDI_NUMBER_OF_PAGES, 0), nullptr);
+    EXPECT_EQ(state_->getEncoder(0, 6), nullptr);
+    EXPECT_EQ(state_->getEncoder(0, -1), nullptr);
+    EXPECT_EQ(state_->getButton(MIDI_NUMBER_OF_PAGES, 0), nullptr);
+    EXPECT_EQ(state_->getButton(0, 6), nullptr);
+    EXPECT_EQ(state_->getButton(0, -1), nullptr);
+    // Valid indexes still resolve (state untouched by the invalid calls).
+    EXPECT_NE(state_->getMidiPage(0), nullptr);
+    EXPECT_EQ(state_->getEncoder(0, 0)->value, 0);
+    EXPECT_EQ(state_->getButton(0, 0)->value, 0);
+}
+
+// ---- 6.9: 3-byte CC messages are all-or-nothing -----------------------------
+
+TEST_F(MidiControllerStateTest, NearlyFullRingDropsWholeCcMessage) {
+    // Regression (6.9): each CC was three independent inserts — near a full
+    // ring a message could tear. The full message is now reserved up front:
+    // no room => no bytes, no state change. Capacity is 63 (one slot
+    // sacrificed), so count==61 has room for only 2 more => drop.
+    MidiEncoder* encoder = state_->getEncoder(0, 0);
+    for (int i = 0; i < 61; i++) usartBufferOut.insert(0xF0);
+    ASSERT_EQ(usartBufferOut.getCount(), 61);
+
+    state_->encoderDelta(0, 3, 0, 50);
+    EXPECT_EQ(usartBufferOut.getCount(), 61) << "no partial insert";
+    EXPECT_EQ(encoder->value, 0) << "encoder state unchanged when dropped";
+
+    // buttonDown (toggle, page 1) must also drop without flipping.
+    MidiButton* button = state_->getButton(1, 0);
+    button->midiChannel = 9;
+    state_->buttonDown(1, 2, 0);
+    EXPECT_EQ(usartBufferOut.getCount(), 61);
+    EXPECT_EQ(button->value, 0) << "toggle flip dropped, not rolled back";
+
+    // Review patch: an ALREADY-PRESSED PUSH button must stay pressed when
+    // its buttonDown is dropped (the old rollback form flipped it to 0).
+    state_->getButton(0, 0)->value = 1;
+    state_->buttonDown(0, 3, 0);
+    EXPECT_EQ(usartBufferOut.getCount(), 61);
+    EXPECT_EQ(state_->getButton(0, 0)->value, 1)
+        << "double-press drop must not clear a pressed PUSH button";
+
+    // buttonUp on a PUSH keeps the button logically pressed.
+    state_->getButton(0, 0)->value = 1;
+    EXPECT_TRUE(state_->buttonUp(0, 3, 0));
+    EXPECT_EQ(usartBufferOut.getCount(), 61);
+    EXPECT_EQ(state_->getButton(0, 0)->value, 1) << "push stays pressed when dropped";
+}
+
+TEST_F(MidiControllerStateTest, ExactlyRoomForThreeStillEmits) {
+    // Boundary: count==60 leaves exactly 3 usable slots — the message fits
+    // and must be emitted intact after the fill bytes.
+    for (int i = 0; i < 60; i++) usartBufferOut.insert(0xF0);
+    ASSERT_EQ(usartBufferOut.getCount(), 60);
+    state_->encoderDelta(0, 3, 0, 50);
+    std::vector<uint8_t> bytes = drain();
+    ASSERT_EQ(bytes.size(), 63u);
+    EXPECT_EQ((std::vector<uint8_t>(bytes.begin() + 60, bytes.end())),
+              (std::vector<uint8_t>{0xB3, 16, 50}));
+    EXPECT_EQ(state_->getEncoder(0, 0)->value, 50);
+}
+
+TEST_F(MidiControllerStateTest, HasRoomForMatchesRingCapacity) {
+    // The ring sacrifices one slot: usable capacity is size-1 == 63.
+    EXPECT_TRUE(usartBufferOut.hasRoomFor(63));
+    usartBufferOut.insert(1);
+    EXPECT_FALSE(usartBufferOut.hasRoomFor(63));
+    EXPECT_TRUE(usartBufferOut.hasRoomFor(62));
+    usartBufferOut.clear();
+    EXPECT_FALSE(usartBufferOut.hasRoomFor(64));
+}

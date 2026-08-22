@@ -11,3 +11,6 @@
 **/pfm3_firmware*
 TODO.txt
 README.txt
+
+# Local BMAD-generated artifacts
+/_bmad-output/

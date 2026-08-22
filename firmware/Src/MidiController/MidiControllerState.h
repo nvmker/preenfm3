@@ -21,6 +21,9 @@
 #include "Common.h"
 
 #define MIDI_NUMBER_OF_PAGES 5
+// Controls per page (MidiPage array bound — file format depends on 6).
+#define MIDI_NUMBER_OF_ENCODERS 6
+#define MIDI_NUMBER_OF_BUTTONS 6
 
 enum {
     MIDI_CONTROLLER_VERSION_1 = 1
@@ -62,8 +65,8 @@ struct MidiButton {
 };
 
 struct MidiPage {
-    MidiEncoder encoder_[6];
-    MidiButton button_[6];
+    MidiEncoder encoder_[MIDI_NUMBER_OF_ENCODERS];
+    MidiButton button_[MIDI_NUMBER_OF_BUTTONS];
 };
 
 class FMDisplayMidiController;
@@ -79,9 +82,20 @@ public:
     void buttonDown(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t buttonNumber);
     bool buttonUp(uint8_t pageNumber, uint8_t globalMidiChannel, uint32_t buttonNumber);
 
-    MidiPage* getMidiPage(int pageNumber) { return &midiPage_[pageNumber]; }
-    MidiEncoder* getEncoder(int pageNumber, int encoderNumber) { return &midiPage_[pageNumber].encoder_[encoderNumber]; }
-    MidiButton* getButton(int pageNumber, int buttonNumber) { return &midiPage_[pageNumber].button_[buttonNumber]; }
+    // 6.8: bounds-check at the API boundary — UI callers are always valid,
+    // but the getters hand out raw pointers; out-of-range indexes return
+    // nullptr instead of walking off midiPage_.
+    MidiPage* getMidiPage(int pageNumber) {
+        return (pageNumber >= 0 && pageNumber < MIDI_NUMBER_OF_PAGES) ? &midiPage_[pageNumber] : nullptr;
+    }
+    MidiEncoder* getEncoder(int pageNumber, int encoderNumber) {
+        if (pageNumber < 0 || pageNumber >= MIDI_NUMBER_OF_PAGES || encoderNumber < 0 || encoderNumber >= MIDI_NUMBER_OF_ENCODERS) return nullptr;
+        return &midiPage_[pageNumber].encoder_[encoderNumber];
+    }
+    MidiButton* getButton(int pageNumber, int buttonNumber) {
+        if (pageNumber < 0 || pageNumber >= MIDI_NUMBER_OF_PAGES || buttonNumber < 0 || buttonNumber >= MIDI_NUMBER_OF_BUTTONS) return nullptr;
+        return &midiPage_[pageNumber].button_[buttonNumber];
+    }
 
 private:
     void sendMidiDin5Out();
