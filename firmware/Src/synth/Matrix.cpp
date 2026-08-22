@@ -18,6 +18,17 @@
 #include "Matrix.h"
 
 Matrix::Matrix() {
+    // Zero both value arrays at construction: firmware relies on BSS zero-init
+    // for the global Synth (so this is behavior-identical there), but host
+    // tests construct Synth per-fixture into recycled memory — stale matrix
+    // sources from earlier suites leaked into hostMaxMatrixSource reads.
+    // 'rows' stays two-phase: Matrix::init() wires it before any use.
+    for (int k = 0; k < MATRIX_SOURCE_MAX; k++) {
+        sources[k] = 0.0f;
+    }
+    for (int k = 0; k < DESTINATION_MAX; k++) {
+        destinations[k] = 0.0f;
+    }
 }
 
 Matrix::~Matrix() {

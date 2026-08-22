@@ -57,6 +57,17 @@ public:
 	    return count;
 	}
 
+	// 6.9: can n more elements be inserted without overwriting unread data?
+	// The ring sacrifices one slot (isFull() at count == size-1), so usable
+	// capacity is size-1 and room-for-n means count + n <= size-1.
+	// NOTE: like isFull(), this is a QUERY — the guarantee holds only if the
+	// caller performs the inserts without yielding (the firmware's
+	// cooperative main loop does; the USART ISR only drains). insert()
+	// itself still overwrites unconditionally.
+	bool hasRoomFor(int n) {
+	    return getCount() + n < size;
+	}
+
 	void appendBlock(T* block, int number) {
 		for (int k=0; k<number ; k++) {
 			insert(block[k]);

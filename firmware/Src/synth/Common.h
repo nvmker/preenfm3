@@ -510,7 +510,10 @@ struct StepSequencerParams {
 };
 
 struct StepSequencerSteps {
-    char steps[16];
+    // Serialized as signed 8-bit values on every target. Plain char is
+    // unsigned under arm-none-eabi, which made corrupt-byte fallback differ
+    // from the signed-char host regression.
+    int8_t steps[16];
 };
 
 struct EffectRowParams {
@@ -696,16 +699,6 @@ enum DestinationEnum {
     FILTER2_AMP,
     DESTINATION_MAX
 };
-
-#ifndef PFM3_HOST
-// File-scope strcmp redeclaration carries C++ linkage; on host, libc
-// <string.h> (pulled transitively by libc++) already declares strcmp with C
-// linkage, so this is a language-linkage conflict there. Guard it out under
-// PFM3_HOST — the host libc provides strcmp. This redeclaration is a latent
-// firmware smell (libc functions should have C linkage); flagged, not fixed,
-// to keep the Arm build byte-identical. See tests/SEAM.md.
-int strcmp(const char *s1, const char *s2);
-#endif
 
 
 
