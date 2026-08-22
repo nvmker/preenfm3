@@ -207,11 +207,20 @@ int PreenFMFileType::initFiles() {
             }
             if (!(fno.fattrib & AM_DIR)) {
                 if (isCorrectFile((char*) fno.fname, fno.fsize)) {
+                    bool terminated = false;
                     for (int k = 0; k < 12; k++) {
+                        if (terminated) {
+                            // Past the NUL: don't read fno.fname further —
+                            // stale bytes from a longer previously-read name
+                            // sit there. Pad with '~' while still dotless.
+                            myFiles_[numberOfFiles_].name[k] = beforePoint ? '~' : 0;
+                            continue;
+                        }
                         if (fno.fname[k] == ' ') {
                             myFiles_[numberOfFiles_].name[k] = '_';
-                        } else if (fno.fname[k] == 0 && beforePoint) {
-                            myFiles_[numberOfFiles_].name[k] = '~';
+                        } else if (fno.fname[k] == 0) {
+                            terminated = true;
+                            myFiles_[numberOfFiles_].name[k] = beforePoint ? '~' : 0;
                         } else {
                             if (fno.fname[k] == '.') {
                                 beforePoint = false;
