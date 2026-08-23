@@ -1022,7 +1022,11 @@ TEST_F(SynthCore, MainGateFrozenTargetDoesNotRatchetBetweenNotes) {
     ASSERT_GT(ref, 1000000) << "reference note is not clearly audible";
     renderBlocks(97);
     synth().noteOff(0, 69);
-    while (playCount() > 0) renderBlock();  // dies; source + destination frozen high
+    // Bounded death-wait: a never-dying voice must fail the test, not hang it.
+    for (int guard = 0; guard < 3000 && playCount() > 0; guard++) {
+        renderBlock();
+    }
+    ASSERT_EQ(playCount(), 0) << "reference note voice never finished";
 
     for (int cycle = 0; cycle < 30; cycle++) {
         SCOPED_TRACE("retrigger cycle " + std::to_string(cycle));
@@ -1034,7 +1038,10 @@ TEST_F(SynthCore, MainGateFrozenTargetDoesNotRatchetBetweenNotes) {
             << cycle << ")";
         renderBlocks(97);                    // gate legitimately shuts while playing
         synth().noteOff(0, 69);
-        while (playCount() > 0) renderBlock();
+        for (int guard = 0; guard < 3000 && playCount() > 0; guard++) {
+            renderBlock();
+        }
+        ASSERT_EQ(playCount(), 0) << "voice never finished (cycle " << cycle << ")";
     }
 }
 
@@ -1074,7 +1081,10 @@ TEST_F(SynthCore, MainGateResetsOnPresetReload) {
     ASSERT_GT(ref, 1000000);
     renderBlocks(97);                        // gate shut while playing
     synth().noteOff(0, 69);
-    while (playCount() > 0) renderBlock();   // dies frozen; currentGate_ ~1.0
+    for (int guard = 0; guard < 3000 && playCount() > 0; guard++) {
+        renderBlock();
+    }
+    ASSERT_EQ(playCount(), 0) << "voice never finished before reload";
 
     synth().afterNewParamsLoad(0);            // preset reload
     synth().noteOn(0, 69, 100);
