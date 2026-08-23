@@ -2631,7 +2631,17 @@ void Timbre::voicesToTimbre(float volumeGain) {
 
 void Timbre::gateFx() {
     // Gate algo !!
-    float gate = voices_[lastPlayedNote_]->matrix.getDestination(MAIN_GATE);
+    // A voice that stops playing stops recomputing its matrix (Voice's
+    // prepareMatrix gates computeAllDestinations on isPlaying), and its
+    // LFOSEQ/LFOENV sources stop advancing with it — so the MAIN_GATE
+    // destination freezes at the last value it had while sounding. That
+    // stale target must not hold the gate shut across silent gaps: every
+    // note born afterwards starts muted (bug 7.2 — on device, constant-gap
+    // retriggers faded the timbre to silence and the state survived preset
+    // reload). While the last-played voice is silent the gate target is 0.
+    float gate = voices_[lastPlayedNote_]->isPlaying()
+            ? voices_[lastPlayedNote_]->matrix.getDestination(MAIN_GATE)
+            : 0.0f;
     if (unlikely(gate > 0 || currentGate_ > 0)) {
         gate *= .72547132656922730694f; // 0 < gate < 1.0
         if (gate > 1.0f) {
@@ -2660,6 +2670,11 @@ void Timbre::gateFx() {
 }
 
 void Timbre::afterNewParamsLoad() {
+
+    // currentGate_ is runtime state, not patch state: a preset reload must
+    // reopen the gate (bug 7.2 — the ratchet survived reload on device
+    // because nothing reset the integrator).
+    currentGate_ = 0.0f;
 
     env1_.applyCurves();
     env2_.applyCurves();

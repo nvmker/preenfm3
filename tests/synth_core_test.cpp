@@ -926,4 +926,171 @@ TEST_F(SynthCore, BeforeAfterNewParamsLoadRestoresSoundingNote) {
     EXPECT_TRUE(synth().isPlaying());
 }
 
+// ===========================================================================
+// 8. MAIN_GATE (Timbre::gateFx) — Phase 7 bug 7.2.
+//    The gate target is read from the LAST-PLAYED voice's matrix
+//    destination; a voice that stops playing stops recomputing its matrix
+//    (Voice.h nextBlock gates computeAllDestinations on isPlaying), so the
+//    destination FREEZES at its last value. With an active gate row the
+//    frozen positive target holds the slew integrator (currentGate_)
+//    shut across silent gaps — every NEW note is born into the muted state
+//    and reopens only over the slew (±0.002 per SAMPLE ≈ 16 blocks for the
+//    full range; windowed-peak assertions must respect this) — which on
+//    hardware presented as machine-gun retriggers fading a timbre to
+//    silence, surviving preset reload, recovering only after long idle.
+//    Test source: MATRIX_SOURCE_CC1 driven via the production
+//    ROW_PERFORMANCE1 route (Synth::newParamValue -> setMatrixSource) — the
+//    host-controllable stand-in for the hardware's LFOSEQ gate patterns.
+// ===========================================================================
+
+namespace {
+// Sustain the ALGO1 carrier envelopes so notes hold while gated and die
+// promptly on noteOff (attack 0 -> a healthy note is full-level from block
+// one, which the first-blocks peak assertions rely on).
+void sustainCarrierEnvs(Synth& synth) {
+    OneSynthParams* p = synth.getTimbre(0)->getParamRaw();
+    for (EnvelopeTimeMemory* t : {&p->env1Time, &p->env2Time}) {
+        t->attackTime = 0; t->decayTime = 1;
+        t->sustainTime = 100; t->releaseTime = 1;
+    }
+    for (EnvelopeLevelMemory* l : {&p->env1Level, &p->env2Level}) {
+        l->attackLevel = 1; l->decayLevel = 1;
+        l->sustainLevel = 1; l->releaseLevel = 0;
+    }
+}
+
+// CC1-routed gate row (legit-tracking guard only). Row 1 (MODWHEEL ->
+// INDEX_ALL_MODULATION) is sacrificed; modwheel stays 0 so the removed
+// routing is inert. NOTE: a CC-routed gate CANNOT freeze by construction —
+// setMatrixSource updates dead voices' sources and Timbre::fxAfterBlock
+// (:837) recomputes the dead voice's destinations with the fresh source
+// every block — which is exactly why the freeze tests use the LFOSEQ row.
+void installCcGateRow(Synth& synth) {
+    OneSynthParams* p = synth.getTimbre(0)->getParamRaw();
+    p->matrixRowState1 = { (float)MATRIX_SOURCE_CC1, 1.5f, (float)MAIN_GATE, (float)DESTINATION_NONE };
+    sustainCarrierEnvs(synth);
+    synth.afterNewParamsLoad(0);
+}
+
+void setGateCc1(Synth& synth, float value) {
+    // Encoder 0 of ROW_PERFORMANCE1 == MATRIX_SOURCE_CC1 (production route,
+    // same as NewParamValuePerformanceRowSetsMatrixCcSource).
+    synth.newParamValue(0, ROW_PERFORMANCE1, 0,
+                        &allParameterRows.row[ROW_PERFORMANCE1]->params[0], 0.0f, value);
+}
+
+// LFOSEQ1-routed gate row — the hardware source family. Factory row 6
+// already routes LFOSEQ1 -> MAIN_GATE with mul 0 (dormant); all-max steps
+// make the source constant (expValues[15] ~ 1.378) regardless of sequencer
+// phase, so the gate target saturates at 1.0 whenever the source is live.
+// Arming the mul THROUGH THE DISPATCH (setNewValueFromMidi) is load-bearing:
+// it fires verifyLfoUsed, which registers LFOSEQ1 as used so the voice feeds
+// the source while playing. While the voice is dead the LFOSEQ source is
+// frozen too (advanced only under isPlaying, Voice.h prepareMatrix), so
+// fxAfterBlock's dead-voice recompute propagates a STALE source — the exact
+// hardware freeze (machine-gun retriggers fading a timbre to silence).
+void installSeqGateRow(Synth& synth) {
+    OneSynthParams* p = synth.getTimbre(0)->getParamRaw();
+    for (int s = 0; s < 16; s++) {
+        p->lfoSteps1.steps[s] = 15;
+    }
+    // Seq gate duty = max: nextValueInMatrix's `gatePlusMatrix >= 1` branch
+    // takes target = stepValue unconditionally — with all-max steps the
+    // source is CONSTANTLY ~1.378 (no per-phase duty dips to 0). Without
+    // this the source oscillates 0<->1.378 per seq phase and the frozen
+    // death value (hence the whole test) is phase-luck.
+    p->lfoSeq1.gate = 1.0f;
+    sustainCarrierEnvs(synth);
+    synth.afterNewParamsLoad(0);
+    synth.setNewValueFromMidi(0, ROW_MATRIX6, ENCODER_MATRIX_MUL, 1.5f);
+}
+}  // namespace
+
+TEST_F(SynthCore, MainGateFrozenTargetDoesNotRatchetBetweenNotes) {
+    // Machine-gun cadence (hardware trigger) with an LFOSEQ-routed gate row
+    // (constant-high pattern): every note is legitimately gated shut while it
+    // plays, but when the voice dies the LFOSEQ source AND the destination
+    // freeze — the stale target must not hold currentGate_ shut across the
+    // silent gap. Each re-attack's FIRST-blocks peak (a healthy note is
+    // full-level from block one) must stay within 60% of the reference —
+    // pre-fix, notes born into the held-shut integrator start near-silent,
+    // the on-device "fade to silence" symptom.
+    installSeqGateRow(synth());
+
+    synth().noteOn(0, 69, 100);
+    const int64_t ref = renderBlocks(3);   // born open; shuts while playing (legit)
+    ASSERT_GT(ref, 1000000) << "reference note is not clearly audible";
+    renderBlocks(97);
+    synth().noteOff(0, 69);
+    // Bounded death-wait: a never-dying voice must fail the test, not hang it.
+    for (int guard = 0; guard < 3000 && playCount() > 0; guard++) {
+        renderBlock();
+    }
+    ASSERT_EQ(playCount(), 0) << "reference note voice never finished";
+
+    for (int cycle = 0; cycle < 30; cycle++) {
+        SCOPED_TRACE("retrigger cycle " + std::to_string(cycle));
+        renderBlocks(500);                   // silent gap — where the frozen target held
+        synth().noteOn(0, 69, 100);
+        const int64_t earlyPeak = renderBlocks(3);
+        EXPECT_GE(earlyPeak, (ref * 3) / 5)
+            << "note born into gate state held shut by the frozen target (cycle "
+            << cycle << ")";
+        renderBlocks(97);                    // gate legitimately shuts while playing
+        synth().noteOff(0, 69);
+        for (int guard = 0; guard < 3000 && playCount() > 0; guard++) {
+            renderBlock();
+        }
+        ASSERT_EQ(playCount(), 0) << "voice never finished (cycle " << cycle << ")";
+    }
+}
+
+TEST_F(SynthCore, MainGateLegitGatingStillTracksWhilePlaying) {
+    // Guard: while a voice IS playing the gate must keep tracking its source —
+    // closing attenuates, reopening recovers. The 7.2 fix may only touch the
+    // not-playing (stale-freeze) path, never this one. Measurements are
+    // POST-SETTLE windows (currentGate_ converges in ~16 blocks; a plain
+    // window max would catch the pre-slew transient and fake "open").
+    installCcGateRow(synth());
+    setGateCc1(synth(), 0.0f);
+    synth().noteOn(0, 69, 100);
+    renderBlocks(100);                       // warm/settle
+    const int64_t open = renderBlocks(50);
+    ASSERT_GT(open, 1000000);
+
+    setGateCc1(synth(), 1.0f);
+    renderBlocks(100);                       // let the slew settle shut
+    const int64_t gated = renderBlocks(50);
+    EXPECT_LT(gated, open / 4) << "gate no longer closes while playing";
+
+    setGateCc1(synth(), 0.0f);
+    renderBlocks(100);                       // let the slew settle open
+    const int64_t reopened = renderBlocks(50);
+    EXPECT_GT(reopened, open / 2) << "gate no longer reopens while playing";
+    synth().noteOff(0, 69);
+}
+
+TEST_F(SynthCore, MainGateResetsOnPresetReload) {
+    // Hardware symptom half: the ratchet survives preset reload because
+    // currentGate_ is runtime state nothing resets (afterNewParamsLoad resets
+    // sources/destinations but, pre-fix, not the integrator). A note played
+    // right after the reload must be born open.
+    installSeqGateRow(synth());
+    synth().noteOn(0, 69, 100);
+    const int64_t ref = renderBlocks(3);
+    ASSERT_GT(ref, 1000000);
+    renderBlocks(97);                        // gate shut while playing
+    synth().noteOff(0, 69);
+    for (int guard = 0; guard < 3000 && playCount() > 0; guard++) {
+        renderBlock();
+    }
+    ASSERT_EQ(playCount(), 0) << "voice never finished before reload";
+
+    synth().afterNewParamsLoad(0);            // preset reload
+    synth().noteOn(0, 69, 100);
+    const int64_t earlyPeak = renderBlocks(3);
+    EXPECT_GE(earlyPeak, (ref * 3) / 5)
+        << "currentGate_ survived preset reload; the next note was born gated";
+}
+
 }  // namespace
