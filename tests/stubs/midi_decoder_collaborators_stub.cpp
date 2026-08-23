@@ -131,5 +131,18 @@ struct AllParameterRowsDisplay allParameterRows = []{
     // driven by the tests; permissive bounds accept latch 0/1 identically to
     // the real [0,1] display bound.
     a.row[ROW_ARPEGGIATOR2] = &permissiveParamRow;
+    // Phase 7 (bug 7.1) override: the FX rows. On the zeroed dummy,
+    // setNewValueFromMidi(t, ROW_EFFECT1, ENCODER_EFFECT_TYPE, v) clamps every
+    // v to 0 — a "type change" silently becomes type-0 (FILTER_OFF) + a real
+    // dispatch of the per-voice FX-param fan-out (Voice::setNewEffectParam). That clamp is exactly why every
+    // earlier host FX-type-change probe (synth_core_test.cpp
+    // NewParamValueMidiNoteCurveAndEffectRowsDispatch and the four hardware-
+    // session FxChangePlaying probes it mirrors) asserted audibility after a
+    // no-op change: the buggy transition path was never driven on host. Real
+    // display bounds (FMDisplayEditor.cpp fxParameterRow) are [0, ~49] for the
+    // type encoder and [0,1] for params — permissive bounds accept in-range
+    // values identically (same G3/G4 pattern). Goldens never drive FX rows.
+    a.row[ROW_EFFECT1] = &permissiveParamRow;
+    a.row[ROW_EFFECT2] = &permissiveParamRow;
     return a;
 }();
