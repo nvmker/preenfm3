@@ -505,7 +505,6 @@ void Voice::noteOn(short newNote, float newNoteFrequency, short velocity, uint32
         }
 
         currentTimbre->osc1_.newNote(&oscState1_, newNoteFrequency, phase);
-        currentTimbre->osc1_.newNote(&oscState1_, newNoteFrequency, phase);
         currentTimbre->osc2_.newNote(&oscState2_, newNoteFrequency, phase);
         currentTimbre->osc3_.newNote(&oscState3_, newNoteFrequency, phase);
         currentTimbre->osc4_.newNote(&oscState4_, newNoteFrequency, phase);
