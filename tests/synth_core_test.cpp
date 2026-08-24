@@ -1093,4 +1093,108 @@ TEST_F(SynthCore, MainGateResetsOnPresetReload) {
         << "currentGate_ survived preset reload; the next note was born gated";
 }
 
+// ===========================================================================
+// 9. Production load-path guards: nothing may survive a preset load.
+//
+// Born from device anomaly 7.4 (2026-08-23: "zombie voice after ratchet +
+// preset change", 4x observed) — later DISPROVEN as a rig artifact (capture
+// clock mapping + the probe's own armed gate row; audit in
+// hardware-test-plan §7.4). No firmware bug existed, so these tests are and
+// always were GREEN: they are not a repro, they are the permanent host
+// guards that keep it that way.
+//
+// The production load path is SynthState::loadPreset: propagateNoteOff
+// (panel test note only) -> Synth::beforeNewParamsLoad (stores HELD notes,
+// then allNoteOffQuick kills every playing voice) -> loadPatch memcpy over
+// the timbre params -> Synth::afterNewParamsLoad (Timbre::afterNewParamsLoad
+// + re-plays the stored HELD notes). A releasing voice is neither stored
+// nor re-played, so after the load NOTHING may keep sounding — a voice
+// that does is a zombie. Complements BeforeAfterNewParamsLoadRestores-
+// SoundingNote (the held-note side) and MainGateResetsOnPresetReload (gate
+// state, bug 7.2): before these, the release-side invariant had no host
+// coverage at all.
+// Host twin of the load: snapshot params, beforeNewParamsLoad, memcpy back
+// (same-preset reload — what the device probes did), afterNewParamsLoad.
+// ===========================================================================
+
+namespace {
+// ~1497 blocks/s at 47916 Hz / 32-sample blocks (PREENFM_FREQUENCY, BLOCK_SIZE).
+constexpr std::size_t kBlocksPerSecond = 1497;
+
+// Sustaining envelope, ~0.6 s release: a held note sustains, a released note
+// dies fast — so anything still loud seconds later is a zombie by construction.
+void installSustainShortRelease(Synth& synth) {
+    OneSynthParams* p = synth.getTimbre(0)->getParamRaw();
+    for (EnvelopeTimeMemory* t : {&p->env1Time, &p->env2Time}) {
+        t->attackTime = 0;
+        t->decayTime = 1;
+        t->sustainTime = 100;
+        t->releaseTime = 1;   // ~0.6 s release-to-zero (device-timed ~1 s)
+    }
+    for (EnvelopeLevelMemory* l : {&p->env1Level, &p->env2Level}) {
+        l->attackLevel = 1;
+        l->decayLevel = 1;
+        l->sustainLevel = 1;
+        l->releaseLevel = 0;
+    }
+    synth.afterNewParamsLoad(0);
+}
+
+void productionPresetReload(Synth& synth, OneSynthParams* saved) {
+    std::memcpy(saved, synth.getTimbre(0)->getParamRaw(), sizeof(*saved));
+    synth.beforeNewParamsLoad(0);
+    std::memcpy(synth.getTimbre(0)->getParamRaw(), saved, sizeof(*saved));
+    synth.afterNewParamsLoad(0);
+}
+}  // namespace
+
+TEST_F(SynthCore, ControlNoteReleaseDiesWithoutPresetLoad) {
+    installSustainShortRelease(synth());
+    synth().noteOn(0, 69, 100);
+    ASSERT_GT(renderBlocks(kBlocksPerSecond / 2), 1000000) << "note not audible";
+    synth().noteOff(0, 69);
+    const std::size_t blocks = renderUntilSilent(kBlocksPerSecond * 5);
+    EXPECT_LT(blocks, kBlocksPerSecond * 5)
+        << "release never completed without any preset load — test setup invalid";
+    EXPECT_EQ(playCount(), 0);
+}
+
+TEST_F(SynthCore, PresetLoadDuringReleaseLeavesNoZombieVoice) {
+    // Timing recipe from the (disproven) device probe_7_4 v2/v3: note-off,
+    // then the preset change lands ~0.15 s later, mid-release.
+    installSustainShortRelease(synth());
+    synth().noteOn(0, 69, 100);
+    ASSERT_GT(renderBlocks(kBlocksPerSecond / 2), 1000000) << "note not audible";
+    synth().noteOff(0, 69);
+    renderBlocks(kBlocksPerSecond / 7);        // ~0.15 s into the release
+    OneSynthParams saved;
+    productionPresetReload(synth(), &saved);
+    const std::size_t blocks = renderUntilSilent(kBlocksPerSecond * 10);
+    EXPECT_LT(blocks, kBlocksPerSecond * 10)
+        << "load-path invariant broken: a voice keeps sounding >=10 s after "
+           "the preset load (releasing voices are neither stored nor re-played)";
+    EXPECT_EQ(playCount(), 0) << "voice bookkeeping stuck after preset load";
+}
+
+TEST_F(SynthCore, RatchetThenPresetLoadLeavesNoZombieVoice) {
+    // Timing recipe from the (disproven) probe_7_4 v2-v4 / probe_7_4b s1:
+    // six same-note retriggers, preset change ~0.25 s after the last
+    // note-off — retrigger churn across the load path.
+    installSustainShortRelease(synth());
+    for (int i = 0; i < 6; i++) {
+        synth().noteOn(0, 69, 100);
+        renderBlocks(kBlocksPerSecond * 7 / 10);   // ~0.7 s on
+        synth().noteOff(0, 69);
+        renderBlocks(kBlocksPerSecond * 3 / 10);   // ~0.3 s off
+    }
+    renderBlocks(kBlocksPerSecond / 4);            // ~0.25 s into last release
+    OneSynthParams saved;
+    productionPresetReload(synth(), &saved);
+    const std::size_t blocks = renderUntilSilent(kBlocksPerSecond * 10);
+    EXPECT_LT(blocks, kBlocksPerSecond * 10)
+        << "load-path invariant broken: a voice keeps sounding >=10 s after "
+           "ratchet + preset load";
+    EXPECT_EQ(playCount(), 0) << "voice bookkeeping stuck after preset load";
+}
+
 }  // namespace
