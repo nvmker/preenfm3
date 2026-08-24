@@ -14,3 +14,7 @@ README.txt
 
 # Local BMAD-generated artifacts
 /_bmad-output/
+
+# Hardware-test rig: raw evidence (wavs/midi logs) stay local
+scripts/hardware/build/
+scripts/hardware/__pycache__/
