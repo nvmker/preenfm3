@@ -89,10 +89,10 @@ void Sequencer::setDisplaySequencer(FMDisplaySequencer* displaySequencer) {
 }
 
 void Sequencer::reset(bool synthNoteOff) {
-    // 8.1: a reset supersedes mutations still queued from the decode
-    // context — discard them so stale notes/CCs cannot land in the fresh
-    // state (consumer-side clear: reset runs in the main loop).
-    asyncActions_.clear();
+    // 8.1: a reset supersedes mutations already published by the decode
+    // context. Discard from the consumer side so an IRQ insert that lands
+    // after the snapshot remains queued for the fresh state.
+    asyncActions_.discardAllFromConsumer();
     millisTimer_ = 0;
     current16bitTimer_ = 0;
     previousCurrent16bitTimer_ = MAX_TIME;
@@ -578,8 +578,11 @@ void Sequencer::insertNote(uint8_t instrument, uint8_t note, uint8_t velocity) {
         newAction->actionType = SEQ_ACTION_NOTE;
         newAction->param1 = note;
         newAction->param2 = velocity;
-        newAction->nextIndex = actions[previousActionIndex_[instrument]].nextIndex;
-        actions[previousActionIndex_[instrument]].nextIndex = lastFreeAction_;
+        // SysTick advances previousActionIndex_ while walking. Snapshot it:
+        // two separate reads can observe P then Q and publish Q -> new -> Q.
+        const uint16_t predecessorIndex = previousActionIndex_[instrument];
+        newAction->nextIndex = actions[predecessorIndex].nextIndex;
+        actions[predecessorIndex].nextIndex = lastFreeAction_;
 
         previousActionIndex_[instrument] = lastFreeAction_;
 
@@ -726,10 +729,14 @@ void Sequencer::getFullState(uint8_t* buffer, uint32_t *size) {
 }
 
 void Sequencer::setFullState(uint8_t* buffer) {
-    // 8.1: a loaded state supersedes queued decode-context mutations for
-    // the same reason as reset() (both loadStateVersion* run main-loop).
-    asyncActions_.clear();
     SEQ_VERSION version = (SEQ_VERSION)buffer[0];
+    if (version != SEQ_VERSION1 && version != SEQ_VERSION2) {
+        return;
+    }
+
+    // 8.1: an accepted loaded state supersedes actions already published by
+    // decode. A producer insert after this snapshot belongs to the new state.
+    asyncActions_.discardAllFromConsumer();
     switch (version) {
     case SEQ_VERSION1:
         loadStateVersion1(buffer);
@@ -888,19 +895,19 @@ void Sequencer::queueNewSeqValue(uint8_t timbre, uint8_t seqValue, uint8_t newVa
 }
 
 /*
- * Main-loop drain. insertNote's single link-in store is the publication
- * point, so a walk can never observe a half-built link: the new node is
- * fully formed before actions[previousActionIndex_].nextIndex exposes it.
- * The shared splice cursors (previousActionIndex_) are a different matter:
- * the walk also writes them and can preempt a drain-side insertNote
- * mid-update. That cursor window is the upstream-shipped baseline (main-
- * loop insertNote + SysTick walk) and its worst case is a duplicated or
- * skipped recorded note — never a broken chain, because every writer of
- * actions[].nextIndex (insertNote, clear, reset) runs in THIS thread,
- * serialized with the drain.
+ * Main-loop drain. insertNote fully initializes a node, snapshots its
+ * predecessor once, then publishes it with one nextIndex store. If SysTick
+ * advances the playback cursor after that snapshot, the note may wait for
+ * the next loop pass, but the publication target cannot change underneath
+ * the splice and form a cycle. All action-list link writers remain in the
+ * main thread.
  */
 void Sequencer::processAsyncActions() {
-    while (asyncActions_.getCount() > 0) {
+    // Bound cooperative work even if the decode IRQ continuously replenishes
+    // the queue. Newly arriving actions remain FIFO and drain next loop pass.
+    for (int processed = 0;
+            processed < SEQ_ASYNC_ACTION_QUEUE_SIZE - 1 && asyncActions_.getCount() > 0;
+            processed++) {
         SeqAsyncAction action = asyncActions_.remove();
         switch (action.actionType) {
         case SEQ_ASYNC_NOTE:

@@ -992,23 +992,39 @@ TEST_F(SequencerPhase2, ResetAndStateLoadDiscardQueuedEntries) {
         << "recording_ round-trips through the state buffer (reset() does not clear it; queued entries never touch it)";
 }
 
+TEST_F(SequencerPhase2, UnsupportedStateVersionPreservesQueuedEntries) {
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(100);
+    seq_->queueNote(0, 60, 100);
+    uint8_t unsupportedState[] = {0};
+    seq_->setFullState(unsupportedState);
+    EXPECT_FALSE(seq_->isSeqActivated(0)) << "the queued note still defers";
+    seq_->processAsyncActions();
+    EXPECT_TRUE(seq_->isSeqActivated(0))
+        << "a rejected state must not discard otherwise valid queued actions";
+}
+
 TEST_F(SequencerPhase2, QueueOverflowDropsNewestAndCounts) {
     seq_->start();
     seq_->setRecording(0, true);
-    // Fill until the queue starts dropping (derived, not hardcoded: usable
-    // capacity is ring size - 1). Bounded so a capacity-semantics change
-    // fails the suite instead of hanging it.
-    int queued = 0;
-    while (seq_->getDroppedAsyncActions() == 0 && queued < 1024) {
+    constexpr int kUsableCapacity = 63;
+    for (int queued = 0; queued < kUsableCapacity; queued++) {
         seq_->queueNote(0, 60, 100);
-        queued++;
+        ASSERT_EQ(seq_->getDroppedAsyncActions(), 0)
+            << "the queue dropped before its specified 63-entry capacity at index " << queued;
     }
-    ASSERT_GT(queued, 1);
+
+    // A distinguishable 64th action must be the one dropped. If the ring
+    // overwrites an older note and retains this stop, running_ becomes false.
+    seq_->queueNewSeqValue(0, SEQ_VALUE_PLAY_ALL, 0);
     EXPECT_EQ(seq_->getDroppedAsyncActions(), 1) << "only the newest entry dropped";
     EXPECT_FALSE(seq_->isSeqActivated(0)) << "no mutation before the drain";
     seq_->processAsyncActions();
     EXPECT_EQ(seq_->getDroppedAsyncActions(), 1) << "the drain does not reset the counter";
-    EXPECT_TRUE(seq_->isSeqActivated(0)) << "queued-1 notes applied";
+    EXPECT_TRUE(seq_->isRunning()) << "the overflow stop action must not enter the queue";
+    EXPECT_TRUE(seq_->isSeqActivated(0)) << "all 63 accepted notes applied";
+
     // The drain freed the queue: further entries fit without new drops.
     seq_->queueNote(0, 62, 100);
     seq_->processAsyncActions();
