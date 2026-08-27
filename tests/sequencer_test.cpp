@@ -967,13 +967,39 @@ TEST_F(SequencerPhase2, QueueNewSeqValueAppliesOnlyOnDrain) {
     EXPECT_EQ(seq_->getInstrumentStepSeq(0), 2) << "14 % NUMBER_OF_STEP_SEQUENCES";
 }
 
+TEST_F(SequencerPhase2, ResetAndStateLoadDiscardQueuedEntries) {
+    // Review finding (BH6/EH2): reset()/setFullState() supersede queued
+    // decode-context mutations — no stale note/CC may land in fresh state.
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->queueNote(0, 60, 100);
+    seq_->queueNewSeqValue(0, SEQ_VALUE_PLAY_ALL, 0);  // queued stop
+    seq_->reset(false);
+    seq_->processAsyncActions();
+    EXPECT_FALSE(seq_->isSeqActivated(0)) << "queued note discarded by reset";
+    // setFullState (SD sequence load) path likewise.
+    seq_->start();
+    ASSERT_TRUE(seq_->isRunning());
+    seq_->queueNewSeqValue(0, SEQ_VALUE_PLAY_ALL, 0);  // queued stop
+    uint8_t buf[256];
+    uint32_t size = 0;
+    seq_->getFullState(buf, &size);
+    seq_->setFullState(buf);
+    seq_->processAsyncActions();
+    EXPECT_TRUE(seq_->isRunning())
+        << "queued stop discarded by state load — running state comes from the loaded buffer";
+    EXPECT_TRUE(seq_->isRecording(0))
+        << "recording_ round-trips through the state buffer (reset() does not clear it; queued entries never touch it)";
+}
+
 TEST_F(SequencerPhase2, QueueOverflowDropsNewestAndCounts) {
     seq_->start();
     seq_->setRecording(0, true);
     // Fill until the queue starts dropping (derived, not hardcoded: usable
-    // capacity is ring size - 1).
+    // capacity is ring size - 1). Bounded so a capacity-semantics change
+    // fails the suite instead of hanging it.
     int queued = 0;
-    while (seq_->getDroppedAsyncActions() == 0) {
+    while (seq_->getDroppedAsyncActions() == 0 && queued < 1024) {
         seq_->queueNote(0, 60, 100);
         queued++;
     }

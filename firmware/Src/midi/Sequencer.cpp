@@ -89,6 +89,10 @@ void Sequencer::setDisplaySequencer(FMDisplaySequencer* displaySequencer) {
 }
 
 void Sequencer::reset(bool synthNoteOff) {
+    // 8.1: a reset supersedes mutations still queued from the decode
+    // context — discard them so stale notes/CCs cannot land in the fresh
+    // state (consumer-side clear: reset runs in the main loop).
+    asyncActions_.clear();
     millisTimer_ = 0;
     current16bitTimer_ = 0;
     previousCurrent16bitTimer_ = MAX_TIME;
@@ -722,6 +726,9 @@ void Sequencer::getFullState(uint8_t* buffer, uint32_t *size) {
 }
 
 void Sequencer::setFullState(uint8_t* buffer) {
+    // 8.1: a loaded state supersedes queued decode-context mutations for
+    // the same reason as reset() (both loadStateVersion* run main-loop).
+    asyncActions_.clear();
     SEQ_VERSION version = (SEQ_VERSION)buffer[0];
     switch (version) {
     case SEQ_VERSION1:
@@ -881,9 +888,16 @@ void Sequencer::queueNewSeqValue(uint8_t timbre, uint8_t seqValue, uint8_t newVa
 }
 
 /*
- * Main-loop drain. Runs where nothing can preempt the SysTick walk and the
- * walk cannot observe a half-built link: insertNote's single link-in store
- * is the publication point.
+ * Main-loop drain. insertNote's single link-in store is the publication
+ * point, so a walk can never observe a half-built link: the new node is
+ * fully formed before actions[previousActionIndex_].nextIndex exposes it.
+ * The shared splice cursors (previousActionIndex_) are a different matter:
+ * the walk also writes them and can preempt a drain-side insertNote
+ * mid-update. That cursor window is the upstream-shipped baseline (main-
+ * loop insertNote + SysTick walk) and its worst case is a duplicated or
+ * skipped recorded note — never a broken chain, because every writer of
+ * actions[].nextIndex (insertNote, clear, reset) runs in THIS thread,
+ * serialized with the drain.
  */
 void Sequencer::processAsyncActions() {
     while (asyncActions_.getCount() > 0) {
