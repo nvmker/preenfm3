@@ -20,7 +20,7 @@
 
 #include <stdint.h>
 #include "../synth/Common.h"
-#include <RingBuffer.h>
+#include <RingBuffer.h>  // resolved via lib/Inc (see .clangd Add: flags)
 
 class Synth;
 class FMDisplaySequencer;
