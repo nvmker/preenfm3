@@ -433,16 +433,20 @@ void Sequencer::resyncNextAction(int instrument, uint16_t newInstrumentTimer) {
 
     // 8.1-H4: this walk had no terminator — a chain that never satisfies the
     // `when` condition (e.g. zeroed actions under a corrupt tail) used to
-    // loop forever inside SysTick. Bound it structurally.
+    // loop forever inside SysTick. Bound it structurally; every trip is
+    // counted (spec: guards must be host-observable).
     const uint16_t liveLimit = sanitizedLastFreeAction(lastFreeAction_);
-    uint16_t hops = 0;
     const uint16_t hopBudget = walkHopBudget(lastFreeAction_);
+    uint16_t hops = 0;
     nextActionIndex_[instrument] = instrument * 2;
-    while (hops < hopBudget
-            && actions[nextActionIndex_[instrument]].when < lastInstrument16bitTimer_[instrument]) {
-        hops++;
+    while (actions[nextActionIndex_[instrument]].when < lastInstrument16bitTimer_[instrument]) {
+        if (++hops > hopBudget) {
+            walkTrips_++;
+            break;
+        }
         const uint16_t nextIndex = actions[nextActionIndex_[instrument]].nextIndex;
         if (!walkSafeLink(nextIndex, instrument, liveLimit)) {
+            walkTrips_++;
             break;
         }
         nextActionIndex_[instrument] = nextIndex;
@@ -514,11 +518,15 @@ void Sequencer::processActionBetwen(int instrument, uint16_t startTimer, uint16_
             if (!safeAdvance || ++hops > hopBudget) {
                 // Heal: deactivate this instrument's poison list (the
                 // sequencer keeps running), restore the reset() cursor and
-                // count the trip so hosts can pin it.
+                // count the trip so hosts can pin it. Like every other list
+                // surgery (clear/reset/stop), don't strand voices the walk
+                // started — and use the QUICK kill: the list is corrupt, an
+                // envelope-tail release is pointless and unbounded.
                 seqActivated_[instrument] = false;
                 walkTrips_++;
                 previousActionIndex_[instrument] = head;
                 nextActionIndex_[instrument] = tail;
+                synth_->allNoteOffQuick(instrument);
                 break;
             }
             // actions[nextActionIndex];
@@ -541,6 +549,18 @@ void Sequencer::processActionBetwen(int instrument, uint16_t startTimer, uint16_
                 // We have events after the instrument bar limit, we must loop now
                 previousActionIndex_[instrument] = instrument * 2;
                 nextActionIndex_[instrument] = instrument * 2;
+                // A walk call never crosses back into the bar it started:
+                // with startTimer == 0, continuing past the reset would
+                // replay the head side and false-trip a VALID list.
+                break;
+            }
+            if (currentIndex == tail && advancedIndex == head) {
+                // The bar wrap ends this walk call — one bar per call. The
+                // next call (startTimer == 0) services the head side. Without
+                // this, a full-bar window [0..mask] — reachable via
+                // song-position jump or activation at bar end — replays the
+                // whole list a second time and exhausts the hop budget.
+                break;
             }
         }
     }
@@ -724,6 +744,14 @@ void Sequencer::insertNote(uint8_t instrument, uint8_t note, uint8_t velocity) {
     }
 
     if (likely(lastFreeAction_ < SEQ_ACTION_SIZE)) {
+        // BH1 (review): a loaded header can carry a bogus lastFreeAction_
+        // inside the sentinel region — splicing there would stomp another
+        // instrument's sentinel. Refuse and count; validateActionList's
+        // sanitized view already keeps the walk safe from the same value.
+        if (unlikely(lastFreeAction_ < NUMBER_OF_TIMBRES * 2)) {
+            droppedInsertNotes_++;
+            return;
+        }
         // 8.1-H4: guard the splice before touching the pool. The bar-wrap
         // walk exit leaves the record cursor at prev=tail/next=head; a note
         // recorded in that window used to copy tail.next (== head) into the
@@ -742,11 +770,13 @@ void Sequencer::insertNote(uint8_t instrument, uint8_t note, uint8_t velocity) {
             predecessorIndex = head;
             previousActionIndex_[instrument] = predecessorIndex;
         }
-        // Never mint a link into the head (bypass/cycle), a self-loop, or a
-        // slot outside the live region — refuse the note and count it.
+        // Never mint a link into the head (bypass/cycle), a self-pair with
+        // the predecessor (2-cycle), or a slot outside the live region —
+        // refuse the note and count it.
         const uint16_t successorIndex = actions[predecessorIndex].nextIndex;
-        if (!(successorIndex == tail
-                || (successorIndex >= NUMBER_OF_TIMBRES * 2 && successorIndex < liveLimit))) {
+        if (successorIndex == predecessorIndex
+                || !(successorIndex == tail
+                    || (successorIndex >= NUMBER_OF_TIMBRES * 2 && successorIndex < liveLimit))) {
             droppedInsertNotes_++;
             return;
         }

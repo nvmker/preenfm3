@@ -206,8 +206,13 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
     // corrupted before the save (head-bypass links, zeroed sentinels)
     // reloads verbatim and freezes the SysTick walk on first play. Heal per
     // instrument: malformed chains reset to empty instead of playing.
-    for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
-        sequencer->validateActionList(t);
+    // Gate on the state block's own version byte: setFullState silently
+    // rejects anything else, and healing against the stale PREVIOUS header
+    // would phantom-mutate live state (review EC3).
+    if (storageBuffer[0] == SEQ_VERSION1 || storageBuffer[0] == SEQ_VERSION2) {
+        for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+            sequencer->validateActionList(t);
+        }
     }
 }
 
@@ -242,10 +247,13 @@ void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) 
     __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
     __builtin_memcpy(stepNotes, stagedStepNotes, sizeof(stagedStepNotes));
     sequencer->setFullState((uint8_t*)storageBuffer);
-    // 8.1-H4: same heal as the v1 loader — validate every instrument's
-    // restored chain before any playback can walk it.
-    for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
-        sequencer->validateActionList(t);
+    // 8.1-H4: same heal as the v1 loader — validate every ACTIVE
+    // instrument's restored chain before any playback can walk it. Same
+    // version-byte gate: never heal against a header setFullState rejected.
+    if (storageBuffer[0] == SEQ_VERSION1 || storageBuffer[0] == SEQ_VERSION2) {
+        for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+            sequencer->validateActionList(t);
+        }
     }
 }
 
