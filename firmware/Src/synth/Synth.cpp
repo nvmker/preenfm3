@@ -104,7 +104,10 @@ void Synth::init(SynthState *synthState) {
 
 void Synth::noteOn(int timbre, char note, char velocity) {
     if (synthState_->fullState.synthMode == SYNTH_MODE_SEQUENCER) {
-        sequencer_->insertNote(timbre, note, velocity);
+        // 8.1: the recording path defers to the main-loop drain — the decode
+        // context must not mutate the sequencer action list. Live playback
+        // below stays immediate.
+        sequencer_->queueNote(timbre, note, velocity);
     }
     timbres_[timbre].noteOn(note, velocity);
 
@@ -112,7 +115,7 @@ void Synth::noteOn(int timbre, char note, char velocity) {
 
 void Synth::noteOff(int timbre, char note) {
     if (synthState_->fullState.synthMode == SYNTH_MODE_SEQUENCER) {
-        sequencer_->insertNote(timbre, note, 0);
+        sequencer_->queueNote(timbre, note, 0);
     }
     timbres_[timbre].noteOff(note);
 }
@@ -906,7 +909,10 @@ void Synth::setNewMixerValueFromMidi(int timbre, int mixerValue, float newValue)
 
 
 void Synth::setNewSeqValueFromMidi(uint8_t timbre, uint8_t seqValue, uint8_t newValue) {
-    sequencer_->setNewSeqValueFromMidi(timbre, seqValue, newValue);
+    // 8.1: CC106/107/108/109/110 arrive in the decode context; their
+    // start/stop/mute/record/sequence-select/transpose mutations defer to
+    // the main-loop drain, like recorded notes.
+    sequencer_->queueNewSeqValue(timbre, seqValue, newValue);
 }
 
 void Synth::setNewStepValueFromMidi(int timbre, int whichStepSeq, int step, int newValue) {

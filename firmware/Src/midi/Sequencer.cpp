@@ -56,6 +56,7 @@ static uint16_t compactedActionIndex(uint16_t oldIndex, uint16_t oldLastFreeActi
 
 Sequencer::Sequencer() {
     uint32_t stateSize;
+    droppedAsyncActions_ = 0;
     uint8_t* actionBuffer =  (uint8_t*)actions;
     // Use actions as a temporary buffer
     getFullDefaultState(actionBuffer, &stateSize, 0);
@@ -840,6 +841,64 @@ void Sequencer::setNewSeqValueFromMidi(uint8_t timbre, uint8_t seqValue, uint8_t
         break;
     };
     displaySequencer_->sequencerWasUpdated(timbre, seqValue, newValue);
+}
+
+
+/*
+ * 8.1: decode-context entry points (audio IRQ). Enqueue ONLY — never touch
+ * actions[]/previousActionIndex_/lastFreeAction_ from here: the internal-clock
+ * walk runs in SysTick and can be preempted mid-traversal by these calls
+ * (H3 freeze, autopsy 2026-08-27). All mutation happens in the main-loop
+ * drain below, matching the shipped-for-years original design where
+ * insertNote ran from the main loop only.
+ */
+void Sequencer::queueNote(uint8_t instrument, uint8_t note, uint8_t velocity) {
+    SeqAsyncAction action = {};
+    action.actionType = SEQ_ASYNC_NOTE;
+    action.timbre = instrument;
+    action.param1 = note;
+    action.param2 = velocity;
+    if (likely(asyncActions_.hasRoomFor(1))) {
+        asyncActions_.insert(action);
+    } else {
+        // Main loop stalled (e.g. SD access); drop the newest event rather
+        // than overwrite an unread one.
+        droppedAsyncActions_++;
+    }
+}
+
+void Sequencer::queueNewSeqValue(uint8_t timbre, uint8_t seqValue, uint8_t newValue) {
+    SeqAsyncAction action = {};
+    action.actionType = SEQ_ASYNC_SEQ_VALUE;
+    action.timbre = timbre;
+    action.param1 = seqValue;
+    action.param2 = newValue;
+    if (likely(asyncActions_.hasRoomFor(1))) {
+        asyncActions_.insert(action);
+    } else {
+        droppedAsyncActions_++;
+    }
+}
+
+/*
+ * Main-loop drain. Runs where nothing can preempt the SysTick walk and the
+ * walk cannot observe a half-built link: insertNote's single link-in store
+ * is the publication point.
+ */
+void Sequencer::processAsyncActions() {
+    while (asyncActions_.getCount() > 0) {
+        SeqAsyncAction action = asyncActions_.remove();
+        switch (action.actionType) {
+        case SEQ_ASYNC_NOTE:
+            insertNote(action.timbre, action.param1, action.param2);
+            break;
+        case SEQ_ASYNC_SEQ_VALUE:
+            setNewSeqValueFromMidi(action.timbre, action.param1, action.param2);
+            break;
+        default:
+            break;
+        }
+    }
 }
 
 

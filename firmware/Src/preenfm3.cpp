@@ -160,6 +160,10 @@ void preenfm3Loop() {
     /*
      * We process here the midi action the cannot be done in the high priori audio loop
      */
+    // 8.1: sequencer mutations queued from the decode context (recorded
+    // notes + CC106-110). Drained before the decoder's own async actions:
+    // recording is time-sensitive, LOAD_PRESET (SD) is not.
+    sequencer.processAsyncActions();
     midiDecoder.processAsyncActions();
 
     // Always process actions if any from the encoders and button
