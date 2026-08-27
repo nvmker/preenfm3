@@ -898,3 +898,93 @@ TEST_F(SequencerPhase2, ResetRestoresActionPoolWithoutTouchingSynth) {
     EXPECT_FALSE(seq_->isSeqActivated(0));
     EXPECT_EQ(seq_->getMemory(), 0);
 }
+
+// ===========================================================================
+// 8.1 — decode-context async queue (spec-8.1-seq-list-context-race).
+//
+// queueNote / queueNewSeqValue are the audio-IRQ decode entry points: they
+// may ONLY enqueue. All structural mutation happens when the main loop
+// drains via processAsyncActions (mirrored here). These tests pin that
+// contract: nothing observable changes before the drain, everything applies
+// in FIFO decode order after it, and overflow drops the newest event with a
+// counter instead of overwriting an unread one.
+// ===========================================================================
+
+TEST_F(SequencerPhase2, QueueNoteDefersMutationUntilDrain) {
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(100);
+    seq_->queueNote(0, 60, 100);
+    // Enqueue must not touch the action list — the walk owns it until the
+    // main-loop drain.
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+    EXPECT_EQ(seq_->getMemory(), 0);
+    seq_->processAsyncActions();
+    EXPECT_TRUE(seq_->isSeqActivated(0)) << "drain applies the queued note";
+    // The applied note behaves exactly like a direct insertNote: fires on
+    // the next loop pass (see RecordedNoteFiresOnPlaybackAcrossWraps).
+    seq_->mainSequencerTic(200);
+    seq_->mainSequencerTic(4095);
+    seq_->mainSequencerTic(100);
+    EXPECT_EQ(synth_.getLowerNote(0), 60);
+}
+
+TEST_F(SequencerPhase2, QueuePreservesDecodeOrderAcrossNoteAndCc) {
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(100);
+    // Decode order: note-on 67, then REC-off, then note-on 60. FIFO drain
+    // must apply them in exactly that order — the second note arrives after
+    // REC was disarmed and must NOT be recorded. Note choice matters: 67 =
+    // only the first recorded; 60 = FIFO broken (second recorded); 64 =
+    // nothing recorded (first dropped too).
+    seq_->queueNote(0, 67, 100);
+    seq_->queueNewSeqValue(0, SEQ_VALUE_RECORD_INST, 0);
+    seq_->queueNote(0, 60, 100);
+    EXPECT_FALSE(seq_->isSeqActivated(0)) << "queueing must not mutate the list";
+    EXPECT_TRUE(seq_->isRecording(0)) << "REC-off must not apply before the drain";
+    seq_->processAsyncActions();
+    EXPECT_FALSE(seq_->isRecording(0)) << "REC-off applied by the drain";
+    EXPECT_TRUE(seq_->isSeqActivated(0)) << "the pre-REC-off note is recorded";
+    seq_->mainSequencerTic(200);
+    seq_->mainSequencerTic(4095);
+    seq_->mainSequencerTic(100);
+    EXPECT_EQ(synth_.getLowerNote(0), 67)
+        << "only the note queued before REC-off is recorded (FIFO order)";
+}
+
+TEST_F(SequencerPhase2, QueueNewSeqValueAppliesOnlyOnDrain) {
+    seq_->queueNewSeqValue(0, SEQ_VALUE_PLAY_ALL, 1);
+    EXPECT_FALSE(seq_->isRunning()) << "start must not apply before the drain";
+    seq_->processAsyncActions();
+    EXPECT_TRUE(seq_->isRunning());
+    seq_->queueNewSeqValue(0, SEQ_VALUE_RECORD_INST, 1);
+    EXPECT_FALSE(seq_->isRecording(0));
+    seq_->processAsyncActions();
+    EXPECT_TRUE(seq_->isRecording(0));
+    seq_->queueNewSeqValue(0, SEQ_VALUE_SEQUENCE_NUMBER, 14);
+    seq_->processAsyncActions();
+    EXPECT_EQ(seq_->getInstrumentStepSeq(0), 2) << "14 % NUMBER_OF_STEP_SEQUENCES";
+}
+
+TEST_F(SequencerPhase2, QueueOverflowDropsNewestAndCounts) {
+    seq_->start();
+    seq_->setRecording(0, true);
+    // Fill until the queue starts dropping (derived, not hardcoded: usable
+    // capacity is ring size - 1).
+    int queued = 0;
+    while (seq_->getDroppedAsyncActions() == 0) {
+        seq_->queueNote(0, 60, 100);
+        queued++;
+    }
+    ASSERT_GT(queued, 1);
+    EXPECT_EQ(seq_->getDroppedAsyncActions(), 1) << "only the newest entry dropped";
+    EXPECT_FALSE(seq_->isSeqActivated(0)) << "no mutation before the drain";
+    seq_->processAsyncActions();
+    EXPECT_EQ(seq_->getDroppedAsyncActions(), 1) << "the drain does not reset the counter";
+    EXPECT_TRUE(seq_->isSeqActivated(0)) << "queued-1 notes applied";
+    // The drain freed the queue: further entries fit without new drops.
+    seq_->queueNote(0, 62, 100);
+    seq_->processAsyncActions();
+    EXPECT_EQ(seq_->getDroppedAsyncActions(), 1);
+}

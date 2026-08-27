@@ -1255,6 +1255,10 @@ TEST_F(MidiDecoderPhase2, UnisonSpreadDoesNotStartSequencer) {
     ASSERT_NE(expected, 0.5f) << "direct setNewValueFromMidi must move the spread off its default";
     ASSERT_FALSE(seq_->isRunning());
     FeedCC(CC_UNISON_SPREAD, 100);
+    // 8.1: a fall-through regression would enqueue SEQ_VALUE_PLAY_ALL into
+    // the sequencer's async queue — drain it like preenfm3Loop does so the
+    // assertion below still catches the break.
+    seq_->processAsyncActions();
     EXPECT_FALSE(seq_->isRunning())
         << "CC_UNISON_SPREAD must not start the sequencer (break restored)";
     const float after = ((const float*) synth_.getTimbre(0)->getParamRaw())[spreadIndex];
@@ -1267,6 +1271,9 @@ TEST_F(MidiDecoderPhase2, UnisonSpreadValueZeroDoesNotStopSequencer) {
     // to SEQ_VALUE_PLAY_ALL (start only when >0), so value 0 never stopped
     // anything — pinned so the fix doesn't accidentally change that.
     FeedCC(CC_SEQ_START_ALL, 1);
+    // 8.1: CC106 start defers through the sequencer's async queue; drain it
+    // like preenfm3Loop does before asserting.
+    seq_->processAsyncActions();
     ASSERT_TRUE(seq_->isRunning());
     FeedCC(CC_UNISON_SPREAD, 0);
     EXPECT_TRUE(seq_->isRunning())
