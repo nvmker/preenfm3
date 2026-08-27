@@ -33,6 +33,14 @@ public:
         this->tail = 0;
 	}
 
+    // Runtime SPSC discard for the consumer. Linearizes at the tail read:
+    // entries published before it are discarded, while a producer insert
+    // that completes afterwards remains available. Unlike clear(), this
+    // never writes the producer-owned tail.
+    void discardAllFromConsumer() {
+        this->head = this->tail;
+    }
+
 	void insert(T element) {
 	    this->buf[this->tail] = element;
 	    this->tail = (this->tail == size-1) ? 0 : this->tail + 1;
