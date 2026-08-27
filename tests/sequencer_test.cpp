@@ -1101,12 +1101,13 @@ TEST_F(SequencerPhase2, H4CorpseWalkIsBoundedAndHeals) {
     ASSERT_EQ(seq_->getWalkTrips(), 0);
 
     seq_->start();        // external clock (default): running_, no precount
-    seq_->onMidiStart();  // rewind: timers to 0 — the corpse froze HERE
-    seq_->mainSequencerTic(0);
+    seq_->onMidiStart();  // rewind: timers to 0
+    seq_->mainSequencerTic(0);   // cursor at tail: the call ends at the wrap
+    seq_->mainSequencerTic(1);   // head-side entry: walks into the head-bypass -> trip
 
-    // Pre-fix this call never returned (infinite SysTick walk). Post-fix:
-    // the head-bypass link trips the guard — walk stops, list deactivated,
-    // trip counted. The sequencer itself keeps running.
+    // Pre-fix the head-side walk never returned (infinite SysTick loop).
+    // Post-fix: the head-bypass link trips the guard — walk stops, list
+    // deactivated, trip counted. The sequencer itself keeps running.
     EXPECT_EQ(seq_->getWalkTrips(), 1);
     EXPECT_FALSE(seq_->isSeqActivated(0));
     EXPECT_TRUE(seq_->isRunning());
@@ -1229,4 +1230,118 @@ TEST_F(SequencerPhase2, ValidateActionListResetsPoisonChain) {
     // The healed list validates clean on re-check (idempotent, no new reset).
     EXPECT_TRUE(seq_->validateActionList(0));
     EXPECT_EQ(seq_->getListsResetOnLoad(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// 8.1-H4 review patches (Blind Hunter + Edge Case Hunter, step-04 loop):
+// full-bar single-pass, trip cleans up voices, sentinel-region lastFree
+// refusal, counted resync trips.
+// ---------------------------------------------------------------------------
+
+TEST_F(SequencerPhase2, FullBarWindowOnValidListPlaysOnceAndStaysActive) {
+    // BH2: a full-bar window [0..4095] in ONE walk call — reachable when the
+    // first walk after activation lands at the bar end — must play the bar
+    // ONCE and stop at the wrap. The unpatched budget admitted two extra
+    // hops past the wrap: the first note(s) replayed, then a VALID list was
+    // false-deactivated (silent mid-performance stop).
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(0);  // not yet activated: walk skipped, last=-1
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+    ASSERT_TRUE(seq_->isSeqActivated(0));
+
+    // First walk ever, straight to the bar end: wrap call is empty, then
+    // the regular call runs [0..4095] — the whole bar in one window.
+    seq_->mainSequencerTic(4095);
+    EXPECT_EQ(seq_->getWalkTrips(), 0) << "valid list must not trip";
+    EXPECT_TRUE(seq_->isSeqActivated(0)) << "no silent deactivation";
+    EXPECT_EQ(synth_.getLowerNote(0), 64) << "not yet fired: cursor was at the tail, the note plays from the next bar (loop-pass semantics)";
+
+    // The wrap ended the call cleanly: the next bar services the head side
+    // and replays the note (normal looping), still without a trip.
+    seq_->mainSequencerTic(0);
+    seq_->mainSequencerTic(100);
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
+    EXPECT_TRUE(seq_->isSeqActivated(0));
+    EXPECT_EQ(synth_.getLowerNote(0), 60) << "fired exactly once on the second bar and holds";
+}
+
+TEST_F(SequencerPhase2, TripKillsVoicesTheWalkStarted) {
+    // BH3: a trip between a recorded note-on and its note-off must not
+    // strand the voice — every other list surgery kills voices; the walk
+    // trip must too. Slot 12's note-on plays and RENDERS a block before the
+    // walk reaches slot 13's head-bypass, so the trip's quick kill takes
+    // the deterministic killNow path (note already played).
+    WriteH4State(seq_, 14, 1);
+    memset(actions, 0, sizeof(actions));
+    actions[0].nextIndex = 12;
+    actions[12].when = 0;
+    actions[12].nextIndex = 13;
+    actions[12].actionType = SEQ_ACTION_NOTE;
+    actions[12].param1 = 60;
+    actions[12].param2 = 100;   // note-on: fires at [0..1]
+    actions[13].when = 2;
+    actions[13].nextIndex = 0;  // head-bypass: trips at [1..2]
+    actions[13].actionType = SEQ_ACTION_NOTE;
+    actions[13].param1 = 62;
+    actions[13].param2 = 100;
+
+    seq_->start();
+    seq_->onMidiStart();
+    seq_->mainSequencerTic(0);  // tail-side call: ends at the wrap
+    seq_->mainSequencerTic(1);  // head-side entry: slot 12's note-on fires
+    EXPECT_EQ(synth_.getLowerNote(0), 60) << "the walk started the note";
+
+    int32_t b1[64], b2[64], b3[64];  // 64 samples per buffer (see synth_core_test)
+    synth_.buildNewSampleBlock(b1, b2, b3);  // the note becomes played
+
+    seq_->mainSequencerTic(2);  // walk reaches slot 13 -> head-bypass -> trip
+    EXPECT_EQ(seq_->getWalkTrips(), 1);
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+
+    // The trip's allNoteOffQuick killNow'd the voice: it retires within a
+    // couple of rendered blocks (without the kill it would ring forever).
+    bool released = !synth_.isPlaying();
+    for (int i = 0; i < 10 && !released; i++) {
+        synth_.buildNewSampleBlock(b1, b2, b3);
+        released = !synth_.isPlaying();
+    }
+    EXPECT_TRUE(released) << "the note-on fired at slot 12 must be released by the trip";
+}
+
+TEST_F(SequencerPhase2, InsertRefusesSentinelRegionLastFreeAction) {
+    // BH1: a loaded header can carry lastFreeAction_ inside the sentinel
+    // region. Recording must refuse (and count) rather than splice a new
+    // note into, say, actions[5] — another instrument's head sentinel.
+    WriteH4State(seq_, 5, 0);   // inactive: activation is not needed to refuse
+    memset(actions, 0, sizeof(actions));
+
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->onMidiStart();
+    seq_->mainSequencerTic(0);
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 1);
+    EXPECT_EQ(actions[5].when, 0) << "sentinel slot must stay untouched";
+    EXPECT_EQ(actions[5].nextIndex, 0);
+    EXPECT_EQ(actions[5].actionType, 0);
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+}
+
+TEST_F(SequencerPhase2, ResyncTripIsCounted) {
+    // EC4: corruption surfacing through resyncNextAction (bars change on a
+    // poison chain) must be observable, not silent.
+    WriteH4State(seq_, 60, 1);
+    WriteH4CorpseList();
+    ASSERT_TRUE(seq_->isSeqActivated(0));
+
+    seq_->start();
+    seq_->onMidiStart();
+    seq_->setNumberOfBars(0, 2);  // arms nextActionTimerOutOfSync_
+    ASSERT_EQ(seq_->getWalkTrips(), 0);
+    seq_->mainSequencerTic(1000);  // resync walks from the head -> head-bypass link
+    EXPECT_GE(seq_->getWalkTrips(), 1u) << "resync trip must be counted";
 }
