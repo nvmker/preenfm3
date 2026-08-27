@@ -1276,6 +1276,9 @@ TEST_F(MidiDecoderPhase2, UnisonSpreadValueZeroDoesNotStopSequencer) {
     seq_->processAsyncActions();
     ASSERT_TRUE(seq_->isRunning());
     FeedCC(CC_UNISON_SPREAD, 0);
+    // A fall-through regression now enqueues its stop; apply queued effects
+    // before asserting so the test cannot pass on stale running_ state.
+    seq_->processAsyncActions();
     EXPECT_TRUE(seq_->isRunning())
         << "CC14=0 sets spread only; it must not stop the sequencer";
 }

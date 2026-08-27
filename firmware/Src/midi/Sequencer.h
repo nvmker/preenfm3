@@ -26,6 +26,7 @@ class Synth;
 class FMDisplaySequencer;
 
 #define SEQ_ACTION_SIZE 2048
+#define SEQ_ASYNC_ACTION_QUEUE_SIZE 64
 #define NUMBER_OF_STEP_SEQUENCES 12
 
 #define SEQ_ACTION_SIZE_INV (1.0f/(float)SEQ_ACTION_SIZE)
@@ -233,10 +234,10 @@ private:
     bool createNewNoteIfEmpty(int instrument, int stepCursor, int stepSize);
     char sequenceName_[13];
     // 8.1: SPSC queue — single producer (decode context), single consumer
-    // (main-loop drain). Usable capacity 63; overflow drops the newest
-    // event and counts it (getDroppedAsyncActions).
-    RingBuffer<SeqAsyncAction, 64> asyncActions_;
-    uint32_t droppedAsyncActions_;
+    // (main-loop drain). Usable capacity is size - 1; overflow drops the
+    // newest event and counts it (getDroppedAsyncActions).
+    RingBuffer<SeqAsyncAction, SEQ_ASYNC_ACTION_QUEUE_SIZE> asyncActions_;
+    volatile uint32_t droppedAsyncActions_;
     uint16_t lastFreeAction_;
     Synth * synth_;
     FMDisplaySequencer* displaySequencer_;
