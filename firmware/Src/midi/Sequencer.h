@@ -121,6 +121,21 @@ public:
         return droppedAsyncActions_;
     }
 
+    // 8.1-H4: structural hardening of the recorded-action list. The walk
+    // (SysTick context) terminates only on `when` windows; a chain that
+    // re-enters the head sentinel loops forever and freezes the unit (on-
+    // device autopsy 2026-08-28: 48 zero-`when` notes, last next=head,
+    // zeroed tail — loaded from a saved slot whose block was corrupted
+    // during an 8.1 partial death). validateActionList() checks one
+    // instrument's chain (bounded head->tail walk, in-range indices) and
+    // resets it to empty when malformed; the SequenceBank loaders call it
+    // after restoring the raw block. Counters make every guard trip
+    // host-observable.
+    bool validateActionList(uint8_t instrument);
+    uint32_t getWalkTrips() const { return walkTrips_; }
+    uint32_t getDroppedInsertNotes() const { return droppedInsertNotes_; }
+    uint32_t getListsResetOnLoad() const { return listsResetOnLoad_; }
+
     void rewind() {
         millisTimer_ = 0;
         current16bitTimer_ = 0;
@@ -238,6 +253,10 @@ private:
     // newest event and counts it (getDroppedAsyncActions).
     RingBuffer<SeqAsyncAction, SEQ_ASYNC_ACTION_QUEUE_SIZE> asyncActions_;
     volatile uint32_t droppedAsyncActions_;
+    // 8.1-H4 guard counters (see validateActionList above).
+    uint32_t walkTrips_;
+    uint32_t droppedInsertNotes_;
+    uint32_t listsResetOnLoad_;
     uint16_t lastFreeAction_;
     Synth * synth_;
     FMDisplaySequencer* displaySequencer_;

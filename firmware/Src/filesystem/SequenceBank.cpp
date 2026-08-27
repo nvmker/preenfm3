@@ -202,6 +202,13 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
     // the historical behavior for the remaining V2-only live table bytes.
     __builtin_memcpy(stepNotes, stagedStepNotes, version1StepSize);
     sequencer->setFullState((uint8_t*)storageBuffer);
+    // 8.1-H4: the action block is an unvalidated RAM snapshot — a chain
+    // corrupted before the save (head-bypass links, zeroed sentinels)
+    // reloads verbatim and freezes the SysTick walk on first play. Heal per
+    // instrument: malformed chains reset to empty instead of playing.
+    for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+        sequencer->validateActionList(t);
+    }
 }
 
 void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) {
@@ -235,6 +242,11 @@ void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) 
     __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
     __builtin_memcpy(stepNotes, stagedStepNotes, sizeof(stagedStepNotes));
     sequencer->setFullState((uint8_t*)storageBuffer);
+    // 8.1-H4: same heal as the v1 loader — validate every instrument's
+    // restored chain before any playback can walk it.
+    for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+        sequencer->validateActionList(t);
+    }
 }
 
 
