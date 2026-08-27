@@ -20,6 +20,7 @@
 
 #include <stdint.h>
 #include "../synth/Common.h"
+#include <RingBuffer.h>
 
 class Synth;
 class FMDisplaySequencer;
@@ -69,6 +70,27 @@ union StepSeqValue {
     uint16_t unique;
 };
 
+/**
+ * 8.1: sequencer mutations queued from the decode (audio-IRQ) context and
+ * drained in the main loop. The recorded-action list (actions[].nextIndex,
+ * previousActionIndex_[], lastFreeAction_) must never be mutated from the
+ * decode context: that preempts the internal-clock SysTick walk (or feeds
+ * the external-clock decode walk) mid-traversal and corrupts the chain
+ * (H3 freeze; SWD autopsy 2026-08-27). Same pattern as the asyncActions
+ * ring in MidiDecoder.
+ */
+enum SeqAsyncActionType {
+    SEQ_ASYNC_NOTE = 1,
+    SEQ_ASYNC_SEQ_VALUE
+};
+
+struct SeqAsyncAction {
+    uint8_t actionType; // SeqAsyncActionType
+    uint8_t timbre;
+    uint8_t param1;     // NOTE: note | SEQ_VALUE: seqValue
+    uint8_t param2;     // NOTE: velocity | SEQ_VALUE: newValue
+};
+
 
 class Sequencer {
 public:
@@ -88,6 +110,15 @@ public:
     void stop();
 
     void setNewSeqValueFromMidi(uint8_t timbre, uint8_t seqValue, uint8_t newValue);
+
+    // 8.1: decode-context entry points — enqueue only, never mutate the
+    // action list. processAsyncActions() drains in the main loop.
+    void queueNote(uint8_t instrument, uint8_t note, uint8_t velocity);
+    void queueNewSeqValue(uint8_t timbre, uint8_t seqValue, uint8_t newValue);
+    void processAsyncActions();
+    uint32_t getDroppedAsyncActions() const {
+        return droppedAsyncActions_;
+    }
 
     void rewind() {
         millisTimer_ = 0;
@@ -201,6 +232,11 @@ private:
     bool createNewNoteIfNeeded(int instrument, int stepCursor, int stepSize);
     bool createNewNoteIfEmpty(int instrument, int stepCursor, int stepSize);
     char sequenceName_[13];
+    // 8.1: SPSC queue — single producer (decode context), single consumer
+    // (main-loop drain). Usable capacity 63; overflow drops the newest
+    // event and counts it (getDroppedAsyncActions).
+    RingBuffer<SeqAsyncAction, 64> asyncActions_;
+    uint32_t droppedAsyncActions_;
     uint16_t lastFreeAction_;
     Synth * synth_;
     FMDisplaySequencer* displaySequencer_;
