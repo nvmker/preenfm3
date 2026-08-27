@@ -56,6 +56,7 @@ static uint16_t compactedActionIndex(uint16_t oldIndex, uint16_t oldLastFreeActi
 
 Sequencer::Sequencer() {
     uint32_t stateSize;
+    droppedAsyncActions_ = 0;
     uint8_t* actionBuffer =  (uint8_t*)actions;
     // Use actions as a temporary buffer
     getFullDefaultState(actionBuffer, &stateSize, 0);
@@ -88,6 +89,10 @@ void Sequencer::setDisplaySequencer(FMDisplaySequencer* displaySequencer) {
 }
 
 void Sequencer::reset(bool synthNoteOff) {
+    // 8.1: a reset supersedes mutations already published by the decode
+    // context. Discard from the consumer side so an IRQ insert that lands
+    // after the snapshot remains queued for the fresh state.
+    asyncActions_.discardAllFromConsumer();
     millisTimer_ = 0;
     current16bitTimer_ = 0;
     previousCurrent16bitTimer_ = MAX_TIME;
@@ -573,8 +578,11 @@ void Sequencer::insertNote(uint8_t instrument, uint8_t note, uint8_t velocity) {
         newAction->actionType = SEQ_ACTION_NOTE;
         newAction->param1 = note;
         newAction->param2 = velocity;
-        newAction->nextIndex = actions[previousActionIndex_[instrument]].nextIndex;
-        actions[previousActionIndex_[instrument]].nextIndex = lastFreeAction_;
+        // SysTick advances previousActionIndex_ while walking. Snapshot it:
+        // two separate reads can observe P then Q and publish Q -> new -> Q.
+        const uint16_t predecessorIndex = previousActionIndex_[instrument];
+        newAction->nextIndex = actions[predecessorIndex].nextIndex;
+        actions[predecessorIndex].nextIndex = lastFreeAction_;
 
         previousActionIndex_[instrument] = lastFreeAction_;
 
@@ -722,6 +730,13 @@ void Sequencer::getFullState(uint8_t* buffer, uint32_t *size) {
 
 void Sequencer::setFullState(uint8_t* buffer) {
     SEQ_VERSION version = (SEQ_VERSION)buffer[0];
+    if (version != SEQ_VERSION1 && version != SEQ_VERSION2) {
+        return;
+    }
+
+    // 8.1: an accepted loaded state supersedes actions already published by
+    // decode. A producer insert after this snapshot belongs to the new state.
+    asyncActions_.discardAllFromConsumer();
     switch (version) {
     case SEQ_VERSION1:
         loadStateVersion1(buffer);
@@ -840,6 +855,71 @@ void Sequencer::setNewSeqValueFromMidi(uint8_t timbre, uint8_t seqValue, uint8_t
         break;
     };
     displaySequencer_->sequencerWasUpdated(timbre, seqValue, newValue);
+}
+
+
+/*
+ * 8.1: decode-context entry points (audio IRQ). Enqueue ONLY — never touch
+ * actions[]/previousActionIndex_/lastFreeAction_ from here: the internal-clock
+ * walk runs in SysTick and can be preempted mid-traversal by these calls
+ * (H3 freeze, autopsy 2026-08-27). All mutation happens in the main-loop
+ * drain below, matching the shipped-for-years original design where
+ * insertNote ran from the main loop only.
+ */
+void Sequencer::queueNote(uint8_t instrument, uint8_t note, uint8_t velocity) {
+    SeqAsyncAction action = {};
+    action.actionType = SEQ_ASYNC_NOTE;
+    action.timbre = instrument;
+    action.param1 = note;
+    action.param2 = velocity;
+    if (likely(asyncActions_.hasRoomFor(1))) {
+        asyncActions_.insert(action);
+    } else {
+        // Main loop stalled (e.g. SD access); drop the newest event rather
+        // than overwrite an unread one.
+        droppedAsyncActions_++;
+    }
+}
+
+void Sequencer::queueNewSeqValue(uint8_t timbre, uint8_t seqValue, uint8_t newValue) {
+    SeqAsyncAction action = {};
+    action.actionType = SEQ_ASYNC_SEQ_VALUE;
+    action.timbre = timbre;
+    action.param1 = seqValue;
+    action.param2 = newValue;
+    if (likely(asyncActions_.hasRoomFor(1))) {
+        asyncActions_.insert(action);
+    } else {
+        droppedAsyncActions_++;
+    }
+}
+
+/*
+ * Main-loop drain. insertNote fully initializes a node, snapshots its
+ * predecessor once, then publishes it with one nextIndex store. If SysTick
+ * advances the playback cursor after that snapshot, the note may wait for
+ * the next loop pass, but the publication target cannot change underneath
+ * the splice and form a cycle. All action-list link writers remain in the
+ * main thread.
+ */
+void Sequencer::processAsyncActions() {
+    // Bound cooperative work even if the decode IRQ continuously replenishes
+    // the queue. Newly arriving actions remain FIFO and drain next loop pass.
+    for (int processed = 0;
+            processed < SEQ_ASYNC_ACTION_QUEUE_SIZE - 1 && asyncActions_.getCount() > 0;
+            processed++) {
+        SeqAsyncAction action = asyncActions_.remove();
+        switch (action.actionType) {
+        case SEQ_ASYNC_NOTE:
+            insertNote(action.timbre, action.param1, action.param2);
+            break;
+        case SEQ_ASYNC_SEQ_VALUE:
+            setNewSeqValueFromMidi(action.timbre, action.param1, action.param2);
+            break;
+        default:
+            break;
+        }
+    }
 }
 
 
