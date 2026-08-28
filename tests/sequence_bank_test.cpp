@@ -46,6 +46,16 @@ static std::unique_ptr<Sequencer> MakeSequencer() {
     return s;
 }
 
+static void WalkDuringPublishedLoad(Sequencer* sequencer) {
+    EXPECT_TRUE(sequencer->isActionListLoadInProgressForTest());
+    sequencer->start();
+    // Without the transaction guard these two ticks traverse the restored H4
+    // corpse, deactivate it, and make the subsequent active-only validator
+    // skip the poison instead of healing it.
+    sequencer->mainSequencerTic(0);
+    sequencer->mainSequencerTic(1);
+}
+
 class SequenceBankTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -58,7 +68,10 @@ protected:
         memset(actions, 0, sizeof(actions));
         memset(stepNotes, 0, sizeof(stepNotes));
     }
-    void TearDown() override { delete fsu_; }
+    void TearDown() override {
+        SequenceBank::setLoadPublishHookForTest(nullptr);
+        delete fsu_;
+    }
     void StampState() {
         // make the sequencer + tables content unique so round-trips are real
         seq_->setSequenceName("MYSEQ      ");
@@ -576,8 +589,12 @@ TEST_F(SequenceBankTest, LoadPoisonActionBlockHealsActiveInstrument) {
     TestSequenceBank bank2;
     bank2.setFileSystemUtils(fsu_);
     bank2.setSequencer(seq2.get());
+    SequenceBank::setLoadPublishHookForTest(WalkDuringPublishedLoad);
     bank2.loadSequence(&bank, 0);
+    SequenceBank::setLoadPublishHookForTest(nullptr);
 
+    EXPECT_FALSE(seq2->isActionListLoadInProgressForTest());
+    EXPECT_EQ(seq2->getWalkTrips(), 0) << "the walk must stay paused through validation";
     EXPECT_FALSE(seq2->isSeqActivated(0)) << "poison list must not stay playable";
     EXPECT_EQ(seq2->getListsResetOnLoad(), 1);
     EXPECT_EQ(actions[0].nextIndex, 1);              // head -> tail (empty)
@@ -588,4 +605,41 @@ TEST_F(SequenceBankTest, LoadPoisonActionBlockHealsActiveInstrument) {
     }
     EXPECT_EQ(liveNotes, 0) << "reachable poison slots reclaimed";
     EXPECT_EQ(stepNotes[3][100].full, 0xAABBCCDDu) << "step grid untouched by the heal";
+}
+
+TEST_F(SequenceBankTest, AcceptedLoadResetsStaleRuntimeCursorsForResync) {
+    uint8_t state[256];
+    uint32_t size = 0;
+    seq_->getFullState(state, &size);
+    const uint16_t lastFree = 13;
+    memcpy(state + 18, &lastFree, sizeof(uint16_t));
+    state[20 + 4] = 1;  // seqActivated[0]
+    seq_->setFullState(state);
+
+    memset(actions, 0, sizeof(actions));
+    actions[0].when = 0;
+    actions[0].nextIndex = 12;
+    actions[1].when = 4095;
+    actions[1].nextIndex = 0;
+    actions[12].when = 100;
+    actions[12].nextIndex = 1;
+    actions[12].actionType = SEQ_ACTION_NOTE;
+    actions[12].param1 = 60;
+    actions[12].param2 = 100;
+
+    bank_.createSequenceFile("cursorbank01");
+    PFM3File bank = {};
+    strcpy(bank.name, "cursorbank01");
+    bank.fileType = FILE_OK;
+    bank_.saveSequence(&bank, 0, bank.name);
+
+    // Simulate traversal state left by a different previously loaded table.
+    seq_->setActionListCursorForTest(0, 777, 888);
+    bank_.loadSequence(&bank, 0);
+
+    EXPECT_EQ(seq_->getPreviousActionIndexForTest(0), 0);
+    EXPECT_EQ(seq_->getNextActionIndexForTest(0), 1);
+    EXPECT_TRUE(seq_->isNextActionTimerOutOfSyncForTest(0));
+    EXPECT_TRUE(seq_->isSeqActivated(0));
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
 }

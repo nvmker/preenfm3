@@ -90,6 +90,14 @@ SequenceBank::SequenceBank() {
     this->myFiles_ = preenFMSequenceAlloc;
 }
 
+#ifdef PFM3_HOST
+SequenceBank::LoadPublishHookForTest SequenceBank::loadPublishHookForTest_ = nullptr;
+
+void SequenceBank::setLoadPublishHookForTest(LoadPublishHookForTest hook) {
+    loadPublishHookForTest_ = hook;
+}
+#endif
+
 const char* SequenceBank::getFolderName() {
     return PREENFM_DIR;
 }
@@ -197,23 +205,21 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
         return;
     }
 
+    // Pause only the RAM publication transaction. SD reads above remain fully
+    // interruptible; SysTick/external-clock walks cannot observe mixed tables
+    // or deactivate poison between state restore and active-only validation.
+    sequencer->beginActionListLoad();
     __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
     // V1 intentionally updates only its six-sequence payload span; preserve
     // the historical behavior for the remaining V2-only live table bytes.
     __builtin_memcpy(stepNotes, stagedStepNotes, version1StepSize);
     sequencer->setFullState((uint8_t*)storageBuffer);
-    // 8.1-H4: the action block is an unvalidated RAM snapshot — a chain
-    // corrupted before the save (head-bypass links, zeroed sentinels)
-    // reloads verbatim and freezes the SysTick walk on first play. Heal per
-    // instrument: malformed chains reset to empty instead of playing.
-    // Gate on the state block's own version byte: setFullState silently
-    // rejects anything else, and healing against the stale PREVIOUS header
-    // would phantom-mutate live state (review EC3).
-    if (storageBuffer[0] == SEQ_VERSION1 || storageBuffer[0] == SEQ_VERSION2) {
-        for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
-            sequencer->validateActionList(t);
-        }
-    }
+#ifdef PFM3_HOST
+    if (loadPublishHookForTest_ != nullptr) loadPublishHookForTest_(sequencer);
+#endif
+    const bool acceptedState = storageBuffer[0] == SEQ_VERSION1
+        || storageBuffer[0] == SEQ_VERSION2;
+    sequencer->finishActionListLoad(acceptedState);
 }
 
 void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) {
@@ -244,17 +250,16 @@ void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) 
         return;
     }
 
+    sequencer->beginActionListLoad();
     __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
     __builtin_memcpy(stepNotes, stagedStepNotes, sizeof(stagedStepNotes));
     sequencer->setFullState((uint8_t*)storageBuffer);
-    // 8.1-H4: same heal as the v1 loader — validate every ACTIVE
-    // instrument's restored chain before any playback can walk it. Same
-    // version-byte gate: never heal against a header setFullState rejected.
-    if (storageBuffer[0] == SEQ_VERSION1 || storageBuffer[0] == SEQ_VERSION2) {
-        for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
-            sequencer->validateActionList(t);
-        }
-    }
+#ifdef PFM3_HOST
+    if (loadPublishHookForTest_ != nullptr) loadPublishHookForTest_(sequencer);
+#endif
+    const bool acceptedState = storageBuffer[0] == SEQ_VERSION1
+        || storageBuffer[0] == SEQ_VERSION2;
+    sequencer->finishActionListLoad(acceptedState);
 }
 
 
