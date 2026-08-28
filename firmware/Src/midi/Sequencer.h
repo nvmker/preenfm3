@@ -20,10 +20,11 @@
 
 #include <stdint.h>
 #include "../synth/Common.h"
-#include <RingBuffer.h>
+#include <RingBuffer.h>  // resolved via lib/Inc (see .clangd Add: flags)
 
 class Synth;
 class FMDisplaySequencer;
+class SequenceBank;
 
 #define SEQ_ACTION_SIZE 2048
 #define SEQ_ASYNC_ACTION_QUEUE_SIZE 64
@@ -120,6 +121,47 @@ public:
     uint32_t getDroppedAsyncActions() const {
         return droppedAsyncActions_;
     }
+
+    // 8.1-H4: structural hardening of the recorded-action list. The walk
+    // (SysTick context) terminates only on `when` windows; a chain that
+    // re-enters the head sentinel loops forever and freezes the unit (on-
+    // device autopsy 2026-08-28: 48 zero-`when` notes, last next=head,
+    // zeroed tail — loaded from a saved slot whose block was corrupted
+    // during an 8.1 partial death). validateActionList() checks one
+    // instrument's chain (bounded head->tail walk, in-range indices) and
+    // resets it to empty when malformed; the SequenceBank loaders call it
+    // after restoring the raw block. Counters make every guard trip
+    // host-observable.
+    bool validateActionList(uint8_t instrument);
+    uint32_t getWalkTrips() const { return walkTrips_; }
+    uint32_t getDroppedInsertNotes() const { return droppedInsertNotes_; }
+    uint32_t getListsResetOnLoad() const { return listsResetOnLoad_; }
+
+#ifdef PFM3_HOST
+    // Deterministic host seams for interrupt-publication and load-transaction
+    // regression tests. They do not exist in firmware builds.
+    using InsertPublishHookForTest = void (*)(Sequencer*, uint8_t);
+    void setInsertPublishHookForTest(InsertPublishHookForTest hook) {
+        insertPublishHookForTest_ = hook;
+    }
+    uint16_t getLastFreeActionForTest() const { return lastFreeAction_; }
+    uint16_t getNextActionIndexForTest(uint8_t instrument) const {
+        return nextActionIndex_[instrument];
+    }
+    uint16_t getPreviousActionIndexForTest(uint8_t instrument) const {
+        return previousActionIndex_[instrument];
+    }
+    bool isNextActionTimerOutOfSyncForTest(uint8_t instrument) const {
+        return nextActionTimerOutOfSync_[instrument];
+    }
+    void setActionListCursorForTest(uint8_t instrument, uint16_t previous, uint16_t next) {
+        previousActionIndex_[instrument] = previous;
+        nextActionIndex_[instrument] = next;
+    }
+    bool isActionListLoadInProgressForTest() const {
+        return actionListLoadInProgress_;
+    }
+#endif
 
     void rewind() {
         millisTimer_ = 0;
@@ -226,8 +268,22 @@ public:
 
 
 private:
+    friend class SequenceBank;
+
     void processActionBetwen(int instrument, uint16_t startTimer, uint16_t endTimer);
     void resyncNextAction(int instrument, uint16_t newInstrumentTimer);
+    void handleActionListTrip(uint8_t instrument);
+    bool validateActionListInternal(uint8_t instrument, bool includeInactive,
+            bool trimAfterReset);
+    void resetMalformedActionList(uint8_t instrument, bool countLoadReset);
+    void trimTrailingFreeActions();
+    bool findInsertPosition(uint8_t instrument, uint16_t when, uint16_t liveLimit,
+            uint16_t* predecessor, uint16_t* successor);
+    void beginActionListLoad();
+    void finishActionListLoad(bool acceptedState);
+    bool isActionListLoadInProgress() const {
+        return actionListLoadInProgress_;
+    }
     void loadStateVersion1(uint8_t* buffer);
     void loadStateVersion2(uint8_t* buffer);
     bool createNewNoteIfNeeded(int instrument, int stepCursor, int stepSize);
@@ -238,7 +294,24 @@ private:
     // newest event and counts it (getDroppedAsyncActions).
     RingBuffer<SeqAsyncAction, SEQ_ASYNC_ACTION_QUEUE_SIZE> asyncActions_;
     volatile uint32_t droppedAsyncActions_;
-    uint16_t lastFreeAction_;
+    // 8.1-H4 guard counters (see validateActionList above).
+    uint32_t walkTrips_;
+    uint32_t droppedInsertNotes_;
+    uint32_t listsResetOnLoad_;
+    // A runtime walk/resync trip leaves the malformed links in place so the
+    // ISR does not perform list surgery. The next main-loop insert repairs
+    // the chain before publishing another note.
+    bool actionListPoisoned_[NUMBER_OF_TIMBRES];
+    // Set only around the staged-table publication/validation transaction;
+    // volatile access plus compiler fences preserves single-core IRQ ordering.
+    volatile bool actionListLoadInProgress_;
+    // Read by higher-priority walk contexts while the main loop publishes a
+    // node. Volatile + the publication fence in insertNote preserves the
+    // allocator-before-link commit protocol on the single-core MCU.
+    volatile uint16_t lastFreeAction_;
+#ifdef PFM3_HOST
+    InsertPublishHookForTest insertPublishHookForTest_;
+#endif
     Synth * synth_;
     FMDisplaySequencer* displaySequencer_;
 
