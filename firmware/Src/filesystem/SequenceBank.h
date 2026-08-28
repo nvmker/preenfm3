@@ -43,6 +43,10 @@ public:
     bool loadDefaultSequence();
     void removeDefaultSequence();
 
+#ifdef PFM3_HOST
+    using LoadPublishHookForTest = void (*)(Sequencer*);
+    static void setLoadPublishHookForTest(LoadPublishHookForTest hook);
+#endif
 
 protected:
     bool isReadOnly(struct PFM3File *file);
@@ -54,6 +58,9 @@ private:
     bool isCorrectFile(char *name, int size) ;
     char sequenceName[13];
     Sequencer* sequencer;
+#ifdef PFM3_HOST
+    static LoadPublishHookForTest loadPublishHookForTest_;
+#endif
 };
 
 

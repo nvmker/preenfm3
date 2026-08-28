@@ -24,7 +24,32 @@ CompileFlags:
 # compile_commands.json lands in build/release/ once `make` (or `make firmware`)
 # has configured the cross-build. Without this block clangd / pi-lens can't
 # resolve the STM32 HAL / CMSIS includes on firmware files.
+#
+# Add: supplies the include paths for STANDALONE HEADER analysis. clangd maps
+# .cpp TUs through the DB but cannot map a .h analyzed on its own to a cross-TU
+# entry — Sequencer.h dispatched directly got "RingBuffer.h not found" even
+# with the DB present. For DB-routed .cpp files these -I flags are harmless
+# duplicates of the compile command.
 If:
   PathMatch: ^(firmware|lib|bootloader)/.*\.(cpp|c|cc|cxx|hpp|h|s|S)$
 CompileFlags:
   CompilationDatabase: build/release
+  Add:
+    - -Ilib/Inc
+    - -Ifirmware/Inc
+    - -Ifirmware/Src
+    - -Ifirmware/Src/filesystem
+    - -Ifirmware/Src/hardware
+    - -Ifirmware/Src/midi
+    - -Ifirmware/Src/MidiController
+    - -Ifirmware/Src/midipal
+    - -Ifirmware/Src/SimpleEffect
+    - -Ifirmware/Src/synth
+    - -Ifirmware/Src/utils
+    - -Ifirmware/Drivers/CMSIS/Include
+    - -Ifirmware/Drivers/CMSIS/Device/ST/STM32H7xx/Include
+    - -Ifirmware/Drivers/STM32H7xx_HAL_Driver/Inc
+    - -Ifirmware/Drivers/STM32H7xx_HAL_Driver/Inc/Legacy
+    - -Ifirmware/Middlewares/ST/STM32_USB_Device_Library/Core/Inc
+    - -Ifirmware/Middlewares/ST/STM32_USB_Device_Library/Class/MIDI/Inc
+    - -Ifirmware/Middlewares/ST/STM32_USB_Device_Library/Class/AUDIO/Inc
