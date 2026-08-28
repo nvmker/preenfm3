@@ -492,7 +492,7 @@ TEST_F(SequencerPhase2, StopHaltsTransport) {
 // Step-record / insertNote bounds + playback.
 // ---------------------------------------------------------------------------
 
-TEST_F(SequencerPhase2, InsertNoteFillsActionListThenSilentlyDrops) {
+TEST_F(SequencerPhase2, InsertNoteFillsActionListThenDropsAndCounts) {
     seq_->start();  // external clock: no precount, current16bitTimer_ = 0
     seq_->setRecording(0, true);
     // lastFreeAction_ starts at NUMBER_OF_TIMBRES*2 (12 reserved sentinel
@@ -504,9 +504,11 @@ TEST_F(SequencerPhase2, InsertNoteFillsActionListThenSilentlyDrops) {
     constexpr int kCapacity = SEQ_ACTION_SIZE - kReserved;
     for (int i = 0; i < kCapacity; i++) seq_->insertNote(0, 60, 100);
     EXPECT_EQ(seq_->getMemory(), 100) << "full action list = 100% memory";
-    // One more insert: silently dropped (lastFreeAction_ == SEQ_ACTION_SIZE).
+    // One more insert: refused and counted (lastFreeAction_ == SEQ_ACTION_SIZE).
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 0);
     seq_->insertNote(0, 60, 100);
     EXPECT_EQ(seq_->getMemory(), 100);
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 1);
     EXPECT_TRUE(seq_->isSeqActivated(0));
 }
 
@@ -1092,6 +1094,12 @@ int ChainHopsToTail(uint8_t instrument) {
     return hops;
 }
 
+bool gInsertPublishSawLiveNode = false;
+void CaptureInsertPublication(Sequencer* seq, uint8_t instrument) {
+    const uint16_t published = actions[instrument * 2].nextIndex;
+    gInsertPublishSawLiveNode = published < seq->getLastFreeActionForTest();
+}
+
 }  // namespace
 
 TEST_F(SequencerPhase2, H4CorpseWalkIsBoundedAndHeals) {
@@ -1115,6 +1123,38 @@ TEST_F(SequencerPhase2, H4CorpseWalkIsBoundedAndHeals) {
     // Deactivated: later tics must not re-trip (no repeated note spam).
     seq_->mainSequencerTic(100);
     seq_->mainSequencerTic(4095);
+    EXPECT_EQ(seq_->getWalkTrips(), 1);
+}
+
+TEST_F(SequencerPhase2, RuntimeTripRepairsBeforeRecordingCanReactivatePoison) {
+    WriteH4State(seq_, 60, 1);
+    WriteH4CorpseList();
+    seq_->setRecording(0, true);
+
+    seq_->start();
+    seq_->onMidiStart();
+    seq_->mainSequencerTic(0);
+    seq_->mainSequencerTic(1);
+    ASSERT_EQ(seq_->getWalkTrips(), 1);
+    ASSERT_FALSE(seq_->isSeqActivated(0));
+
+    // The first post-trip note repairs the chain in the main-loop context and
+    // is dropped+counted rather than being linked in front of the poison.
+    seq_->queueNote(0, 67, 100);
+    seq_->processAsyncActions();
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 1);
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+    EXPECT_EQ(actions[0].nextIndex, 1);
+    EXPECT_EQ(seq_->getLastFreeActionForTest(), NUMBER_OF_TIMBRES * 2);
+
+    // Recording can then resume on the clean list without another trip.
+    seq_->queueNote(0, 69, 100);
+    seq_->processAsyncActions();
+    EXPECT_TRUE(seq_->isSeqActivated(0));
+    EXPECT_EQ(actions[0].nextIndex, 12);
+    EXPECT_EQ(actions[12].nextIndex, 1);
+    EXPECT_EQ(ChainHopsToTail(0), 1);
+    seq_->mainSequencerTic(2);
     EXPECT_EQ(seq_->getWalkTrips(), 1);
 }
 
@@ -1147,6 +1187,7 @@ TEST_F(SequencerPhase2, InsertAtBarWrapCursorDoesNotBypassHead) {
 
     // Structure: head -> new note -> old note -> tail, every hop in range.
     EXPECT_EQ(actions[0].nextIndex, 13);  // newest at bar start
+    EXPECT_EQ(actions[13].when, 0);
     EXPECT_EQ(actions[13].nextIndex, 12);
     EXPECT_EQ(actions[12].nextIndex, 1);  // tail sentinel
     EXPECT_EQ(ChainHopsToTail(0), 2);      // two dynamic hops to the tail
@@ -1154,10 +1195,30 @@ TEST_F(SequencerPhase2, InsertAtBarWrapCursorDoesNotBypassHead) {
     // And the repaired chain still plays through the next bar: incremental
     // windows only, no trip, still activated.
     seq_->mainSequencerTic(0);
+    EXPECT_EQ(synth_.getLowerNote(0), 62) << "the normalized bar-start note fires at zero";
     seq_->mainSequencerTic(100);
+    EXPECT_EQ(synth_.getLowerNote(0), 60) << "the existing 100-tick note is not delayed to bar end";
     seq_->mainSequencerTic(4095);
     EXPECT_EQ(seq_->getWalkTrips(), 0);
     EXPECT_TRUE(seq_->isSeqActivated(0));
+}
+
+TEST_F(SequencerPhase2, InsertPublishesLiveLimitBeforeExposingLink) {
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(100);
+
+    gInsertPublishSawLiveNode = false;
+    seq_->setInsertPublishHookForTest(CaptureInsertPublication);
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+    seq_->setInsertPublishHookForTest(nullptr);
+
+    EXPECT_TRUE(gInsertPublishSawLiveNode)
+        << "an IRQ observing the published link must also see its slot inside lastFreeAction";
+    EXPECT_EQ(actions[0].nextIndex, 12);
+    EXPECT_GT(seq_->getLastFreeActionForTest(), actions[0].nextIndex);
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
 }
 
 TEST_F(SequencerPhase2, InsertIntoZeroedHeadDropsAndCounts) {
@@ -1230,6 +1291,86 @@ TEST_F(SequencerPhase2, ValidateActionListResetsPoisonChain) {
     // The healed list validates clean on re-check (idempotent, no new reset).
     EXPECT_TRUE(seq_->validateActionList(0));
     EXPECT_EQ(seq_->getListsResetOnLoad(), 1);
+}
+
+TEST_F(SequencerPhase2, ValidateRejectsEveryCorruptSentinelInvariant) {
+    for (int corruption = 0; corruption < 4; corruption++) {
+        SCOPED_TRACE(corruption);
+        seq_->reset(false);
+        WriteH4State(seq_, 13, 1);
+        switch (corruption) {
+        case 0:
+            actions[0].when = 7;                    // head must be at zero
+            break;
+        case 1:
+            actions[0].actionType = SEQ_ACTION_NOTE; // sentinels never emit
+            break;
+        case 2:
+            actions[1].actionType = SEQ_ACTION_NOTE;
+            break;
+        case 3:
+            actions[1].nextIndex = 12;              // tail may only wrap to head
+            break;
+        }
+
+        const uint32_t before = seq_->getListsResetOnLoad();
+        EXPECT_FALSE(seq_->validateActionList(0));
+        EXPECT_EQ(seq_->getListsResetOnLoad(), before + 1);
+        EXPECT_FALSE(seq_->isSeqActivated(0));
+        EXPECT_EQ(actions[0].when, 0);
+        EXPECT_EQ(actions[0].actionType, SEQ_ACTION_NONE);
+        EXPECT_EQ(actions[0].nextIndex, 1);
+        EXPECT_EQ(actions[1].actionType, SEQ_ACTION_NONE);
+        EXPECT_EQ(actions[1].nextIndex, 0);
+    }
+}
+
+TEST_F(SequencerPhase2, ValidateRejectsDescendingDynamicTimestamps) {
+    WriteH4State(seq_, 14, 1);
+    actions[0].nextIndex = 12;
+    actions[12].when = 100;
+    actions[12].nextIndex = 13;
+    actions[12].actionType = SEQ_ACTION_NOTE;
+    actions[13].when = 50;
+    actions[13].nextIndex = 1;
+    actions[13].actionType = SEQ_ACTION_NOTE;
+
+    EXPECT_FALSE(seq_->validateActionList(0));
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+    EXPECT_EQ(actions[0].nextIndex, 1);
+}
+
+TEST_F(SequencerPhase2, HealingFullPoisonReclaimsAllocatorCapacity) {
+    WriteH4State(seq_, SEQ_ACTION_SIZE, 1);
+    memset(actions, 0, sizeof(actions));
+    actions[0].nextIndex = NUMBER_OF_TIMBRES * 2;
+    for (uint16_t index = NUMBER_OF_TIMBRES * 2; index < SEQ_ACTION_SIZE; index++) {
+        actions[index].when = 0;
+        actions[index].actionType = SEQ_ACTION_NOTE;
+        actions[index].nextIndex = index + 1;
+    }
+    actions[SEQ_ACTION_SIZE - 1].nextIndex = 0;
+
+    EXPECT_FALSE(seq_->validateActionList(0));
+    EXPECT_EQ(seq_->getLastFreeActionForTest(), NUMBER_OF_TIMBRES * 2);
+    for (uint16_t index = NUMBER_OF_TIMBRES * 2; index < SEQ_ACTION_SIZE; index++) {
+        EXPECT_EQ(actions[index].actionType, SEQ_ACTION_NONE);
+    }
+}
+
+TEST_F(SequencerPhase2, OversizedAllocatorHeaderIsNormalizedAndCanRecord) {
+    WriteH4State(seq_, UINT16_MAX, 1);
+    ASSERT_TRUE(seq_->validateActionList(0));
+    EXPECT_EQ(seq_->getLastFreeActionForTest(), NUMBER_OF_TIMBRES * 2);
+
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(100);
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 0);
+    EXPECT_EQ(actions[0].nextIndex, 12);
+    EXPECT_EQ(actions[12].nextIndex, 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -1343,5 +1484,62 @@ TEST_F(SequencerPhase2, ResyncTripIsCounted) {
     seq_->setNumberOfBars(0, 2);  // arms nextActionTimerOutOfSync_
     ASSERT_EQ(seq_->getWalkTrips(), 0);
     seq_->mainSequencerTic(1000);  // resync walks from the head -> head-bypass link
-    EXPECT_GE(seq_->getWalkTrips(), 1u) << "resync trip must be counted";
+    EXPECT_EQ(seq_->getWalkTrips(), 1u) << "resync trip must be counted once";
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+    EXPECT_EQ(seq_->getPreviousActionIndexForTest(0), 0);
+    EXPECT_EQ(seq_->getNextActionIndexForTest(0), 1);
+    EXPECT_FALSE(seq_->isNextActionTimerOutOfSyncForTest(0));
+}
+
+TEST_F(SequencerPhase2, ResyncNearZeroDoesNotFalseTripValidList) {
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(0);
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+    ASSERT_TRUE(seq_->isSeqActivated(0));
+
+    seq_->setNumberOfBars(0, 2);
+    seq_->mainSequencerTic(1);  // previous service point wraps below zero
+
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
+    EXPECT_TRUE(seq_->isSeqActivated(0));
+    EXPECT_GE(seq_->getNextActionIndexForTest(0), 1);
+}
+
+TEST_F(SequencerPhase2, TripClearsArpeggiatorStackBeforeLaterClocks) {
+    synth_.setNewValueFromMidi(0, ROW_ARPEGGIATOR1,
+        ENCODER_ARPEGGIATOR_BPM, 120.0f);
+    synth_.setNewValueFromMidi(0, ROW_ARPEGGIATOR1,
+        ENCODER_ARPEGGIATOR_CLOCK, static_cast<float>(CLOCK_INTERNAL));
+
+    WriteH4State(seq_, 14, 1);
+    memset(actions, 0, sizeof(actions));
+    actions[0].nextIndex = 12;
+    actions[12].when = 0;
+    actions[12].nextIndex = 13;
+    actions[12].actionType = SEQ_ACTION_NOTE;
+    actions[12].param1 = 60;
+    actions[12].param2 = 100;  // enters the arp stack
+    actions[13].when = 2;
+    actions[13].nextIndex = 0;
+    actions[13].actionType = SEQ_ACTION_NOTE;
+    actions[13].param1 = 62;
+    actions[13].param2 = 100;
+
+    seq_->start();
+    seq_->onMidiStart();
+    seq_->mainSequencerTic(0);
+    seq_->mainSequencerTic(1);
+    seq_->mainSequencerTic(2);  // trip after the arp note was queued
+    ASSERT_EQ(seq_->getWalkTrips(), 1);
+
+    int32_t b1[64], b2[64], b3[64];
+    bool retriggered = false;
+    for (int block = 0; block < 2000; block++) {
+        synth_.buildNewSampleBlock(b1, b2, b3);
+        retriggered |= synth_.isPlaying();
+    }
+    EXPECT_FALSE(retriggered)
+        << "a trip-cleared arp stack must not retrigger on later internal clocks";
 }
