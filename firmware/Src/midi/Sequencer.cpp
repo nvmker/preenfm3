@@ -17,6 +17,7 @@
 
 #include "Sequencer.h"
 #include <RingBuffer.h>
+#include <atomic>
 #include "Synth.h"
 #include "FMDisplaySequencer.h"
 
@@ -54,9 +55,41 @@ static uint16_t compactedActionIndex(uint16_t oldIndex, uint16_t oldLastFreeActi
     return newIndex;
 }
 
+// 8.1-H4: sanitized view of lastFreeAction_ for structural walks. A corrupt
+// value (zeroed, or huge) coming out of a loaded block must never widen a
+// hop budget or underflow the subtraction below.
+static uint16_t sanitizedLastFreeAction(uint16_t lastFreeAction) {
+    if (lastFreeAction < NUMBER_OF_TIMBRES * 2) return NUMBER_OF_TIMBRES * 2;
+    return lastFreeAction > SEQ_ACTION_SIZE ? SEQ_ACTION_SIZE : lastFreeAction;
+}
+
+// 8.1-H4: hop budget for one list walk. Live dynamic slots plus sentinel
+// headroom: a well-formed chain traverses each live node at most once per
+// walk (<= live + 2 sentinel visits), so any chain that exceeds this is
+// cycling (H4: head re-entry) and must trip instead of looping SysTick.
+static uint16_t walkHopBudget(uint16_t lastFreeAction) {
+    return sanitizedLastFreeAction(lastFreeAction) - NUMBER_OF_TIMBRES * 2 + 4;
+}
+
+// 8.1-H4: an ADVANCE target is structurally safe iff it names this
+// instrument's tail sentinel or a slot inside the live dynamic region.
+// Anything else — head re-entry (the H4 cycle), another instrument's
+// sentinel, a free slot, or an out-of-range index — is corruption.
+static bool walkSafeLink(uint16_t index, uint8_t instrument, uint16_t liveLimit) {
+    return index == (uint16_t)(instrument * 2 + 1)
+        || (index >= NUMBER_OF_TIMBRES * 2 && index < liveLimit);
+}
+
 Sequencer::Sequencer() {
     uint32_t stateSize;
     droppedAsyncActions_ = 0;
+    walkTrips_ = 0;
+    droppedInsertNotes_ = 0;
+    listsResetOnLoad_ = 0;
+    actionListLoadInProgress_ = false;
+#ifdef PFM3_HOST
+    insertPublishHookForTest_ = nullptr;
+#endif
     uint8_t* actionBuffer =  (uint8_t*)actions;
     // Use actions as a temporary buffer
     getFullDefaultState(actionBuffer, &stateSize, 0);
@@ -106,7 +139,9 @@ void Sequencer::reset(bool synthNoteOff) {
 
         nextActionIndex_[i] = i * 2 + 1;
         previousActionIndex_[i] = i * 2;
+        nextActionTimerOutOfSync_[i] = false;
         seqActivated_[i] = false;
+        actionListPoisoned_[i] = false;
         lastInstrument16bitTimer_[i] = -1;
 
         actions[i * 2].when = 0;
@@ -301,6 +336,13 @@ void Sequencer::midiClockSetSongPosition(int songPosition) {
 
 void Sequencer::mainSequencerTic(uint16_t counter) {
 
+    // SequenceBank publishes staged tables and persisted state from the main
+    // loop while this walk normally runs in SysTick (or the external-clock
+    // decode IRQ). Never observe a partially committed load.
+    if (unlikely(isActionListLoadInProgress())) {
+        return;
+    }
+
     if (!running_)  {
         return;
     }
@@ -390,22 +432,74 @@ void Sequencer::mainSequencerTic(uint16_t counter) {
 
 }
 
-void Sequencer::resyncNextAction(int instrument, uint16_t newInstrumentTimer) {
-    // update lastInstrument16bitTimer[i]
-    if (externalClock_) {
-        lastInstrument16bitTimer_[instrument] = newInstrumentTimer - (256.0f / 24.0f);
-    } else {
-        lastInstrument16bitTimer_[instrument] = newInstrumentTimer - millisInBits_;
+void Sequencer::handleActionListTrip(uint8_t instrument) {
+    const uint16_t head = instrument * 2;
+    const uint16_t tail = head + 1;
+
+    seqActivated_[instrument] = false;
+    actionListPoisoned_[instrument] = true;
+    nextActionTimerOutOfSync_[instrument] = false;
+    previousActionIndex_[instrument] = head;
+    nextActionIndex_[instrument] = tail;
+    walkTrips_++;
+
+    // Sequencer note-ons enter the arpeggiator stack when arp clocking is
+    // enabled. Releasing only current voices would let later clock ticks
+    // retrigger notes retained in that stack.
+    if (synth_ != nullptr) {
+        synth_->stopArpegiator(instrument);
+        synth_->allNoteOffQuick(instrument);
     }
-    if (lastInstrument16bitTimer_[instrument] < 0) {
-        lastInstrument16bitTimer_[instrument] += 4096;
-    } else if (lastInstrument16bitTimer_[instrument] >= 4096) {
-        lastInstrument16bitTimer_[instrument] -= 4096;
+}
+
+void Sequencer::resyncNextAction(int instrument, uint16_t newInstrumentTimer) {
+    // Compute the previous service point in a signed domain. The persisted
+    // field is uint16_t, so assigning the subtraction first made the old
+    // `< 0` repair branch unreachable and wrapped near-zero timers high.
+    const float period = static_cast<float>(instrumentTimerMask_[instrument]) + 1.0f;
+    const float timerStep = externalClock_ ? (256.0f / 24.0f) : millisInBits_;
+    float previousTimer = static_cast<float>(newInstrumentTimer) - timerStep;
+    while (previousTimer < 0.0f) {
+        previousTimer += period;
+    }
+    while (previousTimer >= period) {
+        previousTimer -= period;
+    }
+    lastInstrument16bitTimer_[instrument] = static_cast<uint16_t>(previousTimer);
+
+    const uint16_t head = instrument * 2;
+    const uint16_t tail = head + 1;
+    previousActionIndex_[instrument] = head;
+    nextActionIndex_[instrument] = head;
+
+    // A step-only instrument has no recorded-action cursor to resynchronize.
+    if (!seqActivated_[instrument]) {
+        nextActionIndex_[instrument] = tail;
+        return;
     }
 
-    nextActionIndex_[instrument] = instrument * 2;
-    while (actions[nextActionIndex_[instrument]].when < lastInstrument16bitTimer_[instrument]) {
-        nextActionIndex_[instrument] = actions[nextActionIndex_[instrument]].nextIndex;
+    // 8.1-H4: this walk had no terminator — a chain that never satisfies the
+    // `when` condition (e.g. zeroed actions under a corrupt tail) used to
+    // loop forever inside SysTick. Bound it structurally and apply the same
+    // complete repair as the regular playback walk on every failure.
+    const uint16_t lastFreeSnapshot = lastFreeAction_;
+    const uint16_t liveLimit = sanitizedLastFreeAction(lastFreeSnapshot);
+    const uint16_t hopBudget = walkHopBudget(lastFreeSnapshot);
+    uint16_t hops = 0;
+    while (actions[nextActionIndex_[instrument]].when
+            < lastInstrument16bitTimer_[instrument]) {
+        if (++hops > hopBudget) {
+            handleActionListTrip(instrument);
+            return;
+        }
+        const uint16_t currentIndex = nextActionIndex_[instrument];
+        const uint16_t nextIndex = actions[currentIndex].nextIndex;
+        if (!walkSafeLink(nextIndex, instrument, liveLimit)) {
+            handleActionListTrip(instrument);
+            return;
+        }
+        previousActionIndex_[instrument] = currentIndex;
+        nextActionIndex_[instrument] = nextIndex;
     }
 }
 
@@ -449,7 +543,37 @@ void Sequencer::processActionBetwen(int instrument, uint16_t startTimer, uint16_
     // Play to the end before looping
     // We test activated as we can clear or apply step seq in the middle of this loop
     if (seqActivated_[instrument]) {
-        while (actions[nextActionIndex_[instrument]].when >= startTimer && actions[nextActionIndex_[instrument]].when <= endTimer && seqActivated_[instrument]) {
+        // 8.1-H4: the walk terminates only on `when` windows; a chain that
+        // re-enters the head sentinel (corrupt block loaded from SD, or a
+        // head-bypass link minted at the bar-wrap record cursor) loops here
+        // forever inside SysTick and freezes the unit. Structural bounds:
+        // every advance target must be walk-safe, and the whole walk must
+        // stay inside a hop budget derived from the live action count.
+        const uint16_t lastFreeSnapshot = lastFreeAction_;
+        const uint16_t liveLimit = sanitizedLastFreeAction(lastFreeSnapshot);
+        const uint16_t hopBudget = walkHopBudget(lastFreeSnapshot);
+        const uint16_t head = instrument * 2;
+        const uint16_t tail = head + 1;
+        uint16_t hops = 0;
+        while (actions[nextActionIndex_[instrument]].when >= startTimer
+                && actions[nextActionIndex_[instrument]].when <= endTimer
+                && seqActivated_[instrument]) {
+            const uint16_t currentIndex = nextActionIndex_[instrument];
+            const uint16_t advancedIndex = actions[currentIndex].nextIndex;
+            // Advancing onto the head is legitimate ONLY as the tail's
+            // circular wrap (bar loop); from any dynamic node it is the H4
+            // head-bypass cycle. Everything else outside the live region is
+            // the same corruption class.
+            const bool safeAdvance = currentIndex == tail
+                ? advancedIndex == head
+                : walkSafeLink(advancedIndex, instrument, liveLimit);
+            if (!safeAdvance || ++hops > hopBudget) {
+                // Deactivate and restore runtime cursors immediately. Link
+                // reclamation remains a main-loop mutation: insertNote sees
+                // actionListPoisoned_ and repairs before recording resumes.
+                handleActionListTrip(instrument);
+                break;
+            }
             // actions[nextActionIndex];
             if (!muted_[instrument]) {
                 switch (actions[nextActionIndex_[instrument]].actionType) {
@@ -464,12 +588,24 @@ void Sequencer::processActionBetwen(int instrument, uint16_t startTimer, uint16_
             }
 
             previousActionIndex_[instrument] = nextActionIndex_[instrument];
-            nextActionIndex_[instrument] = actions[nextActionIndex_[instrument]].nextIndex;
+            nextActionIndex_[instrument] = advancedIndex;
 
             if (actions[nextActionIndex_[instrument]].when > instrumentTimerMask_[instrument]) {
                 // We have events after the instrument bar limit, we must loop now
                 previousActionIndex_[instrument] = instrument * 2;
                 nextActionIndex_[instrument] = instrument * 2;
+                // A walk call never crosses back into the bar it started:
+                // with startTimer == 0, continuing past the reset would
+                // replay the head side and false-trip a VALID list.
+                break;
+            }
+            if (currentIndex == tail && advancedIndex == head) {
+                // The bar wrap ends this walk call — one bar per call. The
+                // next call (startTimer == 0) services the head side. Without
+                // this, a full-bar window [0..mask] — reachable via
+                // song-position jump or activation at bar end — replays the
+                // whole list a second time and exhausts the hop budget.
+                break;
             }
         }
     }
@@ -493,6 +629,8 @@ void Sequencer::clear(uint8_t instrument) {
     }
 
     seqActivated_[instrument] = false;
+    actionListPoisoned_[instrument] = false;
+    nextActionTimerOutOfSync_[instrument] = false;
     nextActionIndex_[instrument] = end;
     previousActionIndex_[instrument] = instrument * 2;
     actions[instrument * 2].nextIndex = end;
@@ -539,6 +677,218 @@ void Sequencer::clear(uint8_t instrument) {
     synth_->allNoteOff(instrument);
 }
 
+void Sequencer::beginActionListLoad() {
+    // SequenceBank calls this only after all FatFs reads have succeeded, so
+    // the walk is paused for the RAM commit/validation window, never for SD
+    // I/O. A compiler fence keeps the flag publication ahead of the memcpy.
+    actionListLoadInProgress_ = true;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+}
+
+void Sequencer::finishActionListLoad(bool acceptedState) {
+    if (acceptedState) {
+        const uint16_t rawLastFree = lastFreeAction_;
+        const bool allocatorAdjusted = rawLastFree < NUMBER_OF_TIMBRES * 2
+            || rawLastFree > SEQ_ACTION_SIZE;
+        if (allocatorAdjusted) {
+            lastFreeAction_ = sanitizedLastFreeAction(rawLastFree);
+        }
+
+        bool anyReset = false;
+        for (int instrument = 0; instrument < NUMBER_OF_TIMBRES; instrument++) {
+            // Poison is runtime state, not part of the persisted block.
+            actionListPoisoned_[instrument] = false;
+            if (!validateActionListInternal(instrument, false, false)) {
+                anyReset = true;
+            }
+        }
+        if (allocatorAdjusted || anyReset) {
+            trimTrailingFreeActions();
+        }
+
+        // Persisted files contain list/state data, not live traversal state.
+        // Reset every cursor and let active instruments resynchronize against
+        // the current transport time on their next walk.
+        for (int instrument = 0; instrument < NUMBER_OF_TIMBRES; instrument++) {
+            const uint16_t head = instrument * 2;
+            previousActionIndex_[instrument] = head;
+            nextActionIndex_[instrument] = head + 1;
+            lastInstrument16bitTimer_[instrument] =
+                current16bitTimer_ & instrumentTimerMask_[instrument];
+            nextActionTimerOutOfSync_[instrument] = seqActivated_[instrument];
+        }
+    }
+
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    actionListLoadInProgress_ = false;
+}
+
+void Sequencer::trimTrailingFreeActions() {
+    const uint16_t firstDynamic = NUMBER_OF_TIMBRES * 2;
+    uint16_t limit = sanitizedLastFreeAction(lastFreeAction_);
+    uint16_t requiredLimit = firstDynamic;
+
+    // Never trim below a slot still referenced by a validated active list.
+    for (int instrument = 0; instrument < NUMBER_OF_TIMBRES; instrument++) {
+        if (!seqActivated_[instrument]) continue;
+        const uint16_t tail = instrument * 2 + 1;
+        uint16_t index = actions[instrument * 2].nextIndex;
+        uint16_t hops = 0;
+        const uint16_t budget = walkHopBudget(limit);
+        while (index != tail && hops++ < budget) {
+            if (index < firstDynamic || index >= limit) break;
+            if (index + 1 > requiredLimit) requiredLimit = index + 1;
+            index = actions[index].nextIndex;
+        }
+    }
+
+    while (limit > requiredLimit && actions[limit - 1].actionType == SEQ_ACTION_NONE) {
+        limit--;
+    }
+    lastFreeAction_ = limit;
+}
+
+void Sequencer::resetMalformedActionList(uint8_t instrument, bool countLoadReset) {
+    const uint16_t head = instrument * 2;
+    const uint16_t tail = head + 1;
+    const uint16_t lastFreeSnapshot = lastFreeAction_;
+    const uint16_t liveLimit = sanitizedLastFreeAction(lastFreeSnapshot);
+    const uint16_t hopBudget = walkHopBudget(lastFreeSnapshot);
+
+    // Reclaim every reachable dynamic slot, but remain bounded because the
+    // chain being repaired may itself be cyclic.
+    uint16_t index = actions[head].nextIndex;
+    uint16_t hops = 0;
+    while (index != tail && index != head && hops < hopBudget) {
+        if (index < NUMBER_OF_TIMBRES * 2 || index >= liveLimit) break;
+        const uint16_t nextIndex = actions[index].nextIndex;
+        actions[index].actionType = SEQ_ACTION_NONE;
+        index = nextIndex;
+        hops++;
+    }
+
+    actions[head].when = 0;
+    actions[head].actionType = SEQ_ACTION_NONE;
+    actions[head].nextIndex = tail;
+    actions[tail].when = instrumentTimerMask_[instrument];
+    actions[tail].actionType = SEQ_ACTION_NONE;
+    actions[tail].nextIndex = head;
+    seqActivated_[instrument] = false;
+    actionListPoisoned_[instrument] = false;
+    nextActionTimerOutOfSync_[instrument] = false;
+    nextActionIndex_[instrument] = tail;
+    previousActionIndex_[instrument] = head;
+    if (countLoadReset) listsResetOnLoad_++;
+}
+
+// Structural validation of one instrument's recorded-action chain. Inactive
+// lists remain byte-identical during ordinary loads; includeInactive is used
+// only after a runtime trip, immediately before a main-loop insertion would
+// otherwise reactivate the poisoned links.
+bool Sequencer::validateActionListInternal(uint8_t instrument, bool includeInactive,
+        bool trimAfterReset) {
+    if (!includeInactive && !seqActivated_[instrument]) return true;
+
+    const uint16_t head = instrument * 2;
+    const uint16_t tail = head + 1;
+    const uint16_t lastFreeSnapshot = lastFreeAction_;
+    const uint16_t liveLimit = sanitizedLastFreeAction(lastFreeSnapshot);
+    const uint16_t hopBudget = walkHopBudget(lastFreeSnapshot);
+
+    // Both sentinels are executable walk nodes. Their complete payload/link
+    // invariants must hold, not only the tail timestamp.
+    bool ok = actions[head].when == 0
+        && actions[head].actionType == SEQ_ACTION_NONE
+        && actions[tail].when == instrumentTimerMask_[instrument]
+        && actions[tail].actionType == SEQ_ACTION_NONE
+        && actions[tail].nextIndex == head;
+
+    uint16_t index = actions[head].nextIndex;
+    if (ok && index != tail
+            && (index < NUMBER_OF_TIMBRES * 2 || index >= liveLimit)) {
+        ok = false;
+    }
+
+    uint16_t hops = 0;
+    uint16_t previousWhen = 0;
+    while (ok && index != tail) {
+        if (++hops > hopBudget) {
+            ok = false;
+            break;
+        }
+        const SeqMidiAction& action = actions[index];
+        if (action.actionType == SEQ_ACTION_NONE || action.actionType > SEQ_ACTION_CLEAR
+                || action.when > MAX_TIME || action.when < previousWhen) {
+            ok = false;
+            break;
+        }
+        previousWhen = action.when;
+
+        const uint16_t nextIndex = action.nextIndex;
+        if (nextIndex == tail) {
+            index = tail;
+            break;
+        }
+        if (nextIndex == head
+                || nextIndex < NUMBER_OF_TIMBRES * 2 || nextIndex >= liveLimit) {
+            ok = false;
+            break;
+        }
+        index = nextIndex;
+    }
+
+    if (ok && index == tail) {
+        actionListPoisoned_[instrument] = false;
+        return true;
+    }
+
+    resetMalformedActionList(instrument, !includeInactive);
+    if (trimAfterReset) trimTrailingFreeActions();
+    return false;
+}
+
+bool Sequencer::validateActionList(uint8_t instrument) {
+    const uint16_t rawLastFree = lastFreeAction_;
+    const bool allocatorAdjusted = rawLastFree < NUMBER_OF_TIMBRES * 2
+        || rawLastFree > SEQ_ACTION_SIZE;
+    if (allocatorAdjusted) {
+        lastFreeAction_ = sanitizedLastFreeAction(rawLastFree);
+    }
+    const bool valid = validateActionListInternal(instrument, false, true);
+    if (allocatorAdjusted) trimTrailingFreeActions();
+    return valid;
+}
+
+bool Sequencer::findInsertPosition(uint8_t instrument, uint16_t when,
+        uint16_t liveLimit, uint16_t* predecessor, uint16_t* successor) {
+    const uint16_t head = instrument * 2;
+    const uint16_t tail = head + 1;
+    const uint16_t hopBudget = walkHopBudget(liveLimit);
+    uint16_t previous = head;
+    uint16_t index = actions[head].nextIndex;
+    uint16_t hops = 0;
+
+    while (index != tail) {
+        if (++hops > hopBudget
+                || index < NUMBER_OF_TIMBRES * 2 || index >= liveLimit) {
+            return false;
+        }
+        if (actions[index].when > when) break;
+        previous = index;
+        const uint16_t nextIndex = actions[index].nextIndex;
+        if (nextIndex == head
+                || !(nextIndex == tail
+                    || (nextIndex >= NUMBER_OF_TIMBRES * 2 && nextIndex < liveLimit))) {
+            return false;
+        }
+        index = nextIndex;
+    }
+
+    *predecessor = previous;
+    *successor = index;
+    return true;
+}
+
 
 
 // From main loop thread
@@ -572,27 +922,113 @@ void Sequencer::insertNote(uint8_t instrument, uint8_t note, uint8_t velocity) {
         return;
     }
 
-    if (likely(lastFreeAction_ < SEQ_ACTION_SIZE)) {
-        SeqMidiAction* newAction = &actions[lastFreeAction_];
-        newAction->when = current16bitTimer_ & instrumentTimerMask_[instrument];
-        newAction->actionType = SEQ_ACTION_NOTE;
-        newAction->param1 = note;
-        newAction->param2 = velocity;
-        // SysTick advances previousActionIndex_ while walking. Snapshot it:
-        // two separate reads can observe P then Q and publish Q -> new -> Q.
-        const uint16_t predecessorIndex = previousActionIndex_[instrument];
-        newAction->nextIndex = actions[predecessorIndex].nextIndex;
-        actions[predecessorIndex].nextIndex = lastFreeAction_;
+    const uint16_t head = instrument * 2;
+    const uint16_t tail = head + 1;
 
-        previousActionIndex_[instrument] = lastFreeAction_;
-
-        lastFreeAction_++;
-
-        if (unlikely(setSeqActivated(instrument))) {
-            displaySequencer_->refreshActivated();
-        } else if (unlikely((lastFreeAction_ & 0xF) == 0)) {
-            displaySequencer_->refreshMemory();
+    // A runtime trip deliberately avoids structural surgery in the ISR. Heal
+    // from this main-loop mutation point before a new note can reactivate the
+    // old poison chain. Also validate an inconsistent inactive/non-empty list
+    // when the user first attempts to record into it.
+    if (actionListPoisoned_[instrument]
+            || (!seqActivated_[instrument] && actions[head].nextIndex != tail)) {
+        if (!validateActionListInternal(instrument, true, true)) {
+            // Repair succeeded, but this note arrived against a poisoned
+            // cursor and is deliberately dropped. The next note records into
+            // the now-empty list; the recovery is observable and never
+            // reactivates the old links.
+            droppedInsertNotes_++;
+            return;
         }
+    }
+
+    uint16_t allocationIndex = lastFreeAction_;
+    if (unlikely(allocationIndex < NUMBER_OF_TIMBRES * 2
+            || allocationIndex >= SEQ_ACTION_SIZE)) {
+        // Covers both a malformed persisted allocator and a legitimately full
+        // pool. Every refused insert is observable.
+        droppedInsertNotes_++;
+        return;
+    }
+
+    uint16_t insertWhen = current16bitTimer_ & instrumentTimerMask_[instrument];
+    uint16_t predecessorIndex = previousActionIndex_[instrument];
+    uint16_t liveLimit = sanitizedLastFreeAction(allocationIndex);
+
+    // The tail->head cursor is the bar-wrap exit state. The specification
+    // defines a note drained in this window as a bar-start note, so normalize
+    // its timestamp as well as its predecessor; otherwise `when=mask` would
+    // be prepended ahead of earlier events and break chronological ordering.
+    const bool barWrapCursor = predecessorIndex == tail
+        && actions[tail].nextIndex == head;
+    if (barWrapCursor) insertWhen = 0;
+
+    bool predecessorSafe = predecessorIndex == head
+        || (predecessorIndex >= NUMBER_OF_TIMBRES * 2
+            && predecessorIndex < liveLimit);
+    uint16_t successorIndex = tail;
+    bool fastPositionValid = false;
+    if (predecessorSafe) {
+        successorIndex = actions[predecessorIndex].nextIndex;
+        const bool successorSafe = successorIndex != predecessorIndex
+            && (successorIndex == tail
+                || (successorIndex >= NUMBER_OF_TIMBRES * 2
+                    && successorIndex < liveLimit));
+        const bool predecessorTimeSafe = predecessorIndex == head
+            || actions[predecessorIndex].when <= insertWhen;
+        const bool successorTimeSafe = successorIndex == tail
+            || (successorSafe && actions[successorIndex].when >= insertWhen);
+        fastPositionValid = successorSafe && predecessorTimeSafe && successorTimeSafe;
+    }
+
+    if (!fastPositionValid) {
+        // Cursor movement is interrupt-driven and a bank load resets live
+        // traversal state. Validate once, then perform the spec's bounded
+        // timestamp rescan instead of blindly splicing at the head.
+        if (!validateActionListInternal(instrument, true, true)) {
+            droppedInsertNotes_++;
+            return;
+        }
+        allocationIndex = lastFreeAction_;
+        if (unlikely(allocationIndex < NUMBER_OF_TIMBRES * 2
+                || allocationIndex >= SEQ_ACTION_SIZE)) {
+            droppedInsertNotes_++;
+            return;
+        }
+        liveLimit = sanitizedLastFreeAction(allocationIndex);
+        if (!findInsertPosition(instrument, insertWhen, liveLimit,
+                    &predecessorIndex, &successorIndex)) {
+            actionListPoisoned_[instrument] = true;
+            droppedInsertNotes_++;
+            return;
+        }
+    }
+
+    SeqMidiAction* newAction = &actions[allocationIndex];
+    newAction->when = insertWhen;
+    newAction->actionType = SEQ_ACTION_NOTE;
+    newAction->param1 = note;
+    newAction->param2 = velocity;
+    newAction->nextIndex = successorIndex;
+
+    // Commit protocol for the higher-priority walk: initialize the node,
+    // widen the live region, issue a compiler fence, and only then expose the
+    // predecessor link. A preemption after link publication can therefore
+    // never see `newIndex == liveLimit` and false-trip a valid sequence.
+    lastFreeAction_ = allocationIndex + 1;
+    std::atomic_signal_fence(std::memory_order_seq_cst);
+    actions[predecessorIndex].nextIndex = allocationIndex;
+#ifdef PFM3_HOST
+    if (insertPublishHookForTest_ != nullptr) {
+        insertPublishHookForTest_(this, instrument);
+    }
+#endif
+
+    previousActionIndex_[instrument] = allocationIndex;
+
+    if (unlikely(setSeqActivated(instrument))) {
+        displaySequencer_->refreshActivated();
+    } else if (unlikely((lastFreeAction_ & 0xF) == 0)) {
+        displaySequencer_->refreshMemory();
     }
 }
 

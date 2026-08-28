@@ -90,6 +90,14 @@ SequenceBank::SequenceBank() {
     this->myFiles_ = preenFMSequenceAlloc;
 }
 
+#ifdef PFM3_HOST
+SequenceBank::LoadPublishHookForTest SequenceBank::loadPublishHookForTest_ = nullptr;
+
+void SequenceBank::setLoadPublishHookForTest(LoadPublishHookForTest hook) {
+    loadPublishHookForTest_ = hook;
+}
+#endif
+
 const char* SequenceBank::getFolderName() {
     return PREENFM_DIR;
 }
@@ -197,11 +205,21 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
         return;
     }
 
+    // Pause only the RAM publication transaction. SD reads above remain fully
+    // interruptible; SysTick/external-clock walks cannot observe mixed tables
+    // or deactivate poison between state restore and active-only validation.
+    sequencer->beginActionListLoad();
     __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
     // V1 intentionally updates only its six-sequence payload span; preserve
     // the historical behavior for the remaining V2-only live table bytes.
     __builtin_memcpy(stepNotes, stagedStepNotes, version1StepSize);
     sequencer->setFullState((uint8_t*)storageBuffer);
+#ifdef PFM3_HOST
+    if (loadPublishHookForTest_ != nullptr) loadPublishHookForTest_(sequencer);
+#endif
+    const bool acceptedState = storageBuffer[0] == SEQ_VERSION1
+        || storageBuffer[0] == SEQ_VERSION2;
+    sequencer->finishActionListLoad(acceptedState);
 }
 
 void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) {
@@ -232,9 +250,16 @@ void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) 
         return;
     }
 
+    sequencer->beginActionListLoad();
     __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
     __builtin_memcpy(stepNotes, stagedStepNotes, sizeof(stagedStepNotes));
     sequencer->setFullState((uint8_t*)storageBuffer);
+#ifdef PFM3_HOST
+    if (loadPublishHookForTest_ != nullptr) loadPublishHookForTest_(sequencer);
+#endif
+    const bool acceptedState = storageBuffer[0] == SEQ_VERSION1
+        || storageBuffer[0] == SEQ_VERSION2;
+    sequencer->finishActionListLoad(acceptedState);
 }
 
 

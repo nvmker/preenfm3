@@ -492,7 +492,7 @@ TEST_F(SequencerPhase2, StopHaltsTransport) {
 // Step-record / insertNote bounds + playback.
 // ---------------------------------------------------------------------------
 
-TEST_F(SequencerPhase2, InsertNoteFillsActionListThenSilentlyDrops) {
+TEST_F(SequencerPhase2, InsertNoteFillsActionListThenDropsAndCounts) {
     seq_->start();  // external clock: no precount, current16bitTimer_ = 0
     seq_->setRecording(0, true);
     // lastFreeAction_ starts at NUMBER_OF_TIMBRES*2 (12 reserved sentinel
@@ -504,9 +504,11 @@ TEST_F(SequencerPhase2, InsertNoteFillsActionListThenSilentlyDrops) {
     constexpr int kCapacity = SEQ_ACTION_SIZE - kReserved;
     for (int i = 0; i < kCapacity; i++) seq_->insertNote(0, 60, 100);
     EXPECT_EQ(seq_->getMemory(), 100) << "full action list = 100% memory";
-    // One more insert: silently dropped (lastFreeAction_ == SEQ_ACTION_SIZE).
+    // One more insert: refused and counted (lastFreeAction_ == SEQ_ACTION_SIZE).
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 0);
     seq_->insertNote(0, 60, 100);
     EXPECT_EQ(seq_->getMemory(), 100);
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 1);
     EXPECT_TRUE(seq_->isSeqActivated(0));
 }
 
@@ -1029,4 +1031,515 @@ TEST_F(SequencerPhase2, QueueOverflowDropsNewestAndCounts) {
     seq_->queueNote(0, 62, 100);
     seq_->processAsyncActions();
     EXPECT_EQ(seq_->getDroppedAsyncActions(), 1);
+}
+
+// ===========================================================================
+// 8.1-H4 — corrupt action-list hardening (spec-8-1-h4-seq-list-hardening).
+//
+// The walk (processActionBetwen) terminates only on `when` windows; a chain
+// that re-enters the head sentinel loops forever inside SysTick and froze
+// the unit on device (autopsy 2026-08-28: head.next=12, 48 zero-`when`
+// notes 12..59 sequential, actions[59].next=0 -> head, tail sentinel
+// zeroed). These tests pin the three guards: the bounded walk, the
+// head-bypass-proof insertNote, and validateActionList's load healing.
+// ===========================================================================
+
+extern SeqMidiAction actions[SEQ_ACTION_SIZE];
+
+namespace {
+
+// The on-device corpse, verbatim: every note when=0, strictly sequential
+// links, the last note pointing back at the HEAD sentinel, all other
+// sentinels zeroed (tail.when=0, not the 4095 bar limit).
+void WriteH4CorpseList() {
+    memset(actions, 0, sizeof(actions));
+    static const uint8_t kMelody[] = {
+        65, 65, 60, 62, 65, 65, 65, 65, 65, 65, 60, 62,
+        62, 62, 62, 62, 62, 65, 65, 65, 60, 60, 62, 62,
+    };
+    actions[0].nextIndex = 12;  // head -> first dynamic slot
+    for (int i = 0; i < 48; i++) {
+        const uint16_t slot = 12 + i;
+        actions[slot].when = 0;
+        actions[slot].nextIndex = (i == 47) ? 0 : slot + 1;  // last -> HEAD
+        actions[slot].actionType = SEQ_ACTION_NOTE;
+        actions[slot].param1 = kMelody[i / 2];
+        actions[slot].param2 = (i % 2 == 0) ? 100 : 0;      // on/off pairs
+    }
+}
+
+// Craft a V2 state with lastFreeAction_ and seqActivated[0] patched — the
+// header the poisoned slot carried (tempo 90, masks 4095, activated t1).
+void WriteH4State(Sequencer* seq, uint16_t lastFreeAction, uint8_t seqActivated0) {
+    uint8_t buf[256];
+    uint32_t size = 0;
+    seq->getFullState(buf, &size);
+    ASSERT_EQ(size, kExpectedStateSize);
+    std::memcpy(buf + kLastFreeActionOffset, &lastFreeAction, sizeof(uint16_t));
+    buf[20 + 4] = seqActivated0;  // timbre 0 seqActivated (after u16 pair)
+    seq->setFullState(buf);
+}
+
+// Walk a chain from the head sentinel; returns the hop count, or -1 when the
+// chain never reaches the tail within the budget (corrupt).
+int ChainHopsToTail(uint8_t instrument) {
+    const uint16_t head = instrument * 2;
+    const uint16_t tail = head + 1;
+    uint16_t index = actions[head].nextIndex;
+    int hops = 0;
+    while (index != tail) {
+        if (++hops > 2048) return -1;
+        index = actions[index].nextIndex;
+    }
+    return hops;
+}
+
+bool gInsertPublishSawLiveNode = false;
+void CaptureInsertPublication(Sequencer* seq, uint8_t instrument) {
+    const uint16_t published = actions[instrument * 2].nextIndex;
+    gInsertPublishSawLiveNode = published < seq->getLastFreeActionForTest();
+}
+
+}  // namespace
+
+TEST_F(SequencerPhase2, H4CorpseWalkIsBoundedAndHeals) {
+    WriteH4State(seq_, 60, 1);
+    WriteH4CorpseList();
+    ASSERT_TRUE(seq_->isSeqActivated(0));
+    ASSERT_EQ(seq_->getWalkTrips(), 0);
+
+    seq_->start();        // external clock (default): running_, no precount
+    seq_->onMidiStart();  // rewind: timers to 0
+    seq_->mainSequencerTic(0);   // cursor at tail: the call ends at the wrap
+    seq_->mainSequencerTic(1);   // head-side entry: walks into the head-bypass -> trip
+
+    // Pre-fix the head-side walk never returned (infinite SysTick loop).
+    // Post-fix: the head-bypass link trips the guard — walk stops, list
+    // deactivated, trip counted. The sequencer itself keeps running.
+    EXPECT_EQ(seq_->getWalkTrips(), 1);
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+    EXPECT_TRUE(seq_->isRunning());
+
+    // Deactivated: later tics must not re-trip (no repeated note spam).
+    seq_->mainSequencerTic(100);
+    seq_->mainSequencerTic(4095);
+    EXPECT_EQ(seq_->getWalkTrips(), 1);
+}
+
+TEST_F(SequencerPhase2, RuntimeTripRepairsBeforeRecordingCanReactivatePoison) {
+    WriteH4State(seq_, 60, 1);
+    WriteH4CorpseList();
+    seq_->setRecording(0, true);
+
+    seq_->start();
+    seq_->onMidiStart();
+    seq_->mainSequencerTic(0);
+    seq_->mainSequencerTic(1);
+    ASSERT_EQ(seq_->getWalkTrips(), 1);
+    ASSERT_FALSE(seq_->isSeqActivated(0));
+
+    // The first post-trip note repairs the chain in the main-loop context and
+    // is dropped+counted rather than being linked in front of the poison.
+    seq_->queueNote(0, 67, 100);
+    seq_->processAsyncActions();
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 1);
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+    EXPECT_EQ(actions[0].nextIndex, 1);
+    EXPECT_EQ(seq_->getLastFreeActionForTest(), NUMBER_OF_TIMBRES * 2);
+
+    // Recording can then resume on the clean list without another trip.
+    seq_->queueNote(0, 69, 100);
+    seq_->processAsyncActions();
+    EXPECT_TRUE(seq_->isSeqActivated(0));
+    EXPECT_EQ(actions[0].nextIndex, 12);
+    EXPECT_EQ(actions[12].nextIndex, 1);
+    EXPECT_EQ(ChainHopsToTail(0), 1);
+    seq_->mainSequencerTic(2);
+    EXPECT_EQ(seq_->getWalkTrips(), 1);
+}
+
+TEST_F(SequencerPhase2, InsertAtBarWrapCursorDoesNotBypassHead) {
+    seq_->start();
+    seq_->setRecording(0, true);
+
+    // Record one note mid-bar, then drive the walk across the bar wrap. The
+    // walk exits the wrap with the cursor at prev=tail/next=head — the exact
+    // state that used to mint a head-bypass link on the next recorded note.
+    seq_->mainSequencerTic(100);
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+    ASSERT_TRUE(seq_->isSeqActivated(0));
+    // First walk after activation: window [0..200] plays the note and exits
+    // at the tail (realistic incremental timer steps — no full-bar jumps).
+    seq_->mainSequencerTic(200);
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
+    // Walk across the bar end: the cursor exits at prev=tail/next=head —
+    // the exact state that used to mint a head-bypass link.
+    seq_->mainSequencerTic(4095);
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
+
+    // Note recorded in the bar-wrap window: must splice at bar start with a
+    // walk-safe successor (never next == head).
+    seq_->queueNote(0, 62, 100);
+    seq_->processAsyncActions();
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 0);
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
+
+    // Structure: head -> new note -> old note -> tail, every hop in range.
+    EXPECT_EQ(actions[0].nextIndex, 13);  // newest at bar start
+    EXPECT_EQ(actions[13].when, 0);
+    EXPECT_EQ(actions[13].nextIndex, 12);
+    EXPECT_EQ(actions[12].nextIndex, 1);  // tail sentinel
+    EXPECT_EQ(ChainHopsToTail(0), 2);      // two dynamic hops to the tail
+
+    // And the repaired chain still plays through the next bar: incremental
+    // windows only, no trip, still activated.
+    seq_->mainSequencerTic(0);
+    EXPECT_EQ(synth_.getLowerNote(0), 62) << "the normalized bar-start note fires at zero";
+    seq_->mainSequencerTic(100);
+    EXPECT_EQ(synth_.getLowerNote(0), 60) << "the existing 100-tick note is not delayed to bar end";
+    seq_->mainSequencerTic(4095);
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
+    EXPECT_TRUE(seq_->isSeqActivated(0));
+}
+
+TEST_F(SequencerPhase2, InsertPublishesLiveLimitBeforeExposingLink) {
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(100);
+
+    gInsertPublishSawLiveNode = false;
+    seq_->setInsertPublishHookForTest(CaptureInsertPublication);
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+    seq_->setInsertPublishHookForTest(nullptr);
+
+    EXPECT_TRUE(gInsertPublishSawLiveNode)
+        << "an IRQ observing the published link must also see its slot inside lastFreeAction";
+    EXPECT_EQ(actions[0].nextIndex, 12);
+    EXPECT_GT(seq_->getLastFreeActionForTest(), actions[0].nextIndex);
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
+}
+
+TEST_F(SequencerPhase2, InsertIntoZeroedHeadDropsAndCounts) {
+    // The H4 minting scenario: a fully zeroed action block (what a poison
+    // slot memcpy leaves) has head.next == head (self-loop). Recording must
+    // refuse to splice into that — the link that used to start every chain
+    // corruption — and count the drop instead.
+    WriteH4State(seq_, 12, 0);  // empty live region, deactivated
+    memset(actions, 0, sizeof(actions));  // head.next = 0 = head
+
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->onMidiStart();
+    seq_->mainSequencerTic(0);
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 1);
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+    int liveNotes = 0;
+    for (int i = 12; i < SEQ_ACTION_SIZE; i++) {
+        if (actions[i].actionType == SEQ_ACTION_NOTE) liveNotes++;
+    }
+    EXPECT_EQ(liveNotes, 0);
+}
+
+TEST_F(SequencerPhase2, SameTickChordRecordsBothNotes) {
+    // The B3 guard must not throttle legitimate inserts: two note-ons in the
+    // same tick both land.
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(100);
+    seq_->queueNote(0, 60, 100);
+    seq_->queueNote(0, 64, 100);
+    seq_->processAsyncActions();
+
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 0);
+    bool saw60 = false, saw64 = false;
+    for (int i = 12; i < 32; i++) {
+        if (actions[i].actionType != SEQ_ACTION_NOTE) continue;
+        saw60 |= actions[i].param1 == 60;
+        saw64 |= actions[i].param1 == 64;
+    }
+    EXPECT_TRUE(saw60);
+    EXPECT_TRUE(saw64);
+    EXPECT_EQ(ChainHopsToTail(0), 2);
+}
+
+TEST_F(SequencerPhase2, ValidateActionListResetsPoisonChain) {
+    // A pristine instrument validates clean, no reset counted.
+    EXPECT_TRUE(seq_->validateActionList(1));
+    EXPECT_EQ(seq_->getListsResetOnLoad(), 0);
+
+    WriteH4State(seq_, 60, 1);
+    WriteH4CorpseList();
+
+    // The corpse fails validation and is healed in place.
+    EXPECT_FALSE(seq_->validateActionList(0));
+    EXPECT_EQ(seq_->getListsResetOnLoad(), 1);
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+    EXPECT_EQ(actions[0].nextIndex, 1);            // head -> tail
+    EXPECT_EQ(actions[1].when, 4095);              // bar limit restored
+    EXPECT_EQ(actions[1].nextIndex, 0);            // tail -> head (circular)
+    EXPECT_EQ(ChainHopsToTail(0), 0);
+    for (int i = 12; i < 60; i++) {
+        EXPECT_EQ(actions[i].actionType, SEQ_ACTION_NONE)
+            << "reachable poison slot " << i << " must be reclaimed";
+    }
+
+    // The healed list validates clean on re-check (idempotent, no new reset).
+    EXPECT_TRUE(seq_->validateActionList(0));
+    EXPECT_EQ(seq_->getListsResetOnLoad(), 1);
+}
+
+TEST_F(SequencerPhase2, ValidateRejectsEveryCorruptSentinelInvariant) {
+    for (int corruption = 0; corruption < 4; corruption++) {
+        SCOPED_TRACE(corruption);
+        seq_->reset(false);
+        WriteH4State(seq_, 13, 1);
+        switch (corruption) {
+        case 0:
+            actions[0].when = 7;                    // head must be at zero
+            break;
+        case 1:
+            actions[0].actionType = SEQ_ACTION_NOTE; // sentinels never emit
+            break;
+        case 2:
+            actions[1].actionType = SEQ_ACTION_NOTE;
+            break;
+        case 3:
+            actions[1].nextIndex = 12;              // tail may only wrap to head
+            break;
+        }
+
+        const uint32_t before = seq_->getListsResetOnLoad();
+        EXPECT_FALSE(seq_->validateActionList(0));
+        EXPECT_EQ(seq_->getListsResetOnLoad(), before + 1);
+        EXPECT_FALSE(seq_->isSeqActivated(0));
+        EXPECT_EQ(actions[0].when, 0);
+        EXPECT_EQ(actions[0].actionType, SEQ_ACTION_NONE);
+        EXPECT_EQ(actions[0].nextIndex, 1);
+        EXPECT_EQ(actions[1].actionType, SEQ_ACTION_NONE);
+        EXPECT_EQ(actions[1].nextIndex, 0);
+    }
+}
+
+TEST_F(SequencerPhase2, ValidateRejectsDescendingDynamicTimestamps) {
+    WriteH4State(seq_, 14, 1);
+    actions[0].nextIndex = 12;
+    actions[12].when = 100;
+    actions[12].nextIndex = 13;
+    actions[12].actionType = SEQ_ACTION_NOTE;
+    actions[13].when = 50;
+    actions[13].nextIndex = 1;
+    actions[13].actionType = SEQ_ACTION_NOTE;
+
+    EXPECT_FALSE(seq_->validateActionList(0));
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+    EXPECT_EQ(actions[0].nextIndex, 1);
+}
+
+TEST_F(SequencerPhase2, HealingFullPoisonReclaimsAllocatorCapacity) {
+    WriteH4State(seq_, SEQ_ACTION_SIZE, 1);
+    memset(actions, 0, sizeof(actions));
+    actions[0].nextIndex = NUMBER_OF_TIMBRES * 2;
+    for (uint16_t index = NUMBER_OF_TIMBRES * 2; index < SEQ_ACTION_SIZE; index++) {
+        actions[index].when = 0;
+        actions[index].actionType = SEQ_ACTION_NOTE;
+        actions[index].nextIndex = index + 1;
+    }
+    actions[SEQ_ACTION_SIZE - 1].nextIndex = 0;
+
+    EXPECT_FALSE(seq_->validateActionList(0));
+    EXPECT_EQ(seq_->getLastFreeActionForTest(), NUMBER_OF_TIMBRES * 2);
+    for (uint16_t index = NUMBER_OF_TIMBRES * 2; index < SEQ_ACTION_SIZE; index++) {
+        EXPECT_EQ(actions[index].actionType, SEQ_ACTION_NONE);
+    }
+}
+
+TEST_F(SequencerPhase2, OversizedAllocatorHeaderIsNormalizedAndCanRecord) {
+    WriteH4State(seq_, UINT16_MAX, 1);
+    ASSERT_TRUE(seq_->validateActionList(0));
+    EXPECT_EQ(seq_->getLastFreeActionForTest(), NUMBER_OF_TIMBRES * 2);
+
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(100);
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 0);
+    EXPECT_EQ(actions[0].nextIndex, 12);
+    EXPECT_EQ(actions[12].nextIndex, 1);
+}
+
+// ---------------------------------------------------------------------------
+// 8.1-H4 review patches (Blind Hunter + Edge Case Hunter, step-04 loop):
+// full-bar single-pass, trip cleans up voices, sentinel-region lastFree
+// refusal, counted resync trips.
+// ---------------------------------------------------------------------------
+
+TEST_F(SequencerPhase2, FullBarWindowOnValidListPlaysOnceAndStaysActive) {
+    // BH2: a full-bar window [0..4095] in ONE walk call — reachable when the
+    // first walk after activation lands at the bar end — must play the bar
+    // ONCE and stop at the wrap. The unpatched budget admitted two extra
+    // hops past the wrap: the first note(s) replayed, then a VALID list was
+    // false-deactivated (silent mid-performance stop).
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(0);  // not yet activated: walk skipped, last=-1
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+    ASSERT_TRUE(seq_->isSeqActivated(0));
+
+    // First walk ever, straight to the bar end: wrap call is empty, then
+    // the regular call runs [0..4095] — the whole bar in one window.
+    seq_->mainSequencerTic(4095);
+    EXPECT_EQ(seq_->getWalkTrips(), 0) << "valid list must not trip";
+    EXPECT_TRUE(seq_->isSeqActivated(0)) << "no silent deactivation";
+    EXPECT_EQ(synth_.getLowerNote(0), 64) << "not yet fired: cursor was at the tail, the note plays from the next bar (loop-pass semantics)";
+
+    // The wrap ended the call cleanly: the next bar services the head side
+    // and replays the note (normal looping), still without a trip.
+    seq_->mainSequencerTic(0);
+    seq_->mainSequencerTic(100);
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
+    EXPECT_TRUE(seq_->isSeqActivated(0));
+    EXPECT_EQ(synth_.getLowerNote(0), 60) << "fired exactly once on the second bar and holds";
+}
+
+TEST_F(SequencerPhase2, TripKillsVoicesTheWalkStarted) {
+    // BH3: a trip between a recorded note-on and its note-off must not
+    // strand the voice — every other list surgery kills voices; the walk
+    // trip must too. Slot 12's note-on plays and RENDERS a block before the
+    // walk reaches slot 13's head-bypass, so the trip's quick kill takes
+    // the deterministic killNow path (note already played).
+    WriteH4State(seq_, 14, 1);
+    memset(actions, 0, sizeof(actions));
+    actions[0].nextIndex = 12;
+    actions[12].when = 0;
+    actions[12].nextIndex = 13;
+    actions[12].actionType = SEQ_ACTION_NOTE;
+    actions[12].param1 = 60;
+    actions[12].param2 = 100;   // note-on: fires at [0..1]
+    actions[13].when = 2;
+    actions[13].nextIndex = 0;  // head-bypass: trips at [1..2]
+    actions[13].actionType = SEQ_ACTION_NOTE;
+    actions[13].param1 = 62;
+    actions[13].param2 = 100;
+
+    seq_->start();
+    seq_->onMidiStart();
+    seq_->mainSequencerTic(0);  // tail-side call: ends at the wrap
+    seq_->mainSequencerTic(1);  // head-side entry: slot 12's note-on fires
+    EXPECT_EQ(synth_.getLowerNote(0), 60) << "the walk started the note";
+
+    int32_t b1[64], b2[64], b3[64];  // 64 samples per buffer (see synth_core_test)
+    synth_.buildNewSampleBlock(b1, b2, b3);  // the note becomes played
+
+    seq_->mainSequencerTic(2);  // walk reaches slot 13 -> head-bypass -> trip
+    EXPECT_EQ(seq_->getWalkTrips(), 1);
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+
+    // The trip's allNoteOffQuick killNow'd the voice: it retires within a
+    // couple of rendered blocks (without the kill it would ring forever).
+    bool released = !synth_.isPlaying();
+    for (int i = 0; i < 10 && !released; i++) {
+        synth_.buildNewSampleBlock(b1, b2, b3);
+        released = !synth_.isPlaying();
+    }
+    EXPECT_TRUE(released) << "the note-on fired at slot 12 must be released by the trip";
+}
+
+TEST_F(SequencerPhase2, InsertRefusesSentinelRegionLastFreeAction) {
+    // BH1: a loaded header can carry lastFreeAction_ inside the sentinel
+    // region. Recording must refuse (and count) rather than splice a new
+    // note into, say, actions[5] — another instrument's head sentinel.
+    WriteH4State(seq_, 5, 0);   // inactive: activation is not needed to refuse
+    memset(actions, 0, sizeof(actions));
+
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->onMidiStart();
+    seq_->mainSequencerTic(0);
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+
+    EXPECT_EQ(seq_->getDroppedInsertNotes(), 1);
+    EXPECT_EQ(actions[5].when, 0) << "sentinel slot must stay untouched";
+    EXPECT_EQ(actions[5].nextIndex, 0);
+    EXPECT_EQ(actions[5].actionType, 0);
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+}
+
+TEST_F(SequencerPhase2, ResyncTripIsCounted) {
+    // EC4: corruption surfacing through resyncNextAction (bars change on a
+    // poison chain) must be observable, not silent.
+    WriteH4State(seq_, 60, 1);
+    WriteH4CorpseList();
+    ASSERT_TRUE(seq_->isSeqActivated(0));
+
+    seq_->start();
+    seq_->onMidiStart();
+    seq_->setNumberOfBars(0, 2);  // arms nextActionTimerOutOfSync_
+    ASSERT_EQ(seq_->getWalkTrips(), 0);
+    seq_->mainSequencerTic(1000);  // resync walks from the head -> head-bypass link
+    EXPECT_EQ(seq_->getWalkTrips(), 1u) << "resync trip must be counted once";
+    EXPECT_FALSE(seq_->isSeqActivated(0));
+    EXPECT_EQ(seq_->getPreviousActionIndexForTest(0), 0);
+    EXPECT_EQ(seq_->getNextActionIndexForTest(0), 1);
+    EXPECT_FALSE(seq_->isNextActionTimerOutOfSyncForTest(0));
+}
+
+TEST_F(SequencerPhase2, ResyncNearZeroDoesNotFalseTripValidList) {
+    seq_->start();
+    seq_->setRecording(0, true);
+    seq_->mainSequencerTic(0);
+    seq_->queueNote(0, 60, 100);
+    seq_->processAsyncActions();
+    ASSERT_TRUE(seq_->isSeqActivated(0));
+
+    seq_->setNumberOfBars(0, 2);
+    seq_->mainSequencerTic(1);  // previous service point wraps below zero
+
+    EXPECT_EQ(seq_->getWalkTrips(), 0);
+    EXPECT_TRUE(seq_->isSeqActivated(0));
+    EXPECT_GE(seq_->getNextActionIndexForTest(0), 1);
+}
+
+TEST_F(SequencerPhase2, TripClearsArpeggiatorStackBeforeLaterClocks) {
+    synth_.setNewValueFromMidi(0, ROW_ARPEGGIATOR1,
+        ENCODER_ARPEGGIATOR_BPM, 120.0f);
+    synth_.setNewValueFromMidi(0, ROW_ARPEGGIATOR1,
+        ENCODER_ARPEGGIATOR_CLOCK, static_cast<float>(CLOCK_INTERNAL));
+
+    WriteH4State(seq_, 14, 1);
+    memset(actions, 0, sizeof(actions));
+    actions[0].nextIndex = 12;
+    actions[12].when = 0;
+    actions[12].nextIndex = 13;
+    actions[12].actionType = SEQ_ACTION_NOTE;
+    actions[12].param1 = 60;
+    actions[12].param2 = 100;  // enters the arp stack
+    actions[13].when = 2;
+    actions[13].nextIndex = 0;
+    actions[13].actionType = SEQ_ACTION_NOTE;
+    actions[13].param1 = 62;
+    actions[13].param2 = 100;
+
+    seq_->start();
+    seq_->onMidiStart();
+    seq_->mainSequencerTic(0);
+    seq_->mainSequencerTic(1);
+    seq_->mainSequencerTic(2);  // trip after the arp note was queued
+    ASSERT_EQ(seq_->getWalkTrips(), 1);
+
+    int32_t b1[64], b2[64], b3[64];
+    bool retriggered = false;
+    for (int block = 0; block < 2000; block++) {
+        synth_.buildNewSampleBlock(b1, b2, b3);
+        retriggered |= synth_.isPlaying();
+    }
+    EXPECT_FALSE(retriggered)
+        << "a trip-cleared arp stack must not retrigger on later internal clocks";
 }
