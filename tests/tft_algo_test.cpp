@@ -16,14 +16,16 @@
 //   semantics), alignment-defined for every position.
 //
 // The alignment half of the regression guard lives in the sanitizer build:
-//   tests/CMakeLists.txt sets UBSAN_OPTIONS=halt_on_error=1 for these tests,
-//   so the -fsanitize=alignment check (already in the test-asan flag set)
-//   turns any reintroduced misaligned cast-store into a hard failure. On the
-//   plain build these tests pin the BYTE COVERAGE of the box (rows span
-//   columns x1..x1+19; vertical edges are 2 px wide: x1, x1+1 and x1+19,
-//   x1+20 — matching the old int16 edge stores) for the crash geometry
-//   (middle column), every other column, draw AND erase, plus the
-//   position-0 early return.
+//   tests/CMakeLists.txt disables alignment recovery for TftAlgo.cpp only.
+//   With the test-asan target's -fsanitize=undefined instrumentation, any
+//   reintroduced misaligned cast-store terminates the test under both GCC and
+//   Clang while reports from other translation units keep the suite's
+//   reporting-only behavior. On the plain build the no-recover option is inert
+//   and these tests pin the BYTE COVERAGE of the box (rows span columns
+//   x1..x1+19; vertical edges are 2 px wide: x1, x1+1 and x1+19, x1+20 —
+//   matching the old int16 edge stores) for the crash geometry (middle
+//   column), every other column, draw AND erase, plus the position-0 early
+//   return.
 //
 // Geometry replicated independently here from the frozen upstream tables
 // (TftAlgo.cpp allAlgos[]) — NOTE drawAlgo(n) indexes allAlgos[n] directly
@@ -41,59 +43,6 @@
 #include <cstring>
 
 #include "TftAlgo.h"  // firmware-under-test (PFM3_HOST seam: stdint only)
-
-// --- UBSan enforcement hook (7.6 regression guard) --------------------------
-// -fsanitize=undefined (the test-asan flag set) REPORTS misaligned stores
-// but exits 0 by default, and per-test ENVIRONMENT properties can't reach
-// gtest_discover_tests results at configure time — so a reintroduced
-// int32/int16 cast-store in TftAlgo would print a runtime error yet still
-// PASS ctest. Override the UBSan monitor hook instead: when a report fires
-// from TftAlgo.cpp (the TU under test), abort the process so the running
-// test fails loudly. Reports from any other TU keep the suite's documented
-// reporting-only behavior (only fatal for this file).
-#if defined(__clang__) && defined(__has_feature)
-#if __has_feature(undefined_behavior_sanitizer)
-#include <cstdio>
-#include <cstdlib>
-extern "C" {
-// compiler-rt ubsan_monitor interface (weak defaults; overriding
-// __ubsan_on_report makes the runtime call us after every report).
-void __ubsan_on_report(void);
-void __ubsan_get_current_report_data(const char **OutIssueKind,
-                                     const char **OutMessage,
-                                     const char **OutFilename,
-                                     unsigned *OutLine, unsigned *OutCol,
-                                     char **OutMemoryAddr);
-}
-static bool StringContains(const char *haystack, const char *needle) {
-    if (haystack == nullptr) return false;
-    const size_t n = std::strlen(needle);
-    for (const char *p = haystack; *p != '\0'; ++p) {
-        if (std::strncmp(p, needle, n) == 0) return true;
-    }
-    return false;
-}
-extern "C" void __ubsan_on_report(void) {
-    const char *issueKind = nullptr;
-    const char *message = nullptr;
-    const char *filename = nullptr;
-    unsigned line = 0, col = 0;
-    char *addr = nullptr;
-    __ubsan_get_current_report_data(&issueKind, &message, &filename, &line,
-                                    &col, &addr);
-    if (StringContains(filename, "TftAlgo.cpp")) {
-        std::fprintf(
-            stderr,
-            "\n*** TftAlgo.cpp:%u:%u triggered a UBSan report (%s): %s\n"
-            "*** Aborting: misaligned cast-stores in TftAlgo are finding 7.6\n"
-            "*** regressions and must fail the test, not just report.\n",
-            line, col, issueKind != nullptr ? issueKind : "?",
-            message != nullptr ? message : "?");
-        std::_Exit(70);  // fail the running test; no unwinding under a report
-    }
-}
-#endif  // __has_feature(undefined_behavior_sanitizer)
-#endif  // defined(__clang__)
 
 namespace {
 
