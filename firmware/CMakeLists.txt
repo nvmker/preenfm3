@@ -57,6 +57,25 @@ target_compile_options(preenfm3 PRIVATE -Wall -Wextra)
 # -Wmaybe-uninitialized, ...) stay visible. Per the static-analysis spike.
 target_compile_options(preenfm3 PRIVATE
     -Wno-unused-parameter -Wno-missing-field-initializers)
+# 7.6 regression guard (PR #35 follow-up): flag every cast that increases the
+# required alignment of the target type — the class that HardFaulted on device
+# (TftAlgo::highlightOperator's int32/int16 cast-stores into the uint8_t algo
+# mask buffer, fused to strd by gcc 15 — strd never tolerates misalignment on
+# ARMv7-M). Non-fatal: a new project-code -Wcast-align warning is triage-
+# before-merge material, not a build breaker. lib/Src (preenfm3lib) carries
+# the same flag with two vendor files suppressed — baseline documented in
+# doc/STATIC-ANALYSIS.md § GCC -Wcast-align.
+target_compile_options(preenfm3 PRIVATE -Wcast-align)
+# Vendor C trees compiled into this same target (STM32 HAL + ST USB
+# middleware) carry a 34-warning cast-align baseline (hal_spi x26, hal_uart
+# x6, ll_usb x2 — register/DMA overlay idioms, ST-maintained). Suppress the
+# flag on exactly those files so the only visible -Wcast-align warnings are
+# PROJECT code. Current 10-warning project baseline (bank-serialization
+# struct-overlay idiom) is documented in doc/STATIC-ANALYSIS.md.
+set(PFM3_VENDOR_C ${FIRMWARE_C})
+list(FILTER PFM3_VENDOR_C INCLUDE REGEX "/(Drivers|Middlewares)/")
+set_source_files_properties(${PFM3_VENDOR_C} PROPERTIES
+    COMPILE_OPTIONS "-Wno-cast-align")
 
 target_link_libraries(preenfm3 PRIVATE preenfm3lib)
 
