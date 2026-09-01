@@ -63,6 +63,63 @@ no-signal style flags (~521 of the firmware/Src warnings); the bug-shaped
 warnings stay visible. No `-Werror` (the noise floor is the baseline file, not
 the compiler).
 
+## GCC `-Wcast-align` (7.6 regression guard)
+
+Enabled on BOTH `preenfm3` and `preenfm3lib` (`firmware/CMakeLists.txt` +
+`lib/CMakeLists.txt`, 2026-09-01, PR #35 follow-up). This is the compiler's
+check for the finding-7.6 bug class — wide-type pointer casts
+(`*(uint32_t*)&byteBuf[runtimeOffset]`) whose target alignment exceeds the
+source: latent UB that HardFaulted on device once gcc 15 fused a loop of
+misaligned stores into `strd` (which, unlike plain `str`, never tolerates
+misalignment on ARMv7-M). The warning flags both store and load forms and is
+compile-time-only — no runtime cost, works on the cross-build where the bug
+lives. Not `-Werror`; a NEW project-code `-Wcast-align` warning should be
+triaged before merge (see `tests/tft_algo_test.cpp` for the dynamic UBSan
+guard that complements it on hosted code).
+
+### The vendor baseline (suppressed per file/tree)
+
+The flag is on both targets, which compile vendored code; those trees carry
+a **39-warning** vendor baseline, suppressed so the only visible
+`-Wcast-align` warnings are PROJECT code:
+
+| Tree / file | Count | Pattern | Assessment |
+| --- | --- | --- | --- |
+| `firmware/Drivers/.../stm32h7xx_hal_spi.c` | 26 | register/DMA overlay casts | ST-maintained HAL idiom — not ours |
+| `firmware/Drivers/.../stm32h7xx_hal_uart.c` | 6 | register/DMA overlay casts | ST-maintained HAL idiom |
+| `firmware/Drivers/.../stm32h7xx_ll_usb.c` | 2 | register overlay casts | ST-maintained |
+| `lib/Src/sd_diskio.c` (l.148/166/195/214) | 4 | `(uint32_t*)buff` — FatFs `BYTE*` disk-io buffers handed to SDMMC DMA | SDMMC DMA contract requires word-aligned buffers; every firmware caller passes the aligned static `storageBuffer`. A misaligned FatFs buffer would DMA-fault, not CPU-fault; no fork action. |
+| `lib/Src/adafruit_802_sd.c` (l.376) | 1 | `(uint32_t*)dummySector` local byte array | Adafruit BSP example code; same DMA-contract class. |
+
+Suppression mechanics: `set_source_files_properties(... -Wno-cast-align)`
+on the two lib files (`lib/CMakeLists.txt`) and on the `Drivers/` +
+`Middlewares/` subsets of the firmware C glob (`firmware/CMakeLists.txt`).
+
+### The 10-warning PROJECT baseline (visible, documented)
+
+All ten are the bank-serialization **struct-overlay idiom** — casting the
+`char storageBuffer[PROPERTY_FILE_SIZE]` global (formal alignment 1) to
+`FlashSynthParams*` / `uint32_t*` at whole-patch-size offsets:
+
+- `filesystem/MixerBank.cpp:132/173/230` and
+  `filesystem/PatchBank.cpp:80/101/118/138` — `char*` → `FlashSynthParams*`
+  overlays. Offsets are multiples of `ALIGNED_PATCH_SIZE` (1024), so runtime
+  alignment reduces to `storageBuffer`'s own address; the array is a large
+  global that the toolchain/linker aligns in practice. Formally UB,
+  practically stable — the upstream persistence idiom. Hardening (memcpy or
+  a union/aligned-typed buffer) is a deliberate serialization-area change,
+  NOT drive-by material; filed to deferred-work.
+- `filesystem/PatchBank.cpp:81/95/139` — the preset version stamp
+  `*(uint32_t*)&storageBuffer[ALIGNED_PATCH_SIZE-5]` (constant offset 1019,
+  ≡3 mod 4 — genuinely misaligned regardless of base). Tolerated today
+  because a lone store compiles to unaligned-permitting `str` on Cortex-M7;
+  7.6 faulted only because gcc FUSED a loop of stores into `strd`. Fragile
+  under future codegen — filed to deferred-work (harden with 4-byte
+  `memcpy` when the file is next touched).
+
+Any NEW `-Wcast-align` warning outside these ten lines (or a count drift
+beyond 10) is new code in the 7.6 class — triage before merge.
+
 ## Resolved findings (triage history)
 
 Real bugs surfaced by the analyzers and fixed (behavior-preserving unless

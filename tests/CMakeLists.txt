@@ -239,6 +239,26 @@ target_sources(pfm3_tests PRIVATE
     # and gates only the UART register kick; MidiControllerFile reuses the
     # Phase-4 FatFs shim and PreenFMFileType implementation above.
     "${PFM3_FW_ROOT}/Src/MidiController/MidiControllerState.cpp"
-    "${PFM3_FW_ROOT}/Src/MidiController/MidiControllerFile.cpp")
+    "${PFM3_FW_ROOT}/Src/MidiController/MidiControllerFile.cpp"
+    # --- Finding 7.6: TFT algo-drawing tier --------------------------------
+    # Pure-C++ drawing TU (no HAL calls): only the stm32h7xx_hal.h include
+    # needs the PFM3_HOST seam (lib/Inc/TftAlgo.h resolves to <stdint.h>).
+    # highlightOperator's former int32/int16 cast-stores into the uint8_t
+    # algo mask buffer were misaligned for middle-column operator cells and
+    # HardFaulted on device (strd requires word alignment); the byte-store
+    # rewrite is exercised by tests/tft_algo_test.cpp, and the UBSan
+    # alignment check (test-asan target) is the regression guard.
+    "${PFM3_FW_ROOT}/Src/hardware/TftAlgo.cpp")
+
+# 7.6 regression guard: UBSan recovers from alignment failures by default, but
+# the old TftAlgo cast-stores must fail test-asan under either GCC or Clang.
+# Disable recovery on this TU only; other TUs retain the suite's documented
+# reporting-only sanitizer behavior. Without sanitizer instrumentation this
+# option is inert, so the plain host build remains unchanged.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_property(
+        SOURCE "${PFM3_FW_ROOT}/Src/hardware/TftAlgo.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS "-fno-sanitize-recover=alignment")
+endif()
 
 gtest_discover_tests(pfm3_tests)
