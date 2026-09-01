@@ -250,12 +250,15 @@ target_sources(pfm3_tests PRIVATE
     # alignment check (test-asan target) is the regression guard.
     "${PFM3_FW_ROOT}/Src/hardware/TftAlgo.cpp")
 
-# 7.6 regression-guard NOTE: UBSan's alignment check (the test-asan flag set)
-# only REPORTS by default (exit 0), and per-test ENVIRONMENT properties can't
-# reach gtest_discover_tests results at configure time (discovery is deferred
-# to build time). The enforcement therefore lives IN-PROCESS in
-# tests/tft_algo_test.cpp: a __ubsan_on_report monitor-hook override aborts
-# when a report fires from TftAlgo.cpp, turning a reintroduced misaligned
-# cast-store into a hard test failure. Other TUs keep the documented
-# reporting-only behavior.
+# 7.6 regression guard: UBSan recovers from alignment failures by default, but
+# the old TftAlgo cast-stores must fail test-asan under either GCC or Clang.
+# Disable recovery on this TU only; other TUs retain the suite's documented
+# reporting-only sanitizer behavior. Without sanitizer instrumentation this
+# option is inert, so the plain host build remains unchanged.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set_property(
+        SOURCE "${PFM3_FW_ROOT}/Src/hardware/TftAlgo.cpp"
+        APPEND PROPERTY COMPILE_OPTIONS "-fno-sanitize-recover=alignment")
+endif()
+
 gtest_discover_tests(pfm3_tests)

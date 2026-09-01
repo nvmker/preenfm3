@@ -80,7 +80,7 @@ guard that complements it on hosted code).
 ### The vendor baseline (suppressed per file/tree)
 
 The flag is on both targets, which compile vendored code; those trees carry
-a **36-warning** vendor baseline, suppressed so the only visible
+a **39-warning** vendor baseline, suppressed so the only visible
 `-Wcast-align` warnings are PROJECT code:
 
 | Tree / file | Count | Pattern | Assessment |
