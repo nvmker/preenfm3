@@ -256,5 +256,6 @@ target_sources(pfm3_tests PRIVATE
 # to build time). The enforcement therefore lives IN-PROCESS in
 # tests/tft_algo_test.cpp: a __ubsan_on_report monitor-hook override aborts
 # when a report fires from TftAlgo.cpp, turning a reintroduced misaligned
-cast-store into a hard test failure. Other TUs keep the documented
+# cast-store into a hard test failure. Other TUs keep the documented
 # reporting-only behavior.
+gtest_discover_tests(pfm3_tests)
