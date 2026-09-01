@@ -239,6 +239,22 @@ target_sources(pfm3_tests PRIVATE
     # and gates only the UART register kick; MidiControllerFile reuses the
     # Phase-4 FatFs shim and PreenFMFileType implementation above.
     "${PFM3_FW_ROOT}/Src/MidiController/MidiControllerState.cpp"
-    "${PFM3_FW_ROOT}/Src/MidiController/MidiControllerFile.cpp")
+    "${PFM3_FW_ROOT}/Src/MidiController/MidiControllerFile.cpp"
+    # --- Finding 7.6: TFT algo-drawing tier --------------------------------
+    # Pure-C++ drawing TU (no HAL calls): only the stm32h7xx_hal.h include
+    # needs the PFM3_HOST seam (lib/Inc/TftAlgo.h resolves to <stdint.h>).
+    # highlightOperator's former int32/int16 cast-stores into the uint8_t
+    # algo mask buffer were misaligned for middle-column operator cells and
+    # HardFaulted on device (strd requires word alignment); the byte-store
+    # rewrite is exercised by tests/tft_algo_test.cpp, and the UBSan
+    # alignment check (test-asan target) is the regression guard.
+    "${PFM3_FW_ROOT}/Src/hardware/TftAlgo.cpp")
 
-gtest_discover_tests(pfm3_tests)
+# 7.6 regression-guard NOTE: UBSan's alignment check (the test-asan flag set)
+# only REPORTS by default (exit 0), and per-test ENVIRONMENT properties can't
+# reach gtest_discover_tests results at configure time (discovery is deferred
+# to build time). The enforcement therefore lives IN-PROCESS in
+# tests/tft_algo_test.cpp: a __ubsan_on_report monitor-hook override aborts
+# when a report fires from TftAlgo.cpp, turning a reintroduced misaligned
+cast-store into a hard test failure. Other TUs keep the documented
+# reporting-only behavior.
