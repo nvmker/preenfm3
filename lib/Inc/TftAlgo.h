@@ -23,7 +23,14 @@
 #define PREENFM_FREQUENCY 47916.0f
 #define ABS(X) ((X) > 0 ? (X) : -(X))
 
+// Host-test seam (7.6, see tests/SEAM.md): the firmware build needs the HAL
+// for the fixed-width types; the host test build must not pull the CMSIS
+// chain, so it gets <stdint.h> only. Zero firmware-build change.
+#ifdef PFM3_HOST
+#include <stdint.h>
+#else
 #include "stm32h7xx_hal.h"
+#endif
 // #include "Common.h"
 
 enum {
@@ -37,8 +44,11 @@ enum {
 
 
 struct ModulationIndex {
-	unsigned int source:4;
-	unsigned int destination:4;
+	// 7.6 follow-up: plain uint8_t members instead of the upstream 4-bit bit
+	// fields (implementation-defined layout). In-memory display-routing table
+	// only — values are algo-table entries (0..6), never serialized or aliased.
+	uint8_t source;
+	uint8_t destination;
 };
 
 

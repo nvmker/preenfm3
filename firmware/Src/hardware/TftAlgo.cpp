@@ -17,7 +17,15 @@
 
 
 
+// Host-test seam (7.6, see tests/SEAM.md): firmware build keeps the HAL
+// include; the host test build compiles this TU with PFM3_HOST defined and
+// only needs the fixed-width types (TftAlgo.h mirrors this guard). Zero
+// firmware-build change.
+#ifdef PFM3_HOST
+#include <stdint.h>
+#else
 #include "stm32h7xx_hal.h"
+#endif
 #include "TftAlgo.h"
 #include "Common.h"
 
@@ -779,8 +787,18 @@ void TftAlgo::highlightOperator(bool draw, uint8_t opNum) {
         return;
     }
 
-    int32_t color32 = draw ? 0xffffffff : 0x0;
-    int16_t color16 = draw ? 0xffff : 0x0;
+    // 7.6: the highlight box used to be drawn with int32/int16 cast-stores
+    // into this uint8_t buffer at offset (x) + y*80. The middle operator
+    // columns (opPosition 2/5/8/11) yield x1 == 30, so the int32 stores
+    // (fused to strd by gcc 15) were misaligned -> UsageFault UNALIGNED ->
+    // HardFault, freezing the unit on any operator-page highlight or
+    // OSC MIX-encoder highlight of such an operator (default algo 1 places
+    // operator 1 at position 11). Byte stores carry the same 0xff/0x00 mask
+    // semantics as SETFGPIXEL/DELFGPIXEL and are alignment-defined for every
+    // position. Coverage is byte-identical to the old stores: rows span
+    // columns x1..x1+19; the vertical edges are 2 px wide (x1, x1+1 and
+    // x1+19, x1+20) as before via the int16 stores.
+    const uint8_t colorByte = draw ? 0xff : 0x00;
 
     int x1 = GETX1(opPosition) - 2;
     int y1 = GETY1(opPosition) - 2;
@@ -792,15 +810,17 @@ void TftAlgo::highlightOperator(bool draw, uint8_t opNum) {
         y1 = 0;
     }
 
-    for (int x = x1; x < x1 + 20; x += 4) {
-        *((int32_t*) (&fgBuffer_[(x) + (y1) * 80])) = color32;
-        *((int32_t*) (&fgBuffer_[(x) + (y1 + 1) * 80])) = color32;
-        *((int32_t*) (&fgBuffer_[(x) + (y1 + 19) * 80])) = color32;
-        *((int32_t*) (&fgBuffer_[(x) + (y1 + 20) * 80])) = color32;
+    for (int x = x1; x < x1 + 20; x++) {
+        fgBuffer_[(x) + (y1) * 80] = colorByte;
+        fgBuffer_[(x) + (y1 + 1) * 80] = colorByte;
+        fgBuffer_[(x) + (y1 + 19) * 80] = colorByte;
+        fgBuffer_[(x) + (y1 + 20) * 80] = colorByte;
     }
     for (int y = y1; y < y1 + 20; y++) {
-        *((int16_t*) (&fgBuffer_[(x1) + (y) * 80])) = color16;
-        *((int16_t*) (&fgBuffer_[(x1 + 19) + (y) * 80])) = color16;
+        fgBuffer_[(x1) + (y) * 80] = colorByte;
+        fgBuffer_[(x1 + 1) + (y) * 80] = colorByte;
+        fgBuffer_[(x1 + 19) + (y) * 80] = colorByte;
+        fgBuffer_[(x1 + 20) + (y) * 80] = colorByte;
     }
 }
 

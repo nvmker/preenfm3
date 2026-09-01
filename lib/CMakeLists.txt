@@ -42,4 +42,16 @@ target_include_directories(preenfm3lib PRIVATE
 target_compile_definitions(preenfm3lib PRIVATE
     USE_HAL_DRIVER STM32H753xx LQFP144)
 
+# 7.6 regression guard (PR #35 follow-up): same -Wcast-align as the preenfm3
+# target — flag any cast that increases required alignment (the class that
+# HardFaulted on device via gcc-15-fused strd). The vendored SD stack below
+# carries a 5-warning baseline (sd_diskio.c x4, adafruit_802_sd.c x1 — FatFs
+# BYTE* -> uint32_t* for SDMMC DMA; contract requires aligned buffers, every
+# firmware caller passes the aligned static storageBuffer). Suppressed on
+# exactly those two files so any remaining -Wcast-align warning is NEW code.
+# Baseline table: doc/STATIC-ANALYSIS.md § GCC -Wcast-align.
+target_compile_options(preenfm3lib PRIVATE -Wcast-align)
+set_source_files_properties(Src/sd_diskio.c Src/adafruit_802_sd.c PROPERTIES
+    COMPILE_OPTIONS "-Wno-cast-align")
+
 set_target_properties(preenfm3lib PROPERTIES OUTPUT_NAME preenfm3lib)
