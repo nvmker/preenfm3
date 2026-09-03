@@ -127,6 +127,32 @@ TEST_F(UserEnvCurveTest, TxtWrongSampleCountMarksErrorAndSkips) {
     EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/envcurve/usr4.bin"));
 }
 
+TEST_F(UserEnvCurveTest, RejectedTxtSlotFallsBackToLinearRamp) {
+    // FIXED (7.7): like userWaveform, the curve table is not zeroed at boot
+    // (outside FillZerobss coverage) — a rejected slot used to keep its
+    // power-on garbage. Simulate it, reject via declared 32 (!= 64), and
+    // expect the no-file linear-ramp default i/64 (stock behavior),
+    // mirroring the no-file branch of loadUserEnvCurves.
+    //
+    // Neighbor guard: a VALID flat 0.25 usr2 curve (normalize flat
+    // early-out keeps its DC level) must survive the usr3 reject — a
+    // wrong-slot ramp write would turn it into i/64.
+    std::string keep = MakeTxt("KEEP", 64, 0.25f, 0.0f);
+    fatfsShimInjectString("0:/pfm3/envcurve/usr2.txt", keep.c_str());
+    for (int i = 0; i < 64; i++) userEnvCurves[2][i] = 42.0f;
+    std::string txt = MakeTxt("BADC", 32, 0.0f, 1.0f / 31.0f);
+    fatfsShimInjectString("0:/pfm3/envcurve/usr3.txt", txt.c_str());
+    uec_.loadUserEnvCurves();
+    for (int i = 0; i < 64; i++) {
+        EXPECT_FLOAT_EQ(userEnvCurves[2][i], i / 64.0f) << "sample " << i;
+    }
+    EXPECT_EQ(uec_.userEnvCurveNames[2][0], '#');
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/envcurve/usr3.bin"));
+    for (int i = 0; i < 64; i++) {
+        EXPECT_FLOAT_EQ(userEnvCurves[1][i], 0.25f) << "neighbor " << i;
+    }
+}
+
 TEST_F(UserEnvCurveTest, FlatCurveIsLeftUntouchedNoNaN) {
     // Fixed (was AllZeroCurveNormalizesToNaNQuirk): a flat curve has no
     // shape to normalize — early-out leaves every sample finite and equal.
