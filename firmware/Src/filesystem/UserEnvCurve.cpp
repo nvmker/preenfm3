@@ -216,6 +216,12 @@ void UserEnvCurve::normalize(float* buffer, int numberOfSamples) {
 int UserEnvCurve::numberOfSampleError(int f) {
     numberOfSample = 0;
     userEnvCurveNames[f][0] = '#';
+    // 7.7: like userWaveform, the curve table is not zeroed at boot —
+    // reset the rejected slot to the no-file linear-ramp default so a
+    // wrongly selected curve degrades to stock behavior, not power-on garbage.
+    for (int s = 0; s < 64; s++) {
+        userEnvCurves[f][s] = s / 64.0f;
+    }
     return -1;
 }
 

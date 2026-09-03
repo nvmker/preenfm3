@@ -19,7 +19,6 @@
 #undef private
 #include "Osc.h"
 
-#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -134,6 +133,76 @@ TEST_F(UserWaveformTest, TxtBadSampleCountMarksErrorAndSkips) {
     fatfsShimInjectString("0:/pfm3/waveform/usr5.txt", "BAD2 2000\n0.5\n");
     uw_.loadUserWaveforms();
     EXPECT_EQ(uw_.userWaveFormNames[4][0], '#');
+}
+
+TEST_F(UserWaveformTest, RejectedTxtSlotIsZeroedNotLeftGarbage) {
+    // FIXED (7.7): userWaveform lives in .instruction_ram (ITCMRAM), which
+    // the startup FillZerobss loop does not cover — a rejected slot used to
+    // keep its power-on content and render noise (device: −45 dB). Simulate
+    // that garbage: prefill, reject via declared 31 (< 32), expect zeros.
+    //
+    // Neighbor guard: a VALID usr2 loads first (f order) — the reject reset
+    // must not clobber its ramp (a wrong-slot or off-by-one loop would).
+    std::string keep = MakeTxt("KEEP", 64, 0.0f, 1.0f / 63.0f);
+    fatfsShimInjectString("0:/pfm3/waveform/usr2.txt", keep.c_str());
+    int priorMax = waveTables[8 + 2].max;  // reject must leave this untouched
+    for (int s = 0; s < 1024; s++) userWaveform[2][s] = 42.0f;
+    fatfsShimInjectString("0:/pfm3/waveform/usr3.txt", "BAD3 31\n0.5 0.5\n");
+    uw_.loadUserWaveforms();
+    for (int s = 0; s < 1024; s++) {
+        EXPECT_FLOAT_EQ(userWaveform[2][s], 0.0f) << "sample " << s;
+    }
+    EXPECT_EQ(oscShapeNames[8 + 2][0], '#');
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/waveform/usr3.bin"));
+    EXPECT_EQ(waveTables[8 + 2].max, priorMax);
+    // the valid neighbor kept its normalized ±1 ramp (bin path on reload)
+    EXPECT_NEAR(userWaveform[1][0], -1.0f, 0.01f);
+    EXPECT_NEAR(userWaveform[1][63], 1.0f, 0.01f);
+    EXPECT_EQ(oscShapeNames[8 + 1][0], 'K');
+
+    // Same guard for a too-large declared count (1025 > 1024).
+    for (int s = 0; s < 1024; s++) userWaveform[4][s] = 42.0f;
+    fatfsShimInjectString("0:/pfm3/waveform/usr5.txt", "BAD5 1025\n0.5\n");
+    uw_.loadUserWaveforms();
+    for (int s = 0; s < 1024; s++) {
+        EXPECT_FLOAT_EQ(userWaveform[4][s], 0.0f) << "sample " << s;
+    }
+    EXPECT_EQ(oscShapeNames[8 + 4][0], '#');
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/waveform/usr5.bin"));
+    // neighbor still intact after the second (rejecting) load
+    EXPECT_NEAR(userWaveform[1][63], 1.0f, 0.01f);
+}
+
+TEST_F(UserWaveformTest, Valid32CountTxtStillLoadsValues) {
+    // Positive control for the 7.7 reject-path zeroing: the minimum valid
+    // count (32) is NOT rejected and must still load+normalize its values
+    // so the guard is not vacuous.
+    std::string txt = MakeTxt("MIN3", 32, 0.0f, 1.0f / 31.0f);
+    fatfsShimInjectString("0:/pfm3/waveform/usr3.txt", txt.c_str());
+    uw_.loadUserWaveforms();
+    // A 0..1 ramp normalizes to ±1 (avg 0.5 centered, then scaled by 2).
+    EXPECT_NEAR(userWaveform[2][0], -1.0f, 0.01f);
+    EXPECT_NEAR(userWaveform[2][31], 1.0f, 0.01f);
+    EXPECT_EQ(oscShapeNames[8 + 2][0], 'M');
+    EXPECT_EQ(waveTables[8 + 2].max, 31);
+    EXPECT_TRUE(fatfsShimFileExists("0:/pfm3/waveform/usr3.bin"));
+}
+
+TEST_F(UserWaveformTest, Valid1024CountUpperBoundaryLoads) {
+    // Upper boundary of the 32..1024 contract (7.7 review): the inclusive
+    // maximum must load, not reject — and exercises the chunked (>512 B)
+    // bin save/load path.
+    std::string txt = MakeTxt("MAXW", 1024, -1.0f, 2.0f / 1023.0f);
+    fatfsShimInjectString("0:/pfm3/waveform/usr4.txt", txt.c_str());
+    uw_.loadUserWaveforms();
+    EXPECT_EQ(oscShapeNames[8 + 3][0], 'M');
+    EXPECT_EQ(waveTables[8 + 3].max, 1023);
+    // -1..1 ramp: avg ~0, min/max ~±1 -> normalize preserves the extremes
+    EXPECT_NEAR(userWaveform[3][0], -1.0f, 0.01f);
+    EXPECT_NEAR(userWaveform[3][1023], 1.0f, 0.01f);
+    std::vector<uint8_t> bin;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/waveform/usr4.bin", bin));
+    EXPECT_EQ(bin.size(), 8u + 1024 * 4);
 }
 
 TEST_F(UserWaveformTest, InterpolateLastSampleStaysInsidePopulatedWindow) {
