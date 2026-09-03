@@ -102,7 +102,13 @@ enum TFTActionType {
 };
 
 struct TFTAction {
-    uint8_t actionType :4;
+    // B1 lint: plain uint8_t, not a :4 bitfield (implementation-defined
+    // layout — MISRA/CERT class; same conversion as PR #35's ModulationIndex).
+    // Behavior- and layout-neutral: all action types are <= 15 (enum max
+    // TFT_DRAW_OSCILLO_BACKGROUND_WAVEFORM == 15 fits both), and the bitfield
+    // never shared an allocation unit with the non-bitfield members, so
+    // member offsets and the 10-byte size are unchanged.
+    uint8_t actionType;
     uint8_t param1;
     uint16_t param2;
     uint8_t param3;
@@ -164,7 +170,15 @@ public:
     void clearMixerLabels();
     void fillArea(uint8_t x, uint16_t y, uint8_t width, uint16_t height, uint8_t color);
     virtual void clearActions() {
-        tftActions.clear();
+        // B1: CONSUMER-context flush (called from tic(), SysTick). Discard
+        // by writing head only — a full clear() would also write the
+        // producer-owned tail and race main-loop inserts (RingBuffer.h).
+        tftActions.discardAllFromConsumer();
+    }
+    // B1: PRODUCER-context flush (main loop: TftDisplay::reset(),
+    // FMDisplay3::newTimbre). Writes tail only — safe while SysTick drains.
+    virtual void clearActionsFromMain() {
+        tftActions.discardAllFromProducer();
     }
 
     // Oscillo
@@ -256,7 +270,15 @@ private:
     bool flatOscilloAlreadyDisplayed;
     bool bHasJustBeenCleared;
 
-    bool pushToTftInProgress;
+    // B1: cross-context flag — written by tic()/pushToTft() in SysTick and
+    // by the SPI TX-complete ISR, read by reset()'s bounded spin in the main
+    // loop. volatile so the spin cannot cache a stale value (the HAL_GetTick
+    // read alone does not force a reload of this bool).
+    volatile bool pushToTftInProgress;
+    // B1: set by reset() while the main loop re-inits the panel — SysTick's
+    // tic() must not touch SPI1 (power poll / part push) until it is cleared,
+    // or ILI9341_Init() races a second master on the bus.
+    volatile bool tftSpiOwnedByMain_;
     uint32_t tftDirtyBits;
     uint8_t part;
 
