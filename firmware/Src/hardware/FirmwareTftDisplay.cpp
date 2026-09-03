@@ -47,7 +47,20 @@ FirmwareTftDisplay::~FirmwareTftDisplay() {
 
 
 void FirmwareTftDisplay::clearActions() {
-    tftActions.clear();
+    tftActions.discardAllFromConsumer();
+    envInQueue = 0;
+    lfoInQueue = 0;
+    operatorInQueue = 0;
+}
+
+
+// B1 (review finding): producer-context variant — called from the MAIN loop
+// (TftDisplay::reset(), FMDisplay3::newTimbre) while SysTick may be draining
+// the queue concurrently. Writing only the producer-owned tail keeps the
+// SPSC contract (a full clear() racing the consumer can fabricate a full
+// queue of stale slots → garbage TFTActions → garbage DMA2D writes).
+void FirmwareTftDisplay::clearActionsFromMain() {
+    tftActions.discardAllFromProducer();
     envInQueue = 0;
     lfoInQueue = 0;
     operatorInQueue = 0;
@@ -82,14 +95,27 @@ void FirmwareTftDisplay::additionalActions() {
                 MODIFY_REG(hdma2d.Instance->OOR, DMA2D_OOR_LO, 2);
                 MODIFY_REG(hdma2d.Instance->NLR, (DMA2D_NLR_NL|DMA2D_NLR_PL),
                         (98 | (158 << DMA2D_POSITION_NLR_PL)));
+#ifdef PFM3_HOST
+                // Host seam (B1 tier): the OMAR program narrows a pointer to
+                // uint32_t — a hard error on 64-bit hosts. The host dummy
+                // register is write-only bookkeeping; 0 is deterministic and
+                // benign. Arm path below is verbatim.
+                WRITE_REG(hdma2d.Instance->OMAR, 0);
+#else
                 WRITE_REG(hdma2d.Instance->OMAR, (uint32_t )(bgOscillo + 161));
+#endif
 
                 PFM_START_DMA2D();
                 currentAction.param3 = 1;
             }
             break;
         case 1:
-            if (currentAction.param1 <= TFT_NUMBER_OF_WAVEFORM_EXT) {
+            // B1: strict < — waveForm[] has TFT_NUMBER_OF_WAVEFORM_EXT slots
+            // (0..13); param1 == 14 used to read one past the array (adjacent
+            // member memory reinterpreted as a sample pointer). It now falls
+            // through the envelope/LFO else-ifs and completes as a no-draw,
+            // same as the 255/clear case.
+            if (currentAction.param1 < TFT_NUMBER_OF_WAVEFORM_EXT) {
                 oscilloBgDrawOperatorShape(waveForm[currentAction.param1].waveForms, waveForm[currentAction.param1].size);
                 operatorInQueue--;
             } else if (currentAction.param1 == TFT_DRAW_ENVELOPPE) {
@@ -115,7 +141,19 @@ void FirmwareTftDisplay::oscilloBgDrawOperatorShape(float* waveForm, int size) {
 
     for (int x = 0; x < 160; x++) {
         float index = x * ((float)size) / 160.0f;
-        oscilloYValue[x] = (int) (waveForm[(int)index] * 48.0f);
+        int oy = (int) (waveForm[(int)index] * 48.0f);
+        // B1: corrupt-bin values exceed the ±1.0 waveform contract. Clamp to
+        // the step-0-cleared box rows (1..98) BEFORE the int8_t store — the
+        // store silently wraps anything past ±127, and both connect loops
+        // below then write outside bgOscillo (backward into bgColorChar,
+        // which is init-once at boot → the persistent garbage). In-range
+        // values (oy ∈ [-48,48]) are untouched.
+        if (unlikely(oy > 48)) {
+            oy = 48;
+        } else if (unlikely(oy < -49)) {
+            oy = -49;
+        }
+        oscilloYValue[x] = oy;
     }
 
     for (int x = 1; x < 159; x++) {
@@ -253,6 +291,19 @@ void FirmwareTftDisplay::oscilloBgSetLfo(float shape, float freq, float kSyn, fl
 
 
 void FirmwareTftDisplay::oscilloBgDrawEnvStep(int16_t x1, int16_t y1, int16_t x2, int16_t y2, uint16_t color, int8_t curve) {
+    // B1: clamp the step to the box columns before anything else — negative
+    // or oversized times (misordered env, garbage import) would otherwise
+    // index below bgOscillo or into the next row via the col = 1 + x mapping.
+    if (unlikely(x1 < 0)) {
+        x1 = 0;
+    } else if (unlikely(x1 > 158)) {
+        x1 = 158;
+    }
+    if (unlikely(x2 < 0)) {
+        x2 = 0;
+    } else if (unlikely(x2 > 158)) {
+        x2 = 158;
+    }
     if (curve == CURVE_TYPE_LIN || x1 == x2) {
         oscilloBgDrawLine(x1, y1, x2, y2, color);
     } else {
@@ -276,6 +327,15 @@ void FirmwareTftDisplay::oscilloBgDrawEnvStep(int16_t x1, int16_t y1, int16_t x2
                 float yValue2 = allLfoTables[curve].table[(int)index + 1];
                 float yInterpolated = yValue1 * (1-indexRest) + yValue2 * indexRest;
                 py = yInterpolated * height + y1;
+            }
+            // B1: clamp to the box rows — a level > 1.0 (DX7-import style)
+            // computes py past 97 and the writes below would land before
+            // bgOscillo (into bgColorChar). oldPy is always a clamped py, so
+            // the connect loop stays in-box too.
+            if (unlikely(py < 0)) {
+                py = 0;
+            } else if (unlikely(py > 97)) {
+                py = 97;
             }
             // Draw vertical line between old y value and new one
             if (unlikely(x == x1)) {
@@ -341,7 +401,12 @@ void FirmwareTftDisplay::oscilloBgDrawLine(int16_t x1, int16_t y1, int16_t x2, i
 
     for (curpixel = 0; curpixel <= numpixels; curpixel++) {
         //  SETPIXEL(x, y);
-        bgOscillo[indexLow + x - y * 160] = color;
+        // B1: guard the pixel write — x is a column (col = 1 + x), y a row
+        // offset from row 98; anything outside [0,158]/[0,97] lands outside
+        // the box. Legit envelope coordinates are always inside.
+        if (likely(x >= 0 && x <= 158 && y >= 0 && y <= 97)) {
+            bgOscillo[indexLow + x - y * 160] = color;
+        }
 
         num += numadd;
         if (num >= den) {
@@ -357,6 +422,23 @@ void FirmwareTftDisplay::oscilloBgDrawLine(int16_t x1, int16_t y1, int16_t x2, i
 
 void FirmwareTftDisplay::oscilloBgDrawVerticalLine(int16_t x1, int16_t y1, int16_t y2, uint16_t color) {
     int indexLow = 98 * 160 + 1;
+    // B1: clamp to the box — a level > 1.0 computes (int)(level * 97) past
+    // 97 and writes below bgOscillo's start (into bgColorChar on device).
+    if (unlikely(x1 < 0)) {
+        x1 = 0;
+    } else if (unlikely(x1 > 158)) {
+        x1 = 158;
+    }
+    if (unlikely(y1 < 0)) {
+        y1 = 0;
+    } else if (unlikely(y1 > 97)) {
+        y1 = 97;
+    }
+    if (unlikely(y2 < 0)) {
+        y2 = 0;
+    } else if (unlikely(y2 > 97)) {
+        y2 = 97;
+    }
     for (int y = y1; y <= y2; y += 1) {
         bgOscillo[indexLow + x1 - y * 160] = color;
     }

@@ -68,6 +68,7 @@ uint16_t convertTo565(uint32_t x) {
 
 TftDisplay::TftDisplay() {
     pushToTftInProgress = false;
+    tftSpiOwnedByMain_ = false;
 
     tftDirtyBits = TFT_PART_ALL_BITS;
 
@@ -268,8 +269,34 @@ void TftDisplay::init(TftAlgo* tftAlgo) {
 }
 
 void TftDisplay::reset() {
-    clearActions();
+    // B1: quiesce SPI around ILI9341_Init — no two masters on SPI1. The flag
+    // is set BEFORE the idle wait (closing the start-new-push window); the
+    // wait is flag-polling bounded by a 100 ms tick budget, not a HAL_Delay
+    // (SysTick keeps running — only tft's SPI use is gated). tic() keeps
+    // draining DMA2D actions while gated; only the SPI-touching branches
+    // check the flag. pushToTftFinished() clears the flag only after
+    // ILI9341_Unselect(), so flag == false implies CS is settled.
+    tftSpiOwnedByMain_ = true;
+    uint32_t start = HAL_GetTick();
+    while (pushToTftInProgress && (HAL_GetTick() - start) < 100) {
+    }
+    if (unlikely(pushToTftInProgress)) {
+        // B1 (review finding): the wait timed out — the SPI TX-complete IRQ
+        // never fired (stuck DMA / SPI fault). Abort the transfer and run
+        // the completion path (CS release + flag clear) BEFORE touching the
+        // bus: proceeding with a live DMA would re-create the exact
+        // two-master-on-SPI1 collision the wait exists to close.
+        HAL_SPI_Abort(&ILI9341_SPI_PORT);
+        pushToTftFinished();
+    }
+    // B1 (review finding): producer-context flush — the old clearActions()
+    // (full ring clear) races SysTick's concurrent dequeue between its two
+    // index stores, which can leave the queue looking FULL of stale slots
+    // and dispatch garbage TFTActions (garbage DMA2D params = the B1
+    // corruption class). discardAllFromProducer writes tail only.
+    clearActionsFromMain();
     ILI9341_Init();
+    tftSpiOwnedByMain_ = false;
     tftMustBeReset_ = false;
 }
 
@@ -322,25 +349,36 @@ void TftDisplay::tic(bool checkDisplayPower) {
     if (unlikely((currentMillis - tftPushMillis) > 20)) {
 
         // Only if previous DMA pushed is finished
-        if (checkDisplayPower && (currentMillis - tftGetStatusMillis) > 500) {
-            status_[1] = 1;
-            if (ILI9341_ReadPowerMode(status_) != HAL_OK) {
-                status_[1] = 1;
-            }
-            // Try to detect when TFT is BLANK
-            if (status_[1] != 222 && status_[1] != 156) {
-                if(status_[3] == status_[1]) {
-                    clearActions();
-                    tftMustBeReset_ = true;
+        if (checkDisplayPower && !tftSpiOwnedByMain_ && (currentMillis - tftGetStatusMillis) > 500) {
+            // B1 (review finding): distinguish transport outcomes.
+            // HAL_BUSY means OUR OWN pixel push is in flight — not a panel
+            // status. Skip the cycle entirely: no status_[3] poisoning, no
+            // counters (the old forced status_[1]=1 turned two consecutive
+            // BUSY polls during display churn into a bogus dead-panel
+            // detection). HAL_ERROR is a real transport fault: keep the
+            // legacy tracking so an erroring-but-present panel still heals.
+            HAL_StatusTypeDef pollStatus = ILI9341_ReadPowerMode(status_);
+            if (pollStatus != HAL_BUSY) {
+                if (pollStatus != HAL_OK) {
+                    status_[1] = 1;
                 }
+                // Try to detect when TFT is BLANK
+                if (status_[1] != 222 && status_[1] != 156) {
+                    if(status_[3] == status_[1]) {
+                        clearActions();
+                        tftMustBeReset_ = true;
+                    }
+                }
+                // status_3 allows to make sure we got 2 wrong number in a row
+                status_[3] = status_[1];
             }
-            // status_2 allows to make sure we got 2 wrong number in a row
-            status_[3] = status_[1];
             tftGetStatusMillis = currentMillis;
             return;
         }
 
-        if (pushToTft()) {
+        // B1: no SPI push while main owns the bus for a reset (DMA2D actions
+        // in the switch below still run — they never touch SPI).
+        if (!tftSpiOwnedByMain_ && pushToTft()) {
            // a part have been pushed
            tftPushMillis = currentMillis;
            return;

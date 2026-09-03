@@ -248,7 +248,33 @@ target_sources(pfm3_tests PRIVATE
     # HardFaulted on device (strd requires word alignment); the byte-store
     # rewrite is exercised by tests/tft_algo_test.cpp, and the UBSan
     # alignment check (test-asan target) is the regression guard.
-    "${PFM3_FW_ROOT}/Src/hardware/TftAlgo.cpp")
+    "${PFM3_FW_ROOT}/Src/hardware/TftAlgo.cpp"
+    # --- Finding B1: TFT oscillo-background draw tier ------------------------
+    # The REAL FirmwareTftDisplay TU — its five oscilloBgDraw* CPU loops are
+    # the B1 corruption class (unclamped writes into bgOscillo trample the
+    # init-once bgColorChar region behind it on device). TftDisplay.cpp is
+    # deliberately NOT pulled: its body is the SPI/DMA2D action machine
+    # (ili9341.c, HAL_SPI_*, RAM_D1 framebuffers) — unhostable and irrelevant
+    # to the CPU draw paths; tests/stubs/tft_display_collaborators_stub.cpp
+    # supplies exactly the out-of-line base-class symbols FirmwareTftDisplay.o
+    # references (ctor/dtor -> vtable, tftPalette565, dummy hdma2d) — the
+    # sequencer_collaborators_stub pattern.
+    #
+    # The per-file -include below force-includes the REAL lib/Inc/TftDisplay.h
+    # ahead of this TU's own #include chain: FirmwareTftDisplay.h includes
+    # "TftDisplay.h", which — with host_shims first on the include path —
+    # would resolve to the Phase-4 NO-OP shadow (the wrong base class for this
+    # TU). The shadow reuses the real header's guard (see its header comment),
+    # so pre-including the real header by path makes the later shadow include
+    # a no-op. (The force-included header itself resolves stm32h7xx_hal.h to
+    # the new tests/host_shims/stm32h7xx_hal.h shim — fatfs.h precedent.)
+    "${PFM3_FW_ROOT}/Src/hardware/FirmwareTftDisplay.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/stubs/tft_display_collaborators_stub.cpp")
+
+# See the Finding-B1 block above: the real TftDisplay header must win over
+# the host_shims shadow inside FirmwareTftDisplay.cpp's TU.
+set_source_files_properties("${PFM3_FW_ROOT}/Src/hardware/FirmwareTftDisplay.cpp"
+    PROPERTIES COMPILE_OPTIONS "-include${CMAKE_CURRENT_SOURCE_DIR}/../lib/Inc/TftDisplay.h")
 
 # 7.6 regression guard: UBSan recovers from alignment failures by default, but
 # the old TftAlgo cast-stores must fail test-asan under either GCC or Clang.

@@ -186,7 +186,23 @@ void UserWaveform::loadUserWaveformFromBin(int f, const char* fileName) {
     load(fileName, 0, userWaveFormNames[f], 4);
     oscShapeNames[8 + f] = userWaveFormNames[f];
 
+    // B1 (review finding): a truncated bin (< 8 bytes, e.g. an interrupted
+    // save) leaves numberOfSample partially written or entirely stale —
+    // it is a MEMBER carrying the previous slot's count (the txt path
+    // resets it to -1, the bin path didn't), and a stale value inside
+    // [32,1024] walks straight through the range check below. Pre-set -1
+    // so any partial read lands far outside the valid window.
+    numberOfSample = -1;
     load(fileName, 4, &numberOfSample, 4);
+    // B1: the txt path validates 32..1024, but the bin path trusted the
+    // header — a corrupt/stale bin fed numberOfSample straight into
+    // waveTables[].max and the body load (a count > 1024 spills the chunked
+    // >512-byte reads into neighboring slots / past .instruction_ram).
+    // Reject exactly like a bad txt (zero slot, '#' name, no bin rewrite).
+    if (numberOfSample < 32 || numberOfSample > 1024) {
+        numberOfSampleError(f);
+        return;
+    }
     waveTables[f + 8].max = (numberOfSample  -1);
     waveTables[f + 8].precomputedValue = (waveTables[f + 8].max + 1) * waveTables[f + 8].useFreq * PREENFM_FREQUENCY_INVERSED;
 
