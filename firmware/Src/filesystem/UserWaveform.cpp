@@ -172,6 +172,12 @@ int UserWaveform::numberOfSampleError(int f) {
     numberOfSample = 0;
     userWaveFormNames[f][0] = '#';
     oscShapeNames[8 + f] = userWaveFormNames[f];
+    // 7.7: userWaveform lives in .instruction_ram (ITCMRAM), which the
+    // startup FillZerobss loop does not cover — zero the rejected slot or
+    // it keeps power-on garbage and renders noise. Mirrors the no-file branch.
+    for (int s = 0; s < 1024; s++) {
+        userWaveform[f][s] = 0.0f;
+    }
     return -1;
 }
 
