@@ -280,4 +280,57 @@ TEST_F(FirmwareTftDisplayTest, WaveformIndexEqualToSlotCountIsNoDraw) {
     ExpectCanariesIntact();
 }
 
+// --- B1 CI: LFO-draw family coverage (restores the 89% floor after
+// FirmwareTftDisplay.cpp entered the firmware/Src coverage scope) ----------
+
+TEST_F(FirmwareTftDisplayTest, LfoShapeFamilyStaysInsideOscilloBox) {
+    // Every LFO shape branch (sin/saw/tri/square + the four rand variants)
+    // with kSyn and bias active — all writes must stay in the box (the LFO
+    // draw's own ±48 guard is pre-existing; this locks it and covers the
+    // family for the CI floor).
+    float sine[64];
+    for (int i = 0; i < 64; i++) sine[i] = -1.0f + 2.0f * i / 63.0f;
+    display_.initWaveFormExt(0, sine, 64);
+
+    for (int shape = 0; shape <= 7; shape++) {
+        // Re-arm the sentinel so each iteration proves THIS shape drew.
+        for (int i = 0; i < kBoxElems; i++) layout_.box[i] = 0x1234;
+        display_.oscilloBgSetLfo((float)shape, 2.0f, 0.7f, 0.3f, 0.25f);
+        display_.oscilloBgActionLfo();
+        display_.pumpAction();
+        display_.pumpAction();
+
+        ExpectCanariesIntact();
+        EXPECT_TRUE(BoxContains(tftPalette565[COLOR_BLUE])) << "shape " << shape;
+    }
+}
+
+TEST_F(FirmwareTftDisplayTest, LfoExtremeBiasAndKsynStayInBox) {
+    // bias pushes oscilloYValue past ±48 before the write guard; kSyn=2 and
+    // freq near 100 (clamped to 1 by setLfo) exercise the remaining guards.
+    float sine[64];
+    for (int i = 0; i < 64; i++) sine[i] = (i % 2 == 0) ? 1.0f : -1.0f;
+    display_.initWaveFormExt(0, sine, 64);
+
+    display_.oscilloBgSetLfo(0.0f, 99.0f, 2.0f, 1.0f, 0.5f);
+    display_.oscilloBgActionLfo();
+    display_.pumpAction();
+    display_.pumpAction();
+
+    ExpectCanariesIntact();
+    EXPECT_TRUE(BoxContains(tftPalette565[COLOR_BLUE]));
+}
+
+TEST_F(FirmwareTftDisplayTest, LfoEnvelopeRendersBlueCurveInBox) {
+    // The LFO-envelope variant (blue) through the shared envelope draw.
+    display_.oscilloBgSetLfoEnvelope(0.25f, 0.75f, 1.0f, 1.0f, 1.0f, 0.8f, 0.6f, 0.0f);
+    display_.oscilloBgActionEnvelope();
+    display_.pumpAction();
+    display_.pumpAction();
+
+    ExpectCanariesIntact();
+    EXPECT_TRUE(BoxContains(tftPalette565[COLOR_BLUE]));
+    EXPECT_TRUE(BoxContains(tftPalette565[COLOR_DARK_GRAY]));
+}
+
 }  // namespace
