@@ -64,6 +64,7 @@ public:
 
     void additionalActions();
     void clearActions();
+    void clearActionsFromMain();
 
 
 private:

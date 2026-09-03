@@ -12,9 +12,25 @@
  * The shadow also declares HAL_Delay() (called by PPMImage::saveImage after
  * the capture); the host stub in tests/stubs/tft_display_stub.cpp defines it
  * as a no-op — a host delay of a nonexistent TFT would only slow tests.
+ *
+ * DUAL-FLAVOR GUARD (B1 tier): this shim deliberately uses the REAL
+ * lib/Inc/TftDisplay.h include guard name (HARDWARE_TFTDISPLAY_H_) instead
+ * of its own. Two flavors of "TftDisplay.h" exist in the host build — this
+ * no-op shadow (for the filesystem TUs) and the real DMA2D/SPI class (for
+ * firmware/Src/hardware/FirmwareTftDisplay.cpp, pulled for the B1 draw-path
+ * tests). Whichever flavor a TU includes FIRST wins for that TU, because the
+ * guard is shared: the second include is a no-op. The B1 test TU
+ * (tests/firmware_tft_display_test.cpp) and its collaborator stub
+ * (tests/stubs/tft_display_collaborators_stub.cpp) pre-include the REAL
+ * header by relative path ("../../lib/Inc/TftDisplay.h"), so the real class
+ * wins there; every other TU still hits this shadow first via the -I order
+ * and gets the no-op surface. The two class definitions never interoperate
+ * through the type across TUs (no shared symbol except the mangled
+ * TftDisplay::TftDisplay() name — see the collaborator stub's comment on
+ * the weak/strong ctor interaction).
  */
-#ifndef PFM3_HOST_SHIM_TFTDISPLAY_H
-#define PFM3_HOST_SHIM_TFTDISPLAY_H
+#ifndef HARDWARE_TFTDISPLAY_H_
+#define HARDWARE_TFTDISPLAY_H_
 
 #include <stdint.h>
 
@@ -86,4 +102,4 @@ extern uint16_t tftMemory[240 * 320];
 /* Host no-op delay (stub-defined); see header comment. */
 void HAL_Delay(uint32_t ms);
 
-#endif /* PFM3_HOST_SHIM_TFTDISPLAY_H */
+#endif /* HARDWARE_TFTDISPLAY_H_ (dual-flavor guard — see header comment) */

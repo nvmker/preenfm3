@@ -252,3 +252,196 @@ TEST_F(UserWaveformTest, FillFromTxtHandlesLeadingNameAcrossBuffers) {
     EXPECT_FLOAT_EQ(userWaveform[0][63], 0.5f);
     EXPECT_EQ(used, (int)strlen(line));
 }
+
+// --- Bin-header numberOfSample validation (B1 / T1c) -----------------------
+// A corrupt or stale usr#.bin header bypassed every txt-side check: the
+// loader trusted numberOfSample, fed it to waveTables[].max, and took the
+// chunked (>512 B) body-load path — trampling neighboring userWaveform
+// slots (and, on device, past .instruction_ram). The fix rejects the bin
+// exactly like a bad txt: slot zeroed, '#' name, no bin rewrite.
+
+TEST_F(UserWaveformTest, BinHeaderSampleCount2000IsRejectedLikeBadTxt) {
+    // A valid earlier slot proves the reject path is byte-exact on neighbors:
+    // usr1 (f=0) loads first; the bad usr2 (f=1) must not disturb it.
+    std::string keep = MakeTxt("KEEP", 64, 0.0f, 1.0f / 63.0f);
+    fatfsShimInjectString("0:/pfm3/waveform/usr1.txt", keep.c_str());
+
+    // numberOfSample=2000 + a real 2000-float body (8008-byte file) so the
+    // pre-fix chunked path would engage (512-byte reads into a 4096-byte
+    // slot) and spill recognizable garbage into the following slots.
+    std::vector<uint8_t> bin(8 + 2000 * 4, 0);
+    memcpy(bin.data(), "BIG2", 4);
+    int32_t n = 2000;
+    memcpy(bin.data() + 4, &n, 4);
+    for (int i = 0; i < 2000; i++) {
+        float v = 7.0f + i;
+        memcpy(bin.data() + 8 + i * 4, &v, 4);
+    }
+    fatfsShimInjectBytes("0:/pfm3/waveform/usr2.bin", bin.data(), bin.size());
+
+    // Simulated power-on garbage in the rejected slot (7.7 ITCM semantics:
+    // the reject path must zero it, not keep it).
+    for (int s = 0; s < 1024; s++) userWaveform[1][s] = 42.0f;
+    int priorMax = waveTables[8 + 1].max;
+
+    uw_.loadUserWaveforms();
+
+    EXPECT_EQ(uw_.userWaveFormNames[1][0], '#');
+    EXPECT_EQ(oscShapeNames[8 + 1], uw_.userWaveFormNames[1]);
+    for (int s = 0; s < 1024; s++) {
+        EXPECT_FLOAT_EQ(userWaveform[1][s], 0.0f) << "sample " << s;
+    }
+    EXPECT_EQ(waveTables[8 + 1].max, priorMax);  // table entry untouched
+    // The bin is NOT rewritten by the reject path.
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/waveform/usr2.bin", after));
+    EXPECT_EQ(after, bin);
+    // Neighbor slot 0 kept its normalized ±1 ramp (loads via its own bin).
+    EXPECT_NEAR(userWaveform[0][0], -1.0f, 0.01f);
+    EXPECT_NEAR(userWaveform[0][63], 1.0f, 0.01f);
+    EXPECT_EQ(oscShapeNames[8 + 0][0], 'K');
+}
+
+TEST_F(UserWaveformTest, BinHeaderSampleCount1024LoadsByteIdentical) {
+    // Positive control at the inclusive upper boundary: a valid 1024-sample
+    // bin must load byte-identically (the bin path does no normalize) — via
+    // the chunked >512-byte load path — and must NOT be rejected by the new
+    // validation.
+    std::vector<float> wf(1024);
+    for (int i = 0; i < 1024; i++) wf[i] = -1.0f + 2.0f * i / 1023.0f;
+    std::vector<uint8_t> bin(8 + 1024 * 4, 0);
+    memcpy(bin.data(), "MAX3", 4);
+    int32_t n = 1024;
+    memcpy(bin.data() + 4, &n, 4);
+    memcpy(bin.data() + 8, wf.data(), wf.size() * 4);
+    fatfsShimInjectBytes("0:/pfm3/waveform/usr3.bin", bin.data(), bin.size());
+
+    uw_.loadUserWaveforms();
+
+    EXPECT_EQ(memcmp(userWaveform[2], wf.data(), 1024 * 4), 0);
+    EXPECT_EQ(waveTables[8 + 2].max, 1023);
+    EXPECT_EQ(oscShapeNames[8 + 2][0], 'M');
+}
+
+TEST_F(UserWaveformTest, BinHeaderSampleCount16IsRejected) {
+    // Lower boundary violation (16 < 32): rejected like the 2000 case.
+    std::vector<uint8_t> bin(8 + 16 * 4, 0);
+    memcpy(bin.data(), "TINY", 4);
+    int32_t n = 16;
+    memcpy(bin.data() + 4, &n, 4);
+    for (int i = 0; i < 16; i++) {
+        float v = 0.25f * i;
+        memcpy(bin.data() + 8 + i * 4, &v, 4);
+    }
+    fatfsShimInjectBytes("0:/pfm3/waveform/usr4.bin", bin.data(), bin.size());
+    for (int s = 0; s < 1024; s++) userWaveform[3][s] = 42.0f;
+
+    uw_.loadUserWaveforms();
+
+    EXPECT_EQ(uw_.userWaveFormNames[3][0], '#');
+    EXPECT_EQ(oscShapeNames[8 + 3], uw_.userWaveFormNames[3]);
+    for (int s = 0; s < 1024; s++) {
+        EXPECT_FLOAT_EQ(userWaveform[3][s], 0.0f) << "sample " << s;
+    }
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/waveform/usr4.bin", after));
+    EXPECT_EQ(after, bin);  // not rewritten
+}
+
+// --- B1 review: boundary matrix + truncated-header bypass (red→green for
+// the numberOfSample = -1 pre-set) -------------------------------------------
+
+TEST_F(UserWaveformTest, BinHeaderSampleCount31IsRejected) {
+    // Inclusive lower boundary minus one: 31 < 32 must reject.
+    std::vector<uint8_t> bin(8 + 31 * 4, 0);
+    memcpy(bin.data(), "B31", 3);
+    bin[3] = ' ';
+    int32_t n = 31;
+    memcpy(bin.data() + 4, &n, 4);
+    fatfsShimInjectBytes("0:/pfm3/waveform/usr5.bin", bin.data(), bin.size());
+    for (int s = 0; s < 1024; s++) userWaveform[4][s] = 42.0f;
+
+    uw_.loadUserWaveforms();
+
+    EXPECT_EQ(uw_.userWaveFormNames[4][0], '#');
+    for (int s = 0; s < 1024; s++) {
+        EXPECT_FLOAT_EQ(userWaveform[4][s], 0.0f) << "sample " << s;
+    }
+}
+
+TEST_F(UserWaveformTest, BinHeaderSampleCount32LoadsByteIdentical) {
+    // Inclusive lower boundary: 32 must load byte-identically.
+    std::vector<float> wf(32);
+    for (int i = 0; i < 32; i++) wf[i] = -1.0f + 2.0f * i / 31.0f;
+    std::vector<uint8_t> bin(8 + 32 * 4, 0);
+    memcpy(bin.data(), "B32", 3);
+    bin[3] = ' ';
+    int32_t n = 32;
+    memcpy(bin.data() + 4, &n, 4);
+    memcpy(bin.data() + 8, wf.data(), wf.size() * 4);
+    fatfsShimInjectBytes("0:/pfm3/waveform/usr6.bin", bin.data(), bin.size());
+
+    uw_.loadUserWaveforms();
+
+    EXPECT_EQ(memcmp(userWaveform[5], wf.data(), 32 * 4), 0);
+    EXPECT_EQ(waveTables[8 + 5].max, 31);
+    EXPECT_EQ(oscShapeNames[8 + 5][0], 'B');
+}
+
+TEST_F(UserWaveformTest, BinHeaderSampleCount1025IsRejected) {
+    // Inclusive upper boundary plus one: 1025 > 1024 must reject (body sized
+    // so the chunked path would engage).
+    std::vector<uint8_t> bin(8 + 1025 * 4, 0);
+    memcpy(bin.data(), "B1K+", 4);
+    int32_t n = 1025;
+    memcpy(bin.data() + 4, &n, 4);
+    fatfsShimInjectBytes("0:/pfm3/waveform/usr2.bin", bin.data(), bin.size());
+    for (int s = 0; s < 1024; s++) userWaveform[1][s] = 42.0f;
+
+    uw_.loadUserWaveforms();
+
+    EXPECT_EQ(uw_.userWaveFormNames[1][0], '#');
+    for (int s = 0; s < 1024; s++) {
+        EXPECT_FLOAT_EQ(userWaveform[1][s], 0.0f) << "sample " << s;
+    }
+}
+
+TEST_F(UserWaveformTest, TruncatedBinHeaderAfterValidSlotIsRejected) {
+    // RED→GREEN for the numberOfSample = -1 pre-set (B1 review finding):
+    // numberOfSample is a MEMBER carrying the previous slot's count. A
+    // 6-byte bin (name + only the LOW 2 bytes of the count) partially
+    // overwrites the stale value — without the pre-set, stale-64 + 2 file
+    // bytes (0x40,0x00) reconstructs 64, passes [32,1024], and the slot
+    // keeps its garbage body. With -1 pre-set, the partial write yields
+    // 0xFFFF0040 (negative) → rejected like any bad header.
+    std::vector<float> wf(64);
+    for (int i = 0; i < 64; i++) wf[i] = -1.0f + 2.0f * i / 63.0f;
+    std::vector<uint8_t> good(8 + 64 * 4, 0);
+    memcpy(good.data(), "KEEP", 4);
+    int32_t n = 64;
+    memcpy(good.data() + 4, &n, 4);
+    memcpy(good.data() + 8, wf.data(), wf.size() * 4);
+    fatfsShimInjectBytes("0:/pfm3/waveform/usr1.bin", good.data(), good.size());
+
+    // 6-byte truncated usr2.bin: full 4-byte name, then ONLY 2 of the 4
+    // count bytes — chosen so the partial write over a stale 0x00000040
+    // would re-read as exactly 64 (in-range) pre-fix.
+    std::vector<uint8_t> trunc(6, 0);
+    memcpy(trunc.data(), "TRUN", 4);
+    trunc[4] = 0x40;
+    trunc[5] = 0x00;
+    fatfsShimInjectBytes("0:/pfm3/waveform/usr2.bin", trunc.data(), trunc.size());
+    for (int s = 0; s < 1024; s++) userWaveform[1][s] = 42.0f;
+
+    uw_.loadUserWaveforms();
+
+    EXPECT_EQ(uw_.userWaveFormNames[1][0], '#');
+    for (int s = 0; s < 1024; s++) {
+        EXPECT_FLOAT_EQ(userWaveform[1][s], 0.0f) << "sample " << s;
+    }
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/waveform/usr2.bin", after));
+    EXPECT_EQ(after, trunc);  // not rewritten
+    // The earlier valid slot is untouched by the truncated one.
+    EXPECT_EQ(memcmp(userWaveform[0], wf.data(), 64 * 4), 0);
+}
