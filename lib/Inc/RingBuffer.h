@@ -41,6 +41,16 @@ public:
         this->head = this->tail;
     }
 
+    // B1: producer-side SPSC discard, mirroring discardAllFromConsumer()
+    // above. Linearizes at the tail write: unread entries are discarded,
+    // while a consumer remove() that completes afterwards still sees a
+    // coherent (empty) queue. Unlike clear(), this never writes the
+    // consumer-owned head — safe to call from the producer context (main
+    // loop) while SysTick drains the queue.
+    void discardAllFromProducer() {
+        this->tail = this->head;
+    }
+
 	void insert(T element) {
 	    this->buf[this->tail] = element;
 	    this->tail = (this->tail == size-1) ? 0 : this->tail + 1;

@@ -90,6 +90,12 @@ private:
     FirmwareTftDisplay *tft_;
     int refreshStatus_;
     int endRefreshStatus_;
+    // B1: set by newPfm3Page's REINIT_TFT branch so the SECOND
+    // propagateNewPfm3Page() call (SynthState.cpp restores the previous mode
+    // and re-propagates) forces refreshStatus_ 21 (full repaint) instead of
+    // the usual 20 — the else-branch would otherwise overwrite a 21 set in
+    // the REINIT branch before the main loop ever runs.
+    bool tftJustReinit_;
 
     // Local value preset modified to know whether it's currently showing up
     int currentTimbre_;
