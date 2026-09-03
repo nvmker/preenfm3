@@ -155,6 +155,30 @@ TEST_F(FirmwareTftDisplayTest, OperatorShapeExtremeValuesStayInsideOscilloBox) {
     EXPECT_TRUE(BoxContains(tftPalette565[COLOR_YELLOW]));
 }
 
+TEST_F(FirmwareTftDisplayTest, OperatorShapeNonFiniteValuesClampNotUB) {
+    // B1/Copilot: NaN and infinities make the float→int conversion UB before
+    // any post-cast clamp could run. The float-domain clamp catches NaN via
+    // the negated comparison; under UBSan (make test-asan) the pre-fix cast
+    // is a hard float-cast-overflow report.
+    float wf[32];
+    for (int i = 0; i < 32; i++) {
+        switch (i % 4) {
+        case 0: wf[i] = 0.0f / 0.0f; break;          // NaN
+        case 1: wf[i] = 1.0f / 0.0f; break;          // +inf
+        case 2: wf[i] = -1.0f / 0.0f; break;         // -inf
+        default: wf[i] = 1.0f; break;
+        }
+    }
+    display_.initWaveFormExt(2, wf, 32);
+
+    display_.oscilloBgActionOperatorShape(2);
+    display_.pumpAction();
+    display_.pumpAction();
+
+    ExpectCanariesIntact();
+    EXPECT_TRUE(BoxContains(tftPalette565[COLOR_YELLOW]));
+}
+
 TEST_F(FirmwareTftDisplayTest, OperatorShapeInRangeExtremeSamplesAreNotClipped) {
     // In-range contract boundary: |v| == 1.0 → oy == ±48 must still write
     // rows 98 and 2 — the clamp may not clip in-range values (byte-identical
@@ -272,10 +296,13 @@ TEST_F(FirmwareTftDisplayTest, WaveformIndexEqualToSlotCountIsNoDraw) {
     for (int i = 0; i < kBoxElems; i++) {
         ASSERT_EQ(layout_.box[i], 0x1234) << "box element " << i << " written";
     }
-    // B1 (review finding): dropped the post-pump counter assertion —
-    // additionalActions()'s queue-empty "just in case" reset zeroes the
-    // counter either way, so it passed pre- and post-fix (could not fail);
-    // the enqueue-side count above and the sentinel carry the signal.
+    // Restored per review: additionalActions() resets the counter to 0 at
+    // the TOP (queue is empty after the dequeue), and the pre-fix
+    // param1==14 branch would then DECREMENT it to -1 inside the switch —
+    // so a post-pump ==0 assertion IS discriminating (pre-fix: -1, post-fix:
+    // 0), and locks the never-negative invariant either way. (In practice
+    // the pre-fix run segfaults on the waveForm[14] deref before this.)
+    EXPECT_EQ(display_.queuedOperatorDraws(), 0);
     EXPECT_EQ(display_.pendingActions(), 0);
     ExpectCanariesIntact();
 }

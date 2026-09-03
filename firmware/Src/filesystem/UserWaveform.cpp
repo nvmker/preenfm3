@@ -198,8 +198,16 @@ void UserWaveform::loadUserWaveformFromBin(int f, const char* fileName) {
     // header — a corrupt/stale bin fed numberOfSample straight into
     // waveTables[].max and the body load (a count > 1024 spills the chunked
     // >512-byte reads into neighboring slots / past .instruction_ram).
+    // B1/Copilot: the DECLARED body must also be present — a valid-range
+    // count with a truncated body leaves the slot tail as power-on garbage
+    // while publishing a valid name and max (7.7 noise class; the body
+    // load() results are ignored below). Firmware-written bins are always
+    // exactly 8 + 4n bytes, so this never false-rejects. Short-circuit keeps
+    // the multiply overflow-safe (count already ∈ [32,1024] when it runs).
     // Reject exactly like a bad txt (zero slot, '#' name, no bin rewrite).
-    if (numberOfSample < 32 || numberOfSample > 1024) {
+    int sizeBin = checkSize(fileName);
+    if (numberOfSample < 32 || numberOfSample > 1024
+            || sizeBin < 8 + numberOfSample * 4) {
         numberOfSampleError(f);
         return;
     }
