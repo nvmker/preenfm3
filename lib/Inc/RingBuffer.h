@@ -41,6 +41,29 @@ public:
         this->head = this->tail;
     }
 
+    // B1: producer-side SPSC discard, mirroring discardAllFromConsumer()
+    // above. Linearizes at the tail write: unread entries are discarded,
+    // while a consumer remove() that completes afterwards still sees a
+    // coherent (empty) queue. Unlike clear(), this never writes the
+    // consumer-owned head — safe to call from the producer context (main
+    // loop) while SysTick drains the queue.
+    //
+    // B1/Copilot: a plain `tail = head` still re-reads the CONSUMER-owned
+    // head — a SysTick remove() landing between the load and the store
+    // writes a STALE head into tail, and getCount() then reports size-1 (a
+    // "full" queue of stale slots). Re-stabilize until the loaded head is
+    // still current; head only advances (at most once per tic), so the loop
+    // converges as soon as the consumer pauses one iteration.
+    void discardAllFromProducer() {
+        for (;;) {
+            int h = this->head;
+            this->tail = h;
+            if (this->head == h) {
+                break;
+            }
+        }
+    }
+
 	void insert(T element) {
 	    this->buf[this->tail] = element;
 	    this->tail = (this->tail == size-1) ? 0 : this->tail + 1;

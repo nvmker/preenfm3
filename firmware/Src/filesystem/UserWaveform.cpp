@@ -186,7 +186,31 @@ void UserWaveform::loadUserWaveformFromBin(int f, const char* fileName) {
     load(fileName, 0, userWaveFormNames[f], 4);
     oscShapeNames[8 + f] = userWaveFormNames[f];
 
+    // B1 (review finding): a truncated bin (< 8 bytes, e.g. an interrupted
+    // save) leaves numberOfSample partially written or entirely stale —
+    // it is a MEMBER carrying the previous slot's count (the txt path
+    // resets it to -1, the bin path didn't), and a stale value inside
+    // [32,1024] walks straight through the range check below. Pre-set -1
+    // so any partial read lands far outside the valid window.
+    numberOfSample = -1;
     load(fileName, 4, &numberOfSample, 4);
+    // B1: the txt path validates 32..1024, but the bin path trusted the
+    // header — a corrupt/stale bin fed numberOfSample straight into
+    // waveTables[].max and the body load (a count > 1024 spills the chunked
+    // >512-byte reads into neighboring slots / past .instruction_ram).
+    // B1/Copilot: the DECLARED body must also be present — a valid-range
+    // count with a truncated body leaves the slot tail as power-on garbage
+    // while publishing a valid name and max (7.7 noise class; the body
+    // load() results are ignored below). Firmware-written bins are always
+    // exactly 8 + 4n bytes, so this never false-rejects. Short-circuit keeps
+    // the multiply overflow-safe (count already ∈ [32,1024] when it runs).
+    // Reject exactly like a bad txt (zero slot, '#' name, no bin rewrite).
+    int sizeBin = checkSize(fileName);
+    if (numberOfSample < 32 || numberOfSample > 1024
+            || sizeBin < 8 + numberOfSample * 4) {
+        numberOfSampleError(f);
+        return;
+    }
     waveTables[f + 8].max = (numberOfSample  -1);
     waveTables[f + 8].precomputedValue = (waveTables[f + 8].max + 1) * waveTables[f + 8].useFreq * PREENFM_FREQUENCY_INVERSED;
 

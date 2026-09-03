@@ -35,6 +35,7 @@ int getLength(const char *str) {
 }
 
 FMDisplay3::FMDisplay3() {
+    tftJustReinit_ = false;
 }
 
 FMDisplay3::~FMDisplay3() {
@@ -112,7 +113,11 @@ void FMDisplay3::newTimbre(int timbre) {
     displayEditor_->newTimbre(timbre);
 
     if (this->synthState_->fullState.synthMode == SYNTH_MODE_EDIT_PFM3) {
-        tft_->clearActions();
+        // B1 (review finding): main-loop context — flush with the
+        // producer-safe variant (a full clear() here races SysTick's
+        // concurrent dequeue and can fabricate a full queue of stale
+        // slots → garbage TFTActions).
+        tft_->clearActionsFromMain();
         tft_->pauseRefresh();
         tft_->clear();
         this->refreshOscilloBG();
@@ -337,8 +342,15 @@ void FMDisplay3::newMixerValue(uint8_t valueType, uint8_t timbre, float oldValue
 void FMDisplay3::newPfm3Page(FullState *fullState) {
     if (unlikely(fullState->synthMode == SYNTH_MODE_REINIT_TFT)) {
         tft_->reset();
+        // B1: the MENU+'<' flow (SynthState.cpp) propagates REINIT_TFT and
+        // then immediately re-propagates the restored mode — that second
+        // call lands in the else-branch below and would overwrite any
+        // refreshStatus_ set here. The flag carries "full repaint" (21)
+        // through to that call so a desynced panel actually heals.
+        tftJustReinit_ = true;
     } else {
-        refreshStatus_ = 20;
+        refreshStatus_ = tftJustReinit_ ? 21 : 20;
+        tftJustReinit_ = false;
         this->refreshOscilloBG();
     }
 }
