@@ -350,35 +350,40 @@ void TftDisplay::tic(bool checkDisplayPower) {
 
         // Only if previous DMA pushed is finished
         if (checkDisplayPower && !tftSpiOwnedByMain_ && (currentMillis - tftGetStatusMillis) > 500) {
-            // B1 (review finding): distinguish transport outcomes.
-            // HAL_BUSY means OUR OWN pixel push is in flight — not a panel
-            // status. Skip the cycle entirely: no status_[3] poisoning, no
-            // counters (the old forced status_[1]=1 turned two consecutive
-            // BUSY polls during display churn into a bogus dead-panel
-            // detection). HAL_ERROR is a real transport fault: keep the
-            // legacy tracking so an erroring-but-present panel still heals.
-            HAL_StatusTypeDef pollStatus = ILI9341_ReadPowerMode(status_);
-            if (pollStatus != HAL_BUSY) {
-                if (pollStatus != HAL_OK) {
-                    status_[1] = 1;
-                }
-                // Try to detect when TFT is BLANK
-                if (status_[1] != 222 && status_[1] != 156) {
-                    if(status_[3] == status_[1]) {
-                        clearActions();
-                        tftMustBeReset_ = true;
+            // B1/Copilot: skip BEFORE touching the driver — ILI9341_ReadPowerMode()
+            // asserts CS, and when HAL_SPI returns BUSY (our own pixel push in
+            // flight) it still DEASSERTS CS on the way out: CS rising mid-stream
+            // terminates the panel's RAMWR, so the in-flight push is truncated
+            // while its dirty bit is already cleared — that region is then never
+            // re-pushed (persistent desync). Handling HAL_BUSY after the call is
+            // too late; the CS glitch already happened.
+            if (!pushToTftInProgress) {
+                HAL_StatusTypeDef pollStatus = ILI9341_ReadPowerMode(status_);
+                if (pollStatus != HAL_BUSY) {
+                    if (pollStatus != HAL_OK) {
+                        status_[1] = 1;  // real transport fault: legacy tracking
                     }
+                    // Try to detect when TFT is BLANK
+                    if (status_[1] != 222 && status_[1] != 156) {
+                        if(status_[3] == status_[1]) {
+                            clearActions();
+                            tftMustBeReset_ = true;
+                        }
+                    }
+                    // status_3 allows to make sure we got 2 wrong number in a row
+                    status_[3] = status_[1];
                 }
-                // status_3 allows to make sure we got 2 wrong number in a row
-                status_[3] = status_[1];
             }
             tftGetStatusMillis = currentMillis;
             return;
         }
 
         // B1: no SPI push while main owns the bus for a reset (DMA2D actions
-        // in the switch below still run — they never touch SPI).
-        if (!tftSpiOwnedByMain_ && pushToTft()) {
+        // in the switch below still run — they never touch SPI), and not while
+        // a previous push's DMA is still streaming — pushToTft() would toggle
+        // CS/DC and send window-command bytes into the in-flight transfer
+        // before HAL could answer BUSY (same truncation hazard as the poll).
+        if (!tftSpiOwnedByMain_ && !pushToTftInProgress && pushToTft()) {
            // a part have been pushed
            tftPushMillis = currentMillis;
            return;

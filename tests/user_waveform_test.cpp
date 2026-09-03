@@ -406,6 +406,32 @@ TEST_F(UserWaveformTest, BinHeaderSampleCount1025IsRejected) {
     }
 }
 
+TEST_F(UserWaveformTest, TruncatedBinBodyWithValidHeaderIsRejected) {
+    // B1/Copilot: header count 64 (valid range) but only 20 bytes of body —
+    // the old code published the valid name + max and left the slot tail as
+    // power-on garbage (7.7 noise class). The declared body must be present.
+    std::vector<uint8_t> bin(8 + 20, 0);
+    memcpy(bin.data(), "SHRT", 4);
+    int32_t n = 64;
+    memcpy(bin.data() + 4, &n, 4);
+    for (int i = 0; i < 20 / 4; i++) {
+        float v = 0.5f * i;
+        memcpy(bin.data() + 8 + i * 4, &v, 4);
+    }
+    fatfsShimInjectBytes("0:/pfm3/waveform/usr4.bin", bin.data(), bin.size());
+    for (int s = 0; s < 1024; s++) userWaveform[3][s] = 42.0f;
+
+    uw_.loadUserWaveforms();
+
+    EXPECT_EQ(uw_.userWaveFormNames[3][0], '#');
+    for (int s = 0; s < 1024; s++) {
+        EXPECT_FLOAT_EQ(userWaveform[3][s], 0.0f) << "sample " << s;
+    }
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/waveform/usr4.bin", after));
+    EXPECT_EQ(after, bin);  // not rewritten
+}
+
 TEST_F(UserWaveformTest, TruncatedBinHeaderAfterValidSlotIsRejected) {
     // RED→GREEN for the numberOfSample = -1 pre-set (B1 review finding):
     // numberOfSample is a MEMBER carrying the previous slot's count. A

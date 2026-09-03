@@ -141,19 +141,19 @@ void FirmwareTftDisplay::oscilloBgDrawOperatorShape(float* waveForm, int size) {
 
     for (int x = 0; x < 160; x++) {
         float index = x * ((float)size) / 160.0f;
-        int oy = (int) (waveForm[(int)index] * 48.0f);
-        // B1: corrupt-bin values exceed the ±1.0 waveform contract. Clamp to
-        // the step-0-cleared box rows (1..98) BEFORE the int8_t store — the
-        // store silently wraps anything past ±127, and both connect loops
-        // below then write outside bgOscillo (backward into bgColorChar,
-        // which is init-once at boot → the persistent garbage). In-range
-        // values (oy ∈ [-48,48]) are untouched.
-        if (unlikely(oy > 48)) {
-            oy = 48;
-        } else if (unlikely(oy < -49)) {
-            oy = -49;
+        // B1: corrupt-bin values exceed the ±1.0 waveform contract, and NaN/
+        // infinity make the float→int conversion itself UB. Clamp in the
+        // FLOAT domain first — !(v >= -49) also catches NaN (both NaN
+        // comparisons are false) — so the cast only ever sees a finite value
+        // in [-49, 48], exactly the step-0-cleared box rows. In-range values
+        // (|v| <= 48) are untouched (byte-identical output).
+        float v = waveForm[(int)index] * 48.0f;
+        if (unlikely(!(v >= -49.0f))) {
+            v = -49.0f;
+        } else if (unlikely(v > 48.0f)) {
+            v = 48.0f;
         }
-        oscilloYValue[x] = oy;
+        oscilloYValue[x] = (int8_t) v;
     }
 
     for (int x = 1; x < 159; x++) {
