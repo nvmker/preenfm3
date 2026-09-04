@@ -17,6 +17,7 @@
 
 
 #include <math.h>
+#include <string.h>
 #include "Timbre.h"
 #include "Voice.h"
 
@@ -253,6 +254,12 @@ const float delayBufStereoDiv4 = delayBufStereoSize * 0.25f;
 const float delayBufStereoSizeInv = 1.0f / delayBufStereoSize;
 
 Timbre::Timbre() {
+
+    // Mirror the device's BSS zero-init: on hardware Timbre lives inside the
+    // global `Synth synth` (preenfm3.cpp), so params_ is zero when this ctor
+    // runs and Start()'s table reads see division/direction == 0. Heap- or
+    // stack-constructed Synths (host tests) would otherwise read garbage.
+    memset(&params_, 0, sizeof(params_));
 
     recomputeNext_ = true;
     currentGate_ = 0;
