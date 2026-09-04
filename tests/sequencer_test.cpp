@@ -280,10 +280,9 @@ TEST(SeqSerialization, Version1BufferParsesAndPreservesTempo) {
 // ===========================================================================
 
 #include "Synth.h"
-#include "MidiDecoder.h"   // reaches Synth.h/SynthState.h closure cleanly
 #include "FMDisplaySequencer.h"
 
-#include <new>
+#include <new>  // placement new (fixture SetUp constructs into aligned backing)
 
 namespace {
 
