@@ -280,10 +280,9 @@ TEST(SeqSerialization, Version1BufferParsesAndPreservesTempo) {
 // ===========================================================================
 
 #include "Synth.h"
-#include "MidiDecoder.h"   // reaches Synth.h/SynthState.h closure cleanly
 #include "FMDisplaySequencer.h"
 
-#include <new>
+#include <new>  // placement new (fixture SetUp constructs into aligned backing)
 
 namespace {
 
@@ -1449,6 +1448,88 @@ TEST_F(SequencerPhase2, TripKillsVoicesTheWalkStarted) {
         released = !synth_.isPlaying();
     }
     EXPECT_TRUE(released) << "the note-on fired at slot 12 must be released by the trip";
+}
+
+TEST_F(SequencerPhase2, KilledVoiceDoesNotLeakNoteAlreadyFinishedIntoNextNote) {
+    // PR #38 review (Copilot): noteOn + noteOff-before-any-render leaves the
+    // one-shot noteAlreadyFinished counter at 1; killNow() (allSoundOff /
+    // noteOffQuick's unrendered path) frees the voice WITHOUT clearing it;
+    // the next note allocated to that voice gets a spurious NORMAL noteOff
+    // at the second rendered block (~3 ms in) and fades out — a runtime
+    // cut-off-notes bug, not just the fixture-memory vector init() covers.
+    // Lifecycle boundaries (noteOn / killNow) must clear the counter.
+    int32_t b1[64], b2[64], b3[64];
+
+    // 1) Fill every timbre-0 voice with distinct unrendered notes, then
+    //    note them all off before a single render -> every voice carries
+    //    noteAlreadyFinished = 1 (Voice::noteOff's newNotePlayed path).
+    for (int n = 60; n <= 65; n++) {
+        synth_.noteOn(0, n, 100);
+    }
+    for (int n = 60; n <= 65; n++) {
+        synth_.noteOff(0, n);
+    }
+
+    // 2) Panic-style kill: allSoundOff -> killNow on every voice. The
+    //    voices are freed; the counters must not survive into their next
+    //    lifecycle.
+    synth_.allSoundOff(0);
+    for (int v = 0; v < MAX_NUMBER_OF_VOICES; v++) {
+        EXPECT_FALSE(synth_.hostVoice(v).isPlaying()) << "allSoundOff freed every voice";
+    }
+
+    // 3) Fresh note on (allocator picks whichever freed voice — all are
+    //    poisoned pre-fix, so the test is allocator-independent).
+    synth_.noteOn(0, 67, 100);
+
+    // 4) Render past the two-block countdown: the note must still be
+    //    sounding and NOT released (pre-fix: block 2 tail fires the stale
+    //    auto-finish -> released=true while the note should hold).
+    for (int i = 0; i < 4; i++) {
+        synth_.buildNewSampleBlock(b1, b2, b3);
+    }
+    int sounding = 0;
+    for (int v = 0; v < MAX_NUMBER_OF_VOICES; v++) {
+        if (synth_.hostVoice(v).isPlaying()) {
+            sounding++;
+            EXPECT_EQ(synth_.hostVoice(v).getNote(), 67);
+            EXPECT_FALSE(synth_.hostVoice(v).isReleased())
+                << "fresh note spuriously auto-released by a stale "
+                   "noteAlreadyFinished counter (killNow leak)";
+        }
+    }
+    EXPECT_EQ(sounding, 1) << "exactly one voice sounds the fresh note";
+}
+
+TEST_F(SequencerPhase2, RetriggeredVoiceDoesNotLeakNoteAlreadyFinished) {
+    // The noteOn() boundary of the same defect: an unrendered noteOff arms
+    // the auto-finish counter, and a direct retrigger of the same note
+    // (Voice::noteOnWithoutPop, the same-note priority path) begins a new
+    // lifecycle that must abandon the stale countdown — else the gliding/
+    // quick-dead note gets a spurious normal noteOff two blocks in.
+    int32_t b1[64], b2[64], b3[64];
+
+    synth_.noteOn(0, 60, 100);
+    synth_.noteOff(0, 60);          // unrendered -> counter = 1 on the voice
+    synth_.noteOn(0, 60, 100);      // same-note retrigger -> new lifecycle
+
+    // POLY quick-dead path: the retrigger queues as a pending note that
+    // resolves via endNoteOrBeginNextOne once the quick-released env dies
+    // (~6 blocks); the stale counter then counts down on the RESOLVED note
+    // — the spurious release lands around block 8-9, so render well past it.
+    for (int i = 0; i < 16; i++) {
+        synth_.buildNewSampleBlock(b1, b2, b3);
+    }
+    int sounding = 0;
+    for (int v = 0; v < MAX_NUMBER_OF_VOICES; v++) {
+        if (synth_.hostVoice(v).isPlaying()) {
+            sounding++;
+            EXPECT_FALSE(synth_.hostVoice(v).isReleased())
+                << "retriggered note spuriously auto-released by a stale "
+                   "noteAlreadyFinished counter (noteOn leak)";
+        }
+    }
+    EXPECT_EQ(sounding, 1);
 }
 
 TEST_F(SequencerPhase2, InsertRefusesSentinelRegionLastFreeAction) {
