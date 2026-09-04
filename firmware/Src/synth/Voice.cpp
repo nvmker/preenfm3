@@ -405,6 +405,18 @@ void Voice::init() {
     // (long release env) on a voice that was quick-released — a stuck-voice
     // false failure that only reproduced in full-suite order.
     this->noteAlreadyFinished = 0;
+    // Same class as noteAlreadyFinished above: these lifecycle flags are
+    // read (e.g. noteOnWithoutPop's `!this->released` guard) before any
+    // explicit assignment on a first-use voice. On device the global Synth's
+    // voices are BSS-zero, so clearing them here is behavior-identical there;
+    // it only protects non-global construction (host fixtures).
+    this->released = false;
+    this->gliding = false;
+    this->newGlide = false;
+    this->nextGlidingNote = 0;
+    this->pendingNote = 0;
+    this->pendingNoteFrequency = 0.0f;
+    this->pendingNoteVelocity = 0;
     this->nextMainFrequency = 0.0f;
 }
 
