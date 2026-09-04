@@ -427,6 +427,10 @@ void Voice::glideToNote(short newNote, float newNoteFrequency) {
 }
 
 void Voice::noteOnWithoutPop(short newNote, float newNoteFrequency, short velocity, uint32_t index, float phase) {
+    // PR #38 review: a fresh lifecycle begins — abandon any stale
+    // noteAlreadyFinished countdown from the previous note on this voice
+    // (set by an unrendered noteOff; see noteOff()'s newNotePlayed path).
+    this->noteAlreadyFinished = 0;
     // Update index : so that few chance to be chosen again during the quick dying
     this->index = index;
     // We can glide in mono and unison
@@ -491,6 +495,12 @@ float Voice::getNoteRealFrequencyEstimation(float newNoteFrequency) {
 }
 
 void Voice::noteOn(short newNote, float newNoteFrequency, short velocity, uint32_t index, float phase) {
+    // PR #38 review: a fresh lifecycle begins — abandon any stale
+    // noteAlreadyFinished countdown from the previous note on this voice.
+    // Safe vs endNoteOrBeginNextOne's pending path: it sets the flag AFTER
+    // the noteOn() call returns, so the legitimate "finish now" semantic
+    // survives.
+    this->noteAlreadyFinished = 0;
 
 
     // On noteOn we can only glide in mono and unison with glideType ALWAYS
@@ -641,6 +651,10 @@ void Voice::killNow() {
     this->newNotePlayed = false;
     this->playing = false;
     this->newNotePending = false;
+    // PR #38 review: the terminated lifecycle's one-shot countdown must die
+    // with it — otherwise the next note allocated to this voice gets a
+    // spurious normal noteOff two blocks in (cut-off-notes bug).
+    this->noteAlreadyFinished = 0;
     this->pendingNote = 0;
     this->nextGlidingNote = 0;
     this->gliding = false;
@@ -5847,7 +5861,7 @@ void Voice::fxAfterBlock() {
             float fxParamTmp = (currentTimbre->params_.effect1.param1 + matrixFilterFrequency);
             fxParamTmp *= fxParamTmp;
 
-            const uint8_t random = (*(uint8_t*) noise) & 0xff;
+            const uint8_t random = *(uint8_t*) noise;
             if (random > 252) {
                 fxParam1 += ((random & 1) * 0.007874015748031f);
             }
@@ -5939,7 +5953,7 @@ void Voice::fxAfterBlock() {
             float fxParamTmp = (currentTimbre->params_.effect1.param1 + matrixFilterFrequency);
             fxParamTmp *= fxParamTmp;
 
-            const uint8_t random = (*(uint8_t*) noise) & 0xff;
+            const uint8_t random = *(uint8_t*) noise;
             if (random > 252) {
                 fxParam1 += ((random & 1) * 0.007874015748031f);
             }
@@ -6045,7 +6059,7 @@ void Voice::fxAfterBlock() {
             float fxParamTmp = currentTimbre->params_.effect1.param1 + matrixFilterFrequency;
             fxParamTmp *= fxParamTmp;
 
-            const uint8_t random = (*(uint8_t*) noise) & 0xff;
+            const uint8_t random = *(uint8_t*) noise;
             if (random > 252) {
                 fxParam1 += ((random & 1) * 0.007874015748031f);
             }
@@ -6119,7 +6133,7 @@ void Voice::fxAfterBlock() {
             float fxParamTmp = currentTimbre->params_.effect1.param1 + matrixFilterFrequency;
             fxParamTmp *= fxParamTmp;
 
-            const uint8_t random = (*(uint8_t*) noise) & 0xff;
+            const uint8_t random = *(uint8_t*) noise;
             if (random > 252) {
                 fxParam1 += ((random & 1) * 0.007874015748031f);
             }
@@ -6587,7 +6601,7 @@ void Voice::fxAfterBlock() {
             break;
         case FILTER_AP4D: {
             float fxParamTmp = (currentTimbre->params_.effect1.param1 + matrixFilterFrequency);
-            const uint8_t random = (*(uint8_t*) noise) & 0xff;
+            const uint8_t random = *(uint8_t*) noise;
             float randomF = (float) random * 0.00390625f;
             if (random < 76) {
                 fxParam1 += (randomF * 0.002f) - 0.001f;
