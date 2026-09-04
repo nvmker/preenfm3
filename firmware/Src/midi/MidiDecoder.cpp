@@ -28,6 +28,7 @@ extern "C" {
 
 #include "MidiDecoder.h"
 #include "RingBuffer.h"
+#include <string.h>
 
 // The two HAL-typed externs below are referenced only from the sendMidiDin5Out
 // / sendMidiUsbOut HW-touching helpers, which are stubbed out under PFM3_HOST
@@ -63,6 +64,11 @@ uint8_t sysexBuffer[SYSEX_BUFFER_SIZE];
 
 
 MidiDecoder::MidiDecoder() {
+    // Mirror the device's BSS zero-init (global `MidiDecoder midiDecoder`,
+    // preenfm3.cpp): currentNrpn[]/songPosition are read before any explicit
+    // assignment, so non-global instances (host tests) need them zeroed.
+    memset(&currentNrpn, 0, sizeof(currentNrpn));
+    songPosition = 0;
     currentEventState.eventState = MIDI_EVENT_WAITING;
     currentEventState.index = 0;
     this->isExternalMidiClockStarted = false;
