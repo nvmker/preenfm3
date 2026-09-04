@@ -396,6 +396,15 @@ void Voice::init() {
     this->midiVelocity = 0;
     this->holdedByPedal = false;
     this->newNotePlayed = false;
+    // 2026-09-04 (host-suite order-dependence hunt): noteAlreadyFinished is
+    // the one-shot "auto note-off one block after an unrendered noteOff"
+    // flag (set by noteOff()'s newNotePlayed path, consumed by nextBlock()'s
+    // tail). init() never cleared it — on reused memory (host fixtures; any
+    // future re-init path) a stale 1 rides into the next note's lifecycle,
+    // counts up over two rendered blocks and fires a bogus NORMAL noteOff()
+    // (long release env) on a voice that was quick-released — a stuck-voice
+    // false failure that only reproduced in full-suite order.
+    this->noteAlreadyFinished = 0;
     this->nextMainFrequency = 0.0f;
 }
 
