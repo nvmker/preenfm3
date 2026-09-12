@@ -1,23 +1,58 @@
 #!/bin/sh
-# Perf gate (Callgrind Ir). Runs the pfm3_bench golden-workload driver under
-# valgrind/callgrind with --toggle-collect scoped to Synth::buildNewSampleBlock
-# and FAILS if any baseline script's total instruction count (Ir) regresses
-# more than meta.threshold_pct (default 2%). This is the "did this PR make the
-# render slower?" before/after engine — deterministic because guest Ir = f(built
-# binary, script input) and the compiler is pinned by the benchmark.yml
-# container (gcc:13.3.0-bookworm). Relative deltas and call counts are the
-# signal; absolute x86-64 Ir says nothing about the H7's 640k-cycle deadline.
+# Perf gate — TWO signals over the golden-master render workload:
+#
+#   1. Callgrind Ir (deterministic before/after engine): runs pfm3_bench
+#      under valgrind/callgrind with --toggle-collect scoped to
+#      Synth::buildNewSampleBlock and FAILS if any baseline script's total
+#      instruction count (Ir) regresses more than meta.threshold_pct
+#      (default 2%). Deterministic because guest Ir = f(built binary, script
+#      input) and the compiler is pinned by the benchmark.yml container
+#      (gcc:13.3.0-bookworm). This answers "did this PR add instructions?".
+#   2. Wall-clock trend (generous safety net): runs pfm3_bench --mode=wall
+#      (median ns/block over WALL_REPEAT=10 renders after WALL_WARMUP=3
+#      warmups, a fresh harness per render) and FAILS only beyond
+#      meta.wall_threshold_pct (default 25%). Shared-runner wall-clock is
+#      noisy (GitHub mixes Xeon/EPYC runners), so this is a TREND signal,
+#      not a bit-deterministic one — it exists to catch cache/allocation/
+#      algorithmic regressions the Ir gate cannot see (equal instruction
+#      mix, slower program).
+#
+# Relative deltas and call counts are the signal; absolute x86-64 numbers
+# say nothing about the H7's 640k-cycle deadline.
+#
+# SCOPE: --only=ir or --only=wall narrows the gate to one signal
+# (benchmark.yml uses one YAML step per signal so a failure attributes to
+# its own red step + summary section; GitHub's PR checks list shows the
+# job-level entry only — steps are visible in the run view/summary).
+# Default: both. Valgrind/callgrind_annotate are
+# required — the presence check, the annotate setup AND the meta.valgrind
+# identity check — ONLY when ir is in scope, so --only=wall runs on machines
+# with no valgrind (e.g. macOS local probes; wall numbers never touch
+# valgrind). The container/compiler/build_type/bench_version identity
+# checks apply to BOTH scopes.
 #
 # GATE vs MEASUREMENT (house contract, see coverage-gate.sh): this script is
-# the GATE — it parses callgrind output and fails on regression only. The
-# measurement itself (valgrind invocation) lives here too because it must use
-# exactly these flags; `make test` / the bench binary alone measure nothing.
+# the GATE — it parses measurement output and fails on regression only. The
+# measurements (the valgrind invocation; the bench's internal steady_clock
+# timing) live here too because they must use exactly these flags/params;
+# `make test` / the bench binary alone measure nothing.
 #
-# Baseline: scripts/perf-baseline.json (committed). Entries are script
-# name -> {blocks, ir_total}; meta pins schema/container/compiler/build_type/
-# bench_version/valgrind/threshold_pct. A meta mismatch is a HARD FAIL: a
-# container or valgrind bump invalidates every Ir number, and comparing across
-# toolchains is apples-to-oranges. Regenerate deliberately via the
+# STDOUT-PARSING EXCEPTION: Phase 2's rule "the gate never parses bench
+# stdout" holds for ir (Callgrind counts outside the process). Wall time can
+# only be observed inside the process, so wall mode parses the bench's
+# single --json line; the fail-closed guards around it (exactly one JSON
+# object, numeric blocks cross-checked against the baseline entry,
+# ns_per_block a positive finite number, integer normalization, and the
+# MIN_WALL_NS_PER_BLOCK floor) replace the out-file parsing guarantees.
+#
+# Baseline: scripts/perf-baseline.json (committed), SCHEMA 2. Entries are
+# script name -> {blocks, ir_total} under .ir and {blocks, ns_per_block}
+# under .wall; the two sections must carry the SAME keys and per-entry
+# blocks (the gate cross-checks — drift is a hard error in both
+# directions). meta pins schema/container/compiler/build_type/bench_version/
+# valgrind/threshold_pct/wall_threshold_pct. A meta mismatch is a HARD
+# FAIL: a container or valgrind bump invalidates every number, and comparing
+# across toolchains is apples-to-oranges. Regenerate deliberately via the
 # regenerate-perf-baseline.yml workflow (manual dispatch, D4) or locally in
 # the SAME pinned container:
 #   docker run --rm -v "$PWD:$PWD" -w "$PWD" gcc:13.3.0-bookworm \
@@ -39,19 +74,35 @@
 # cross-check never silently degrades). The per-function report on FAIL uses
 # the same tool (best effort).
 #
+# Wall plausibility floor (MIN_WALL_NS_PER_BLOCK): the Ir floor proves the
+# render window executes >= ~9k instructions/block — but REAL wall
+# measurements legitimately reach sub-microsecond ns/block on fast cores
+# (measured: arp_triad_up ~930 ns/block on an Apple P-core), so the floor
+# sits far below real numbers (10x under the cheapest observed) and exists
+# ONLY to catch broken timing or a silent render (~0-few-tens ns/block).
+#
 # Usage: perf-gate.sh <bench_bin> <baseline_json> [--regen] [--threshold=PCT]
-#   --threshold=0 means EXACT: every script must measure ir_total == baseline
-#   (used by the regen/bootstrap self-verify steps — Callgrind Ir is
-#   deterministic, so a second measurement must reproduce the numbers bit for
-#   bit; the default 2% band is only for the regression gate itself).
+#                     [--wall-threshold=PCT] [--only=ir|wall]
+#   --only=ir|wall      gate ONE signal only (default: both). Forbidden with
+#                       --regen — a regen writes the FULL baseline (both .ir
+#                       and .wall numbers).
+#   --threshold=0 means EXACT (ir only): every script must measure ir_total
+#   == baseline (used by the regen/bootstrap self-verify steps — Callgrind Ir
+#   is deterministic, so a second measurement must reproduce the numbers bit
+#   for bit; the default 2% band is only for the regression gate itself).
+#   Wall has no exact mode — it is not bit-deterministic by nature, so its
+#   self-verify runs inside the (default 25%) wall band; --wall-threshold=0
+#   is rejected (0 would pretend exactness wall cannot have).
 # Env:  PERF_CONTAINER  container identity (CI always sets it; compared against
 #                       meta.container when non-empty — gate mode only)
 #       PERF_BUILD_TYPE expected CMAKE_BUILD_TYPE (default Release)
-#       VALGRIND        valgrind binary (default: PATH)
+#       VALGRIND        valgrind binary (default: PATH; ir scope only)
+#       CC              compiler identity source (CMake's convention)
 #       PERF_GATE_KEEP_TMP=1   keep the mktemp measurement dir (its path is
 #                       printed) — debugging aid
 #       PERF_GATE_REPORT_DIR=<dir>  best-effort copy of the per-script
-#                       callgrind .out + annotate tables for CI artifacts
+#                       callgrind .out + annotate tables + bench logs for CI
+#                       artifacts
 # Exit: 0 PASS / new baseline written · 1 gate or setup failure · 2 usage
 set -u
 
@@ -64,9 +115,22 @@ BENCH_VERSION=1
 # that while still catching a broken toggle-collect match (~0 Ir) or a silent
 # render (sub-1k/block) — refuse to gate or regen on such numbers.
 MIN_IR_PER_BLOCK=2000
+# Wall-clock plausibility floor, ns/block: catches broken timing (0 ns)
+# and silent renders (sub-100 ns/block). Deliberately FAR below real
+# measurements — real renders measure ~900-4000+ ns/block across hardware
+# (sub-microsecond blocks are LEGITIMATE on fast cores; measured ~930
+# ns/block for arp_triad_up on an Apple P-core), so this must never collide
+# with a real number. Same stance as the Ir floor, one signal over.
+MIN_WALL_NS_PER_BLOCK=100
+# Wall measurement params the gate always passes EXPLICITLY, so every number
+# in (and compared against) the baseline corresponds to known params — a
+# recorded median is meaningless without its warmup/repeat. Must match the
+# bench defaults (perf_main.cpp) and meta's regen docs.
+WALL_WARMUP=3
+WALL_REPEAT=10
 
 usage_die() {
-	echo "usage: perf-gate.sh <bench_bin> <baseline_json> [--regen] [--threshold=PCT]" >&2
+	echo "usage: perf-gate.sh <bench_bin> <baseline_json> [--regen] [--threshold=PCT] [--wall-threshold=PCT] [--only=ir|wall]" >&2
 	exit 2
 }
 
@@ -78,6 +142,9 @@ shift 2
 regen=0
 threshold_arg=
 threshold_given=0
+wall_threshold_arg=
+wall_threshold_given=0
+only=
 for arg in "$@"; do
 	case "$arg" in
 	--regen) regen=1 ;;
@@ -85,12 +152,34 @@ for arg in "$@"; do
 		threshold_arg=${arg#--threshold=}
 		threshold_given=1
 		;;
+	--wall-threshold=*)
+		wall_threshold_arg=${arg#--wall-threshold=}
+		wall_threshold_given=1
+		;;
+	--only=ir | --only=wall) only=${arg#--only=} ;;
+	--only=*)
+		echo "ERR: --only must be 'ir' or 'wall', got '${arg#--only=}'" >&2
+		usage_die
+		;;
 	*)
 		echo "ERR: unknown argument '$arg'" >&2
 		usage_die
 		;;
 	esac
 done
+
+# Scope: default BOTH signals; --only narrows. In regen mode the full
+# baseline (ir AND wall) is always rewritten — a half-scope regen would ship
+# a baseline mixing numbers from two different commits.
+ir_scope=1
+wall_scope=1
+[ "$only" = "ir" ] && wall_scope=0
+[ "$only" = "wall" ] && ir_scope=0
+if [ "$regen" -eq 1 ] && [ -n "$only" ]; then
+	echo "ERR: --only cannot be combined with --regen — a regen writes the FULL" >&2
+	echo "     baseline (both .ir and .wall numbers); scope only narrows gating." >&2
+	usage_die
+fi
 
 [ -x "$bench_bin" ] || {
 	echo "ERR: bench binary '$bench_bin' not found/executable — build pfm3_bench first" >&2
@@ -102,43 +191,13 @@ done
 }
 
 valgrind=${VALGRIND:-valgrind}
-command -v "$valgrind" >/dev/null 2>&1 || {
-	echo "ERR: valgrind '$valgrind' not found on PATH" >&2
-	exit 1
-}
+# jq is the baseline reader/writer — needed before ANY baseline validation, so
+# its presence check comes first. Baseline shape/meta validation precedes the
+# tool demands below on purpose: a schema-1 baseline must hard-fail with the
+# regen pointer even on a machine without valgrind (fail with the most
+# diagnostic error first).
 command -v jq >/dev/null 2>&1 || {
 	echo "ERR: jq not found on PATH (required to read/write the baseline JSON)" >&2
-	exit 1
-}
-
-annotate_bin=""
-# Prefer callgrind_annotate: on valgrind <= 3.21 cg_annotate ONLY parses
-# Cachegrind-format files (a callgrind out-file dies with 'missing command
-# line'). On >= 3.22 callgrind_annotate remains as a wrapper around the new
-# cg_annotate, so this ordering works across generations.
-if command -v callgrind_annotate >/dev/null 2>&1; then
-	annotate_bin=callgrind_annotate
-elif command -v cg_annotate >/dev/null 2>&1; then
-	annotate_bin=cg_annotate
-else
-	echo "WARN: neither callgrind_annotate nor cg_annotate found — skipping Ir cross-check and per-function report" >&2
-fi
-
-valgrind_version=$("$valgrind" --version 2>/dev/null) || {
-	echo "ERR: '$valgrind --version' failed" >&2
-	exit 1
-}
-
-# Compiler identity: gcc codegen is the PRIMARY determinant of Ir — a rebuilt
-# container image or a stray CC override must not silently invalidate the
-# baseline. Resolved from $CC (CMake's convention) or PATH gcc.
-compiler_cmd=${CC:-gcc}
-command -v "$compiler_cmd" >/dev/null 2>&1 || {
-	echo "ERR: compiler '$compiler_cmd' not found on PATH" >&2
-	exit 1
-}
-compiler_version=$("$compiler_cmd" -dumpfullversion 2>/dev/null) || {
-	echo "ERR: '$compiler_cmd -dumpfullversion' failed" >&2
 	exit 1
 }
 
@@ -147,6 +206,10 @@ jq_check() {
 }
 
 # --- baseline meta: shape + hard guards --------------------------------------
+# Minimal readability shape: .meta + .ir objects (enough to READ
+# meta.schema — a schema-1 file has no .wall yet and must reach the schema
+# check below so it fails with the regen pointer, not a bare shape error).
+# The .wall section is required as part of the schema-2 check.
 jq_check 'type == "object" and (.meta | type == "object") and (.ir | type == "object")' || {
 	echo "ERR: '$baseline' is not a perf baseline (needs top-level .meta and .ir objects)" >&2
 	exit 1
@@ -159,14 +222,18 @@ build_type_meta=$(jq -r '.meta.build_type // ""' "$baseline")
 valgrind_meta=$(jq -r '.meta.valgrind // ""' "$baseline")
 compiler_meta=$(jq -r '.meta.compiler // ""' "$baseline")
 threshold=$(jq -r '.meta.threshold_pct // 0' "$baseline")
+wall_threshold=$(jq -r '.meta.wall_threshold_pct // 0' "$baseline")
+wall_warmup_meta=$(jq -r '.meta.wall_warmup // ""' "$baseline")
+wall_repeat_meta=$(jq -r '.meta.wall_repeat // ""' "$baseline")
 
 [ "$threshold_given" -eq 1 ] && threshold=$threshold_arg
+[ "$wall_threshold_given" -eq 1 ] && wall_threshold=$wall_threshold_arg
 
 fail_meta() {
 	{
 		echo ""
 		echo "FAIL: baseline meta mismatch — $1"
-		echo "The committed Ir numbers are only valid for the exact toolchain they"
+		echo "The committed perf numbers are only valid for the exact toolchain they"
 		echo "were measured with. Regenerate deliberately via the dispatch workflow"
 		echo "(.github/workflows/regenerate-perf-baseline.yml) on your PR branch, or"
 		echo "see the header of this script for the local docker one-liner."
@@ -174,8 +241,15 @@ fail_meta() {
 	exit 1
 }
 
-# Schema check always runs (both modes): this script only understands schema 1.
-[ "$schema" = "1" ] || fail_meta "schema is '$schema', this gate understands 1"
+# Schema check always runs (both modes, both scopes): this script only
+# understands schema 2 — the file format changed when the .wall section +
+# meta.wall_threshold_pct were added, and old schema-1 baselines hard-fail
+# with the regen pointer (the deliberate migration red, same contract as
+# Phase 2's template bootstrap).
+[ "$schema" = "2" ] || fail_meta "schema is '$schema', this gate understands 2 (ir + wall sections)"
+# A schema-2 file must actually carry the .wall section (what makes it 2):
+jq_check '(.wall | type) == "object"' ||
+	fail_meta "schema 2 baseline is missing the .wall object"
 case "$threshold" in
 '' | *[!0-9]*)
 	echo "ERR: threshold '${threshold}' is not an integer percent" >&2
@@ -184,6 +258,64 @@ case "$threshold" in
 esac
 [ "$threshold" -ge 0 ] && [ "$threshold" -le 100 ] || {
 	echo "ERR: threshold '${threshold}' outside 0..100 (0 = exact match)" >&2
+	exit 1
+}
+# Wall threshold: integer 1..100 ONLY. 0 would mean "exact", which wall-clock
+# can never honor — it is not bit-deterministic, that is the whole reason the
+# band is generous. Reject 0 like any other bad value, in both modes.
+case "$wall_threshold" in
+'' | *[!0-9]*)
+	echo "ERR: wall-threshold '${wall_threshold}' is not an integer percent" >&2
+	exit 1
+	;;
+esac
+[ "$wall_threshold" -ge 1 ] && [ "$wall_threshold" -le 100 ] || {
+	echo "ERR: wall-threshold '${wall_threshold}' outside 1..100 (wall-clock is a noisy" >&2
+	echo "     trend signal — 0/exact is meaningless for it)" >&2
+	exit 1
+}
+
+# --- tools (scope-conditional) ------------------------------------------------
+# valgrind is an IR-scope dependency ONLY: --only=wall must run on machines
+# with no valgrind installed (macOS local probes). Wall numbers never touch
+# valgrind, so the annotate setup and the meta.valgrind identity check below
+# are guarded the same way. Vars are initialized so `set -u` stays safe.
+annotate_bin=""
+valgrind_version=""
+if [ "$ir_scope" -eq 1 ]; then
+	command -v "$valgrind" >/dev/null 2>&1 || {
+		echo "ERR: valgrind '$valgrind' not found on PATH" >&2
+		exit 1
+	}
+	# Prefer callgrind_annotate: on valgrind <= 3.21 cg_annotate ONLY parses
+	# Cachegrind-format files (a callgrind out-file dies with 'missing command
+	# line'). On >= 3.22 callgrind_annotate remains as a wrapper around the new
+	# cg_annotate, so this ordering works across generations.
+	if command -v callgrind_annotate >/dev/null 2>&1; then
+		annotate_bin=callgrind_annotate
+	elif command -v cg_annotate >/dev/null 2>&1; then
+		annotate_bin=cg_annotate
+	else
+		echo "WARN: neither callgrind_annotate nor cg_annotate found — skipping Ir cross-check and per-function report" >&2
+	fi
+	valgrind_version=$("$valgrind" --version 2>/dev/null) || {
+		echo "ERR: '$valgrind --version' failed" >&2
+		exit 1
+	}
+fi
+
+# Compiler identity: gcc codegen is the PRIMARY determinant of BOTH signals'
+# numbers (Ir counts and wall time are properties of the built binary) — a
+# rebuilt container image or a stray CC override must not silently invalidate
+# the baseline. Required in every scope. Resolved from $CC (CMake's
+# convention) or PATH gcc.
+compiler_cmd=${CC:-gcc}
+command -v "$compiler_cmd" >/dev/null 2>&1 || {
+	echo "ERR: compiler '$compiler_cmd' not found on PATH" >&2
+	exit 1
+}
+compiler_version=$("$compiler_cmd" -dumpfullversion 2>/dev/null) || {
+	echo "ERR: '$compiler_cmd -dumpfullversion' failed" >&2
 	exit 1
 }
 
@@ -200,13 +332,28 @@ if [ "$regen" -eq 0 ]; then
 	expected_build_type=${PERF_BUILD_TYPE:-Release}
 	[ "$build_type_meta" = "$expected_build_type" ] ||
 		fail_meta "build_type is '$build_type_meta', expected '$expected_build_type' (PERF_BUILD_TYPE)"
-	[ "$valgrind_meta" = "$valgrind_version" ] ||
-		fail_meta "valgrind is '$valgrind_meta', running '$valgrind_version'"
+	# valgrind identity matters ONLY for the Ir numbers (wall never touches
+	# valgrind) — guarded by scope like the presence check above.
+	if [ "$ir_scope" -eq 1 ]; then
+		[ "$valgrind_meta" = "$valgrind_version" ] ||
+			fail_meta "valgrind is '$valgrind_meta', running '$valgrind_version'"
+	fi
 	if [ -n "$compiler_meta" ]; then
 		[ "$compiler_meta" = "$compiler_version" ] ||
 			fail_meta "compiler is '$compiler_meta', running '$compiler_cmd $compiler_version'"
 	else
 		echo "WARN: baseline carries no meta.compiler — compiler identity check skipped (a regen stamps it)" >&2
+	fi
+	# Wall sampling protocol pins: a baseline measured at warmup=3/repeat=10
+	# must not be compared against a measurement taken with different
+	# params — the median of a different sampling distribution is not the
+	# same statistic. Changing WALL_WARMUP/WALL_REPEAT is a protocol change
+	# that flows through a deliberate regen (like a container bump).
+	if [ "$wall_scope" -eq 1 ]; then
+		[ "$wall_warmup_meta" = "$WALL_WARMUP" ] ||
+			fail_meta "wall_warmup is '$wall_warmup_meta', gate measures with '$WALL_WARMUP' (sampling protocol changed)"
+		[ "$wall_repeat_meta" = "$WALL_REPEAT" ] ||
+			fail_meta "wall_repeat is '$wall_repeat_meta', gate measures with '$WALL_REPEAT' (sampling protocol changed)"
 	fi
 else
 	# Regen mode: the environment IS the new truth; the workflow/container pin
@@ -222,11 +369,13 @@ else
 fi
 
 # Baseline entry validation (both modes): keys must be slug identifiers
-# (they are iterated as shell words AND used to build report file names), and
-# every ir_total/blocks must be a real JSON integer in shell-safe range. In
-# regen mode non-positive ir_total stays legal (that is what a regen TEMPLATE
-# looks like); the gate mode additionally refuses it below.
-bad_keys=$(jq -r '[.ir | keys[] | select(test("^[a-z0-9_]+$") | not)] | join(", ")' "$baseline")
+# (they are iterated as shell words AND used to build report file names) —
+# checked over BOTH sections — and every blocks/ir_total/ns_per_block must be
+# a real JSON integer in shell-safe range. In regen mode non-positive
+# ir_total/ns_per_block stays legal (that is what a regen TEMPLATE looks
+# like); the gate mode additionally refuses them below.
+bad_keys=$(jq -r '[.ir | keys[]] + [.wall | keys[]]
+      | map(select(test("^[a-z0-9_]+$") | not)) | join(", ")' "$baseline")
 [ -z "$bad_keys" ] || {
 	echo "ERR: baseline keys are not slug identifiers (a-z, 0-9, _): $bad_keys" >&2
 	exit 1
@@ -235,6 +384,42 @@ jq -e '[.ir | to_entries[] | .value.blocks, .value.ir_total
         | (type == "number") and (floor == .) and (. >= 0) and (. < 9007199254740992)]
       | all' "$baseline" >/dev/null || {
 	echo "ERR: baseline entries must carry integer blocks/ir_total values in shell-safe range" >&2
+	exit 1
+}
+jq -e '[.wall | to_entries[] | .value.blocks, .value.ns_per_block
+        | (type == "number") and (floor == .) and (. >= 0) and (. < 9007199254740992)]
+      | all' "$baseline" >/dev/null || {
+	echo "ERR: baseline wall entries must carry integer blocks/ns_per_block values in shell-safe range" >&2
+	exit 1
+}
+
+# Parity checks (both modes): .wall must describe EXACTLY the same workload
+# set as .ir — same keys, same per-entry blocks. A baseline where one section
+# gained/lost a script, or drifted on blocks, would gate two different
+# workloads as if they were one signal pair; drift in either direction is a
+# hard error pointing at the regen flow.
+parity_keys=$(jq -r '. as $r
+      | [(($r.ir | keys) - ($r.wall | keys)), (($r.wall | keys) - ($r.ir | keys))]
+      | add | unique | join(", ")' "$baseline") || {
+	echo "ERR: failed to evaluate .ir/.wall key parity in '$baseline'" >&2
+	exit 1
+}
+[ -z "$parity_keys" ] || {
+	echo "ERR: baseline .ir and .wall key sets differ:$parity_keys" >&2
+	echo "     Regenerate via .github/workflows/regenerate-perf-baseline.yml — both" >&2
+	echo "     sections must describe the same workload set." >&2
+	exit 1
+}
+parity_blocks=$(jq -r '. as $r
+      | [($r.ir | keys[]) as $k | select($r.ir[$k].blocks != $r.wall[$k].blocks) | $k]
+      | join(", ")' "$baseline") || {
+	echo "ERR: failed to evaluate .ir/.wall blocks parity in '$baseline'" >&2
+	exit 1
+}
+[ -z "$parity_blocks" ] || {
+	echo "ERR: baseline .ir/.wall blocks drift for:$parity_blocks" >&2
+	echo "     The wall entry must render the same block count as the ir entry —" >&2
+	echo "     regenerate via .github/workflows/regenerate-perf-baseline.yml." >&2
 	exit 1
 }
 
@@ -247,6 +432,21 @@ if [ "$regen" -eq 0 ]; then
 		echo "ERR: baseline entries with non-positive ir_total: $zero_entries" >&2
 		echo "     regenerate the baseline (see this script's header) — a zero Ir" >&2
 		echo "     baseline can never gate anything." >&2
+		exit 1
+	}
+fi
+
+# Zero-guard (gate mode, wall scope — mirrors the ir guard above): the wall
+# TEMPLATE ships ns_per_block 0 (fresh branch, numbers pending the dispatch
+# regen). Gating on zeros is vacuous/infinite-delta nonsense, so this is the
+# designed PR-branch red state until the regen fills real numbers in.
+if [ "$regen" -eq 0 ] && [ "$wall_scope" -eq 1 ]; then
+	zero_wall=$(jq -r '[.wall | to_entries[] | select((.value.ns_per_block // 0) <= 0) | .key] | join(", ")' "$baseline")
+	[ -z "$zero_wall" ] || {
+		echo "ERR: baseline wall entries with non-positive ns_per_block: $zero_wall" >&2
+		echo "     this is the zero-template state — regenerate the baseline via" >&2
+		echo "     .github/workflows/regenerate-perf-baseline.yml (dispatch on this PR" >&2
+		echo "     branch) so real wall numbers land in scripts/perf-baseline.json." >&2
 		exit 1
 	}
 fi
@@ -270,9 +470,9 @@ bench_only=$(printf '%s\n%s\n' "$scripts_list" "$bench_list" | sort | uniq -u)
 	echo "ERR: baseline and bench registry keys differ:$bench_only" >&2
 	echo "     A baseline key the bench doesn't know fails at measurement (bench exit 2);" >&2
 	echo "     a bench key missing from the baseline would silently never be gated. Add" >&2
-	echo "     the entries to scripts/perf-baseline.json (ir_total 0 + blocks) and" >&2
-	echo "     regenerate via .github/workflows/regenerate-perf-baseline.yml in the" >&2
-	echo "     same PR." >&2
+	echo "     the entries to BOTH .ir and .wall in scripts/perf-baseline.json" >&2
+	echo "     (blocks + zero totals) and regenerate via" >&2
+	echo "     .github/workflows/regenerate-perf-baseline.yml in the same PR." >&2
 	exit 1
 }
 
@@ -405,46 +605,206 @@ measure_script() {
 	echo "$ms_ir"
 }
 
-echo "perf gate: container='$container_meta' build='$build_type_meta' valgrind='$valgrind_version' threshold=${threshold}%"
-echo ""
-printf '%-22s %7s %16s %16s %10s\n' "script" "blocks" "baseline Ir" "measured Ir" "delta %"
-echo "-------------------------------------------------------------------------"
-
-fail_scripts=""
-regen_tmp="$tmp_dir/baseline.new"
-cp "$baseline" "$regen_tmp"
-
-for s in $scripts_list; do
-	base_ir=$(jq -r --arg k "$s" '.ir[$k].ir_total // 0' "$baseline")
-	# measure_script exits non-zero from inside a command substitution — without
-	# the explicit || propagation a subshell exit only blanks $measured.
-	measured=$(measure_script "$s") || exit 1
-	case "$measured" in
+# Wall measurement: the timing happens INSIDE the bench process (steady_clock
+# around renderScript only; fresh harness per repeat), so the gate reads the
+# single --json line the bench prints — the documented stdout-parsing
+# exception (see header). Every guard below is the fail-closed replacement
+# for the ir path's out-file parsing: exactly one JSON object, numeric
+# blocks cross-checked against the baseline entry (flag plumbing),
+# ns_per_block a positive finite number, integer normalization, then the
+# plausibility floor. stderr lands in bench-wall-*.log — the same bench-*.log
+# glob the report export already ships.
+measure_wall_script() {
+	mw_name=$1
+	mw_blocks=$(jq -r --arg s "$mw_name" '.wall[$s].blocks // 0' "$baseline")
+	case "$mw_blocks" in
 	'' | *[!0-9]*)
-		echo "ERR: measurement for '$s' returned '$measured' (internal error)" >&2
+		echo "ERR: baseline wall entry '$mw_name' has non-integer blocks '$mw_blocks'" >&2
 		exit 1
 		;;
 	esac
-	blocks=$(jq -r --arg k "$s" '.ir[$k].blocks' "$baseline")
+	[ "$mw_blocks" -ge 1 ] || {
+		echo "ERR: baseline wall entry '$mw_name' has blocks < 1" >&2
+		exit 1
+	}
 
-	if [ "$regen" -eq 1 ]; then
-		jq --arg k "$s" --argjson v "$measured" '.ir[$k].ir_total = $v' \
-			"$regen_tmp" >"$regen_tmp.next" || exit 1
-		mv "$regen_tmp.next" "$regen_tmp"
-		delta_pct=0.0000
+	mw_log="$tmp_dir/bench-wall-$mw_name.log"
+	# A hung render must not squat on the job until the runner-level timeout.
+	# `timeout` is coreutils — present in the CI container, ABSENT on stock
+	# macOS, so it is strictly optional (local probes run without it).
+	if command -v timeout >/dev/null 2>&1; then
+		mw_json=$(timeout 300 "$bench_bin" --script="$mw_name" --blocks="$mw_blocks" \
+			--mode=wall --warmup="$WALL_WARMUP" --repeat="$WALL_REPEAT" \
+			--json 2>"$mw_log")
 	else
-		delta_pct=$(awk -v m="$measured" -v b="$base_ir" 'BEGIN{printf "%.4f", (m-b)*100.0/b}')
+		mw_json=$("$bench_bin" --script="$mw_name" --blocks="$mw_blocks" --mode=wall \
+			--warmup="$WALL_WARMUP" --repeat="$WALL_REPEAT" --json 2>"$mw_log")
 	fi
-	printf '%-22s %7d %16d %16d %10.4f\n' "$s" "$blocks" "$base_ir" "$measured" "$delta_pct"
+	mw_rc=$?
+	if [ "$mw_rc" -ne 0 ]; then
+		echo "ERR: bench wall mode failed for script '$mw_name' (exit $mw_rc)" >&2
+		tail -20 "$mw_log" >&2
+		exit 1
+	fi
 
-	if [ "$regen" -eq 0 ]; then
-		over=$(awk -v m="$measured" -v b="$base_ir" -v t="$threshold" \
-			'BEGIN{print (m > b*(1.0+t/100.0)) ? 1 : 0}')
-		[ "$over" -eq 1 ] && fail_scripts="$fail_scripts $s"
-		faster=$(awk -v m="$measured" -v b="$base_ir" 'BEGIN{print (m < b*0.90) ? 1 : 0}')
-		[ "$faster" -eq 1 ] && echo "::notice::script '$s' is >10% faster than baseline — consider regenerating scripts/perf-baseline.json to lock the speedup in"
+	# Exactly one JSON line on stdout — anything else is a contract break.
+	# jq -s (slurp) + length==1: even two objects on ONE physical line (the
+	# line count above cannot see those) are rejected instead of being parsed
+	# as a stream and concatenated into a fabricated number. The echo fields
+	# (script/mode/warmup/repeat) are cross-checked against what the gate
+	# asked for — a stale or mis-wired bench timing the wrong workload or
+	# ignoring the sampling params must not gate silently.
+	mw_lines=$(printf '%s\n' "$mw_json" | wc -l | tr -d ' ')
+	[ "$mw_lines" -eq 1 ] || {
+		echo "ERR: bench wall mode must print exactly one JSON line for '$mw_name'," >&2
+		echo "     got $mw_lines lines. See $mw_log" >&2
+		exit 1
+	}
+	if ! printf '%s\n' "$mw_json" | jq -se --arg s "$mw_name" \
+		--argjson w "$WALL_WARMUP" --argjson r "$WALL_REPEAT" '
+			length == 1 and
+			(.[0] | type == "object") and
+			(.[0].script == $s) and
+			(.[0].mode == "wall") and
+			(.[0].warmup == $w) and
+			(.[0].repeat == $r) and
+			(.[0].blocks | type == "number") and
+			(.[0].ns_per_block | type == "number") and
+			(.[0].ns_per_block > 0) and
+			(.[0].ns_per_block < 9007199254740992)' >/dev/null 2>&1; then
+		echo "ERR: unparseable/invalid wall JSON for '$mw_name' (need exactly one" >&2
+		echo "     object echoing script='$mw_name' mode=wall warmup=$WALL_WARMUP" >&2
+		echo "     repeat=$WALL_REPEAT, numeric blocks, positive finite ns_per_block):" >&2
+		echo "     $mw_json" >&2
+		tail -5 "$mw_log" >&2
+		exit 1
 	fi
-done
+
+	# Flag-plumbing cross-check: the gate asked for the baseline entry's block
+	# count; a different number in the JSON means the wrong workload ran.
+	mw_blocks_json=$(printf '%s\n' "$mw_json" | jq -r '.blocks')
+	awk -v a="$mw_blocks_json" -v b="$mw_blocks" 'BEGIN{exit !(a == b)}' || {
+		echo "ERR: bench reported blocks=$mw_blocks_json for '$mw_name' but the" >&2
+		echo "     baseline .wall entry says $mw_blocks — flag plumbing broke." >&2
+		exit 1
+	}
+
+	# The median is a double; normalize to an integer ns count for shell-safe
+	# comparison/arith (awk %.0f rounds to nearest).
+	mw_ns=$(printf '%s\n' "$mw_json" | jq -r '.ns_per_block')
+	mw_int=$(printf '%s\n' "$mw_ns" | awk '{printf "%.0f", $1}')
+	case "$mw_int" in
+	'' | *[!0-9]*)
+		echo "ERR: wall ns_per_block '$mw_ns' for '$mw_name' did not normalize to an" >&2
+		echo "     integer — refusing to gate on it. See $mw_log" >&2
+		exit 1
+		;;
+	esac
+	[ "$mw_int" -ge "$MIN_WALL_NS_PER_BLOCK" ] || {
+		echo "ERR: wall ns_per_block=$mw_int for '$mw_name' is below the plausibility" >&2
+		echo "     floor $MIN_WALL_NS_PER_BLOCK ns/block. Real renders measure ~900+" >&2
+		echo "     ns/block even on fast cores — a number this low means broken timing" >&2
+		echo "     or a silent render. See $mw_log" >&2
+		exit 1
+	}
+
+	# Persist the JSON line into the report log: on SUCCESS stderr is usually
+	# empty, so without this the artifact would carry no evidence of what the
+	# bench actually measured (min/max ride along for noise-vs-regression
+	# post-mortems).
+	printf '%s\n' "$mw_json" >>"$mw_log"
+
+	echo "$mw_int"
+}
+
+fail_ir_scripts=""
+fail_wall_scripts=""
+fail_wall_detail=""
+regen_tmp="$tmp_dir/baseline.new"
+cp "$baseline" "$regen_tmp"
+
+if [ "$ir_scope" -eq 1 ]; then
+	echo "perf gate: container='$container_meta' build='$build_type_meta' valgrind='$valgrind_version' threshold=${threshold}%"
+	echo ""
+	printf '%-22s %7s %16s %16s %10s\n' "script" "blocks" "baseline Ir" "measured Ir" "delta %"
+	echo "-------------------------------------------------------------------------"
+
+	for s in $scripts_list; do
+		base_ir=$(jq -r --arg k "$s" '.ir[$k].ir_total // 0' "$baseline")
+		# measure_script exits non-zero from inside a command substitution — without
+		# the explicit || propagation a subshell exit only blanks $measured.
+		measured=$(measure_script "$s") || exit 1
+		case "$measured" in
+		'' | *[!0-9]*)
+			echo "ERR: measurement for '$s' returned '$measured' (internal error)" >&2
+			exit 1
+			;;
+		esac
+		blocks=$(jq -r --arg k "$s" '.ir[$k].blocks' "$baseline")
+
+		if [ "$regen" -eq 1 ]; then
+			jq --arg k "$s" --argjson v "$measured" '.ir[$k].ir_total = $v' \
+				"$regen_tmp" >"$regen_tmp.next" || exit 1
+			mv "$regen_tmp.next" "$regen_tmp"
+			delta_pct=0.0000
+		else
+			delta_pct=$(awk -v m="$measured" -v b="$base_ir" 'BEGIN{printf "%.4f", (m-b)*100.0/b}')
+		fi
+		printf '%-22s %7d %16d %16d %10.4f\n' "$s" "$blocks" "$base_ir" "$measured" "$delta_pct"
+
+		if [ "$regen" -eq 0 ]; then
+			over=$(awk -v m="$measured" -v b="$base_ir" -v t="$threshold" \
+				'BEGIN{print (m > b*(1.0+t/100.0)) ? 1 : 0}')
+			[ "$over" -eq 1 ] && fail_ir_scripts="$fail_ir_scripts $s"
+			faster=$(awk -v m="$measured" -v b="$base_ir" 'BEGIN{print (m < b*0.90) ? 1 : 0}')
+			[ "$faster" -eq 1 ] && echo "::notice::script '$s' is >10% faster than baseline — consider regenerating scripts/perf-baseline.json to lock the speedup in"
+		fi
+	done
+fi
+
+if [ "$wall_scope" -eq 1 ]; then
+	echo ""
+	echo "perf wall gate: threshold=${wall_threshold}% warmup=$WALL_WARMUP repeat=$WALL_REPEAT (shared-runner wall-clock — trend signal; only >${wall_threshold}% fails)"
+	echo ""
+	printf '%-22s %7s %16s %16s %10s\n' "script" "blocks" "baseline ns/blk" "measured ns/blk" "delta %"
+	echo "-------------------------------------------------------------------------"
+
+	for s in $scripts_list; do
+		base_ns=$(jq -r --arg k "$s" '.wall[$k].ns_per_block // 0' "$baseline")
+		# measure_wall_script: same ||-propagation discipline as measure_script.
+		measured=$(measure_wall_script "$s") || exit 1
+		case "$measured" in
+		'' | *[!0-9]*)
+			echo "ERR: wall measurement for '$s' returned '$measured' (internal error)" >&2
+			exit 1
+			;;
+		esac
+		blocks=$(jq -r --arg k "$s" '.wall[$k].blocks' "$baseline")
+
+		if [ "$regen" -eq 1 ]; then
+			jq --arg k "$s" --argjson v "$measured" '.wall[$k].ns_per_block = $v' \
+				"$regen_tmp" >"$regen_tmp.next" || exit 1
+			mv "$regen_tmp.next" "$regen_tmp"
+			delta_pct=0.0000
+		else
+			delta_pct=$(awk -v m="$measured" -v b="$base_ns" 'BEGIN{printf "%.4f", (m-b)*100.0/b}')
+		fi
+		printf '%-22s %7d %16d %16d %10.4f\n' "$s" "$blocks" "$base_ns" "$measured" "$delta_pct"
+
+		if [ "$regen" -eq 0 ]; then
+			over=$(awk -v m="$measured" -v b="$base_ns" -v t="$wall_threshold" \
+				'BEGIN{print (m > b*(1.0+t/100.0)) ? 1 : 0}')
+			# NO speedup notice for wall, deliberately: shared-runner wall noise
+			# swings both directions and only regressions beyond the generous band
+			# are meaningful (noise policy documented in benchmark.yml's header).
+			if [ "$over" -eq 1 ]; then
+				fail_wall_scripts="$fail_wall_scripts $s"
+				fail_wall_detail="$fail_wall_detail
+  $s: +${delta_pct}%"
+			fi
+		fi
+	done
+fi
 
 # --- verdict -------------------------------------------------------------------
 if [ "$regen" -eq 1 ]; then
@@ -468,6 +828,20 @@ if [ "$regen" -eq 1 ]; then
 			"$regen_tmp" >"$regen_tmp.next" || exit 1
 		mv "$regen_tmp.next" "$regen_tmp"
 	fi
+	if [ "$wall_threshold_given" -eq 1 ]; then
+		jq --argjson wt "$wall_threshold" '.meta.wall_threshold_pct = $wt' \
+			"$regen_tmp" >"$regen_tmp.next" || exit 1
+		mv "$regen_tmp.next" "$regen_tmp"
+	fi
+	# Stamp the wall sampling protocol the same way the identity fields above
+	# are stamped — a future WALL_WARMUP/WALL_REPEAT change must not leave the
+	# baseline claiming the old protocol (the gate-mode check compares these).
+	jq --argjson ww "$WALL_WARMUP" '.meta.wall_warmup = $ww' \
+		"$regen_tmp" >"$regen_tmp.next" || exit 1
+	mv "$regen_tmp.next" "$regen_tmp"
+	jq --argjson wr "$WALL_REPEAT" '.meta.wall_repeat = $wr' \
+		"$regen_tmp" >"$regen_tmp.next" || exit 1
+	mv "$regen_tmp.next" "$regen_tmp"
 	if [ -n "${PERF_CONTAINER:-}" ]; then
 		jq --arg c "$PERF_CONTAINER" '.meta.container = $c' \
 			"$regen_tmp" >"$regen_tmp.next" || exit 1
@@ -479,22 +853,25 @@ if [ "$regen" -eq 1 ]; then
 		exit 1
 	}
 	echo ""
-	echo "perf gate: REGENERATED '$baseline' (threshold ${threshold}%)"
+	echo "perf gate: REGENERATED '$baseline' (ir threshold ${threshold}%, wall ${wall_threshold}%)"
 	echo "Self-verify before committing: run this script WITHOUT --regen against the"
-	echo "new baseline — it must PASS at 0.0000% deltas."
+	echo "new baseline — it must PASS (Ir at 0.0000% deltas; wall inside its"
+	echo "${wall_threshold}% band — wall-clock is not bit-deterministic)."
 	exit 0
 fi
 
-if [ -n "$fail_scripts" ]; then
+gate_failed=0
+
+if [ -n "$fail_ir_scripts" ]; then
 	{
 		echo ""
-		echo "FAIL: Ir regression beyond ${threshold}% for:$fail_scripts"
+		echo "FAIL: Ir regression beyond ${threshold}% for:$fail_ir_scripts"
 		echo "This change made the render path measurably slower. Fix the regression,"
 		echo "or — if it is an accepted trade-off — regenerate the baseline via"
 		echo ".github/workflows/regenerate-perf-baseline.yml (dispatch on your PR"
 		echo "branch) and commit scripts/perf-baseline.json in the same PR."
 	} >&2
-	for s in $fail_scripts; do
+	for s in $fail_ir_scripts; do
 		if [ -n "$annotate_bin" ] && [ -s "$tmp_dir/annotate-$s.txt" ]; then
 			echo "" >&2
 			echo "top functions for '$s' (hottest first):" >&2
@@ -506,8 +883,37 @@ if [ -n "$fail_scripts" ]; then
 			awk '/file:function/{f=1} f' "$tmp_dir/annotate-$s.txt" | head -28 | sed 's/^/  /' >&2
 		fi
 	done
+	gate_failed=1
+fi
+
+if [ -n "$fail_wall_scripts" ]; then
+	{
+		echo ""
+		echo "FAIL: wall-clock regression beyond ${wall_threshold}% for:$fail_wall_scripts"
+		echo "$fail_wall_detail"
+		echo ""
+		echo "Wall-clock is the TREND signal: regressions of this size usually mean"
+		echo "cache/allocation/algorithmic effects the deterministic Ir gate cannot"
+		echo "see (roughly the same instructions, slower program). Shared-runner noise"
+		echo "is what the generous ${wall_threshold}% band absorbs — exceeding it deserves"
+		echo "investigation before shipping. Fix the regression, or — if it is an"
+		echo "accepted trade-off — regenerate the baseline via"
+		echo ".github/workflows/regenerate-perf-baseline.yml (dispatch on your PR"
+		echo "branch) and commit scripts/perf-baseline.json in the same PR."
+	} >&2
+	gate_failed=1
+fi
+
+if [ "$gate_failed" -eq 1 ]; then
 	exit 1
 fi
 
+if [ "$ir_scope" -eq 1 ] && [ "$wall_scope" -eq 1 ]; then
+	signals="ir + wall"
+elif [ "$ir_scope" -eq 1 ]; then
+	signals="ir only"
+else
+	signals="wall only"
+fi
 echo ""
-echo "perf gate: PASS"
+echo "perf gate: PASS ($signals)"
