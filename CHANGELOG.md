@@ -52,6 +52,7 @@ hardware against the v1.11 firmware it replaces.
 ### Fixed (grouped)
 
 **Sequencer & MIDI**
+
 - Sequencer freeze during recording/playback under MIDI traffic — decode-context
   action-list race (mutations now queued to the main loop)
 - Freeze/corruption from damaged sequence files — bounded walks, load-time
@@ -64,6 +65,7 @@ hardware against the v1.11 firmware it replaces.
 - Sysex framing safety; DX7 LFO-AMD table index bounded on malformed sysex
 
 **Synth engine**
+
 - MONO note-off now recalls the most recent held note
 - MAIN_GATE stale-target freeze (timbre fading to silence after ~20–25 notes)
 - Stuck voices from order-dependent voice lifecycle state; playing-flag clear
@@ -72,6 +74,7 @@ hardware against the v1.11 firmware it replaces.
 - Matrix sources/destinations zero-initialized at construction
 
 **Display / UI**
+
 - Operator-page encoder-storm corruption (oscillo-background out-of-bounds
   writes into the color table) — clamped, plus bin-loader validation
 - Hard fault on middle-column operator highlight (unaligned stores)
@@ -79,6 +82,7 @@ hardware against the v1.11 firmware it replaces.
 - Power-poll and TFT-action-queue race hardening; SPI ownership window closed
 
 **Filesystem / SD**
+
 - Crash-safe controller-config save with backup promotion; corrupt or
   truncated configs load defaults or the backup instead of garbage
 - Truncated mix.dfl no longer leaves stale tails (default mixer save truncates)
@@ -93,6 +97,7 @@ hardware against the v1.11 firmware it replaces.
 - PPM screenshots: color expansion fixed + feature flag initialized
 
 **MIDI controller mode**
+
 - Corrupt button/encoder types in a saved config coerce to safe defaults and
   emit nothing for unknown types
 - Persisted MIDI channels validated; ring capacity reserved for whole CC
@@ -100,6 +105,7 @@ hardware against the v1.11 firmware it replaces.
 - Encoder deltas accumulate in 64-bit (no signed overflow)
 
 **Build & platform (developer-facing)**
+
 - `-Wall -Wextra` now enabled and clean on the firmware target
 - Host test suite expanded to 656 tests (32 test files, from the v1.11
   scaffold), with golden-master render comparison, ASAN+UBSAN clean, order-
