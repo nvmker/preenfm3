@@ -51,10 +51,12 @@ set -u
 # Bump when the bench registry/workload changes materially (meta.bench_version
 # hard-fails on mismatch until a deliberate regen).
 BENCH_VERSION=1
-# Plausibility floor: the render window of one 32-frame block is >= ~100k Ir
-# for any baseline script; a toggle-collect mis-match or a silent render
-# measures ~an order of magnitude less — refuse to gate on it.
-MIN_IR_PER_BLOCK=50000
+# Plausibility floor: the cheapest baseline script (a4_default_sustain — 6
+# voices, zero IMs, steady sustain) measures ~8.9k Ir/block on the pinned
+# container (measured: 1,786,619 Ir / 200 blocks). 2k/block sits ~4.5x below
+# that while still catching a broken toggle-collect match (~0 Ir) or a silent
+# render (sub-1k/block) — refuse to gate or regen on such numbers.
+MIN_IR_PER_BLOCK=2000
 
 usage_die() {
 	echo "usage: perf-gate.sh <bench_bin> <baseline_json> [--regen] [--threshold=PCT]" >&2
