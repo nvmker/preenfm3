@@ -5,12 +5,21 @@
     "container": "gcc:13.3.0-bookworm",
     "build_type": "Release",
     "bench_version": 1,
-    "valgrind": "TBD-at-first-regen",
+    "valgrind": "valgrind-3.19.0",
     "threshold_pct": 2
   },
   "ir": {
-    "a4_default_sustain": { "blocks": 200, "ir_total": 0 },
-    "fm_algo27_6carrier": { "blocks": 200, "ir_total": 0 },
-    "arp_triad_up": { "blocks": 300, "ir_total": 0 }
+    "a4_default_sustain": {
+      "blocks": 200,
+      "ir_total": 1786619
+    },
+    "fm_algo27_6carrier": {
+      "blocks": 200,
+      "ir_total": 2315830
+    },
+    "arp_triad_up": {
+      "blocks": 300,
+      "ir_total": 2563999
+    }
   }
 }
