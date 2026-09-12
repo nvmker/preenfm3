@@ -101,12 +101,16 @@ command -v jq >/dev/null 2>&1 || {
 }
 
 annotate_bin=""
-if command -v cg_annotate >/dev/null 2>&1; then
-	annotate_bin=cg_annotate
-elif command -v callgrind_annotate >/dev/null 2>&1; then
+# Prefer callgrind_annotate: on valgrind <= 3.21 cg_annotate ONLY parses
+# Cachegrind-format files (a callgrind out-file dies with 'missing command
+# line'). On >= 3.22 callgrind_annotate remains as a wrapper around the new
+# cg_annotate, so this ordering works across generations.
+if command -v callgrind_annotate >/dev/null 2>&1; then
 	annotate_bin=callgrind_annotate
+elif command -v cg_annotate >/dev/null 2>&1; then
+	annotate_bin=cg_annotate
 else
-	echo "WARN: neither cg_annotate nor callgrind_annotate found — skipping Ir cross-check and per-function report" >&2
+	echo "WARN: neither callgrind_annotate nor cg_annotate found — skipping Ir cross-check and per-function report" >&2
 fi
 
 valgrind_version=$("$valgrind" --version 2>/dev/null) || {
@@ -286,6 +290,10 @@ measure_script() {
 		# events header defines a single Ir column).
 		ms_totals=$(grep -E 'PROGRAM TOTALS|^TOTALS' \
 			"$tmp_dir/annotate-$ms_name.txt" | tail -1 | tr -dc '0-9')
+		if [ -z "$ms_totals" ] && grep -q 'missing command line' \
+			"$tmp_dir/annotate-$ms_name.txt" 2>/dev/null; then
+			echo "WARN: $annotate_bin cannot parse the callgrind format (cachegrind-only annotate?) — cross-check unavailable" >&2
+		fi
 		if [ -n "$ms_totals" ]; then
 			[ "$ms_totals" = "$ms_ir" ] || {
 				echo "ERR: Ir parse mismatch for '$ms_name': summary=$ms_ir annotate=$ms_totals" >&2
@@ -388,8 +396,8 @@ if [ -n "$fail_scripts" ]; then
 	for s in $fail_scripts; do
 		if [ -n "$annotate_bin" ] && [ -s "$tmp_dir/annotate-$s.txt" ]; then
 			echo "" >&2
-			echo "top functions for '$s':" >&2
-			sed -n 's/^/  /p' "$tmp_dir/annotate-$s.txt" | head -25 >&2
+			echo "top functions for '$s' (tail of the annotate table):" >&2
+			tail -30 "$tmp_dir/annotate-$s.txt" | sed 's/^/  /' >&2
 		fi
 	done
 	exit 1
