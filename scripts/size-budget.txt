@@ -1,0 +1,38 @@
+# firmware size budget — the maximum bytes per linker-script memory region
+# (flash/dtcmram/ram_d1/ram_d2/ram_d2b/ram_d3/itcmram) the Release firmware
+# may occupy, measured by `arm-none-eabi-size -A` on
+# build/release/firmware/preenfm3.elf and classified per
+# firmware/preenfm3_2MB.ld by scripts/ci/size-gate.sh (.data counts toward
+# BOTH flash and dtcmram: load image vs runtime copy).
+# These are GROWTH BUDGETS, not capacities — the linker already hard-fails on
+# true region overflow. The gate trips earlier so growth in a tight region is
+# a visible, deliberate decision instead of silent drift toward the wall.
+#
+# Baseline as of 2026-09 (ci-performance-implementation-plan.md §1.2, Phase 1):
+# flash 505192 / dtcmram 123896 / ram_d1 452008 / ram_d2 121992 /
+# ram_d2b 124660 / ram_d3 57344 / itcmram 35076 bytes measured. DTCMRAM,
+# RAM_D2 and RAM_D2B are >90% full, so their budgets carry only ~3–5 KB of
+# headroom; flash sits at 768K (40% of the 1920K app partition).
+#
+# How CI uses this (scripts/ci/size-gate.sh, called from build.yml):
+#   - every ELF section is classified into a region (unknown section = error).
+#   - measured > budget  -> SIZE REGRESSION -> CI FAILS.
+#   - measured <= budget -> PASS (utilization table lands in the run summary).
+#
+# To bump a budget after accepted growth:
+#   1. make all    # fresh Release build
+#   2. scripts/ci/size-gate.sh build/release/firmware/preenfm3.elf scripts/size-budget.txt
+#   3. raise the region's bytes below to just above the new measured usage
+#   4. commit the budget bump in the same PR that lands the growth.
+#
+# Format: one `region=bytes` per line; blank lines, `#` comments and inline
+# `# ...` annotations are ignored. The budget must cover every region present
+# in the ELF; extra unused region lines are allowed.
+
+flash=786432    # 768K (40% of the 1920K app partition)
+dtcmram=126976  # 124K — tightest region: ~3.1K headroom over the measured 123896
+ram_d1=491520   # 480K
+ram_d2=126976   # 124K
+ram_d2b=128000  # 125K — ~3.3K headroom over the measured 124660
+ram_d3=62464    # 61K
+itcmram=49152   # 48K

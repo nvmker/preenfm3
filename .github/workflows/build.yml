@@ -74,6 +74,16 @@ jobs:
       - name: Build firmware + bootloader (Release)
         run: make all
 
+      # Size gate: per-region Flash/RAM budgets (scripts/size-budget.txt).
+      # pipefail so the gate's exit code is not masked by tee; the gate's
+      # Markdown table lands in the step summary. The bootloader is
+      # deliberately NOT gated (own linker script, effectively frozen).
+      - name: Size gate (Flash/RAM budgets)
+        run: |
+          set -o pipefail
+          scripts/ci/size-gate.sh build/release/firmware/preenfm3.elf \
+            scripts/size-budget.txt | tee -a "$GITHUB_STEP_SUMMARY"
+
       - name: Parse versions from headers
         id: versions
         run: |
@@ -98,9 +108,12 @@ jobs:
         with:
           # Unique across re-runs: upload-artifact rejects a duplicate name.
           name: preenfm3-build-${{ github.run_id }}-${{ github.run_attempt }}
+          # ELF + map ride along for the size gate / link debugging (~2 MB).
           path: |
             build/release/firmware/preenfm3.bin
             build/release/firmware/preenfm3.hex
+            build/release/firmware/preenfm3.elf
+            build/release/firmware/preenfm3.map
             build/release/bootloader/bootloader.bin
             build/release/bootloader/bootloader.hex
           if-no-files-found: error
