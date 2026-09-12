@@ -6,21 +6,21 @@
     "compiler": "13.3.0",
     "build_type": "Release",
     "bench_version": 1,
-    "valgrind": "valgrind-3.19.0",
+    "valgrind": "TBD-at-first-regen",
     "threshold_pct": 2
   },
   "ir": {
     "a4_default_sustain": {
       "blocks": 200,
-      "ir_total": 1786619
+      "ir_total": 0
     },
     "fm_algo27_6carrier": {
       "blocks": 200,
-      "ir_total": 2315830
+      "ir_total": 0
     },
     "arp_triad_up": {
       "blocks": 300,
-      "ir_total": 2563999
+      "ir_total": 0
     }
   }
 }
