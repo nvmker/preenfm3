@@ -275,11 +275,17 @@ measure_script() {
 	# Cross-check against annotate TOTALS when available: a silent parse drift
 	# must never gate a build.
 	if [ -n "$annotate_bin" ]; then
-		# stderr joins the report file — callgrind_annotate is a PERL script, so an
-		# interpreterless container leaves a visible error in the artifact instead
-		# of a silently empty file.
-		"$annotate_bin" --threshold=99 "$ms_out" >"$tmp_dir/annotate-$ms_name.txt" 2>&1
-		ms_totals=$(grep '^TOTALS' "$tmp_dir/annotate-$ms_name.txt" | tail -1 | tr -dc '0-9')
+		# stderr joins the report file — callgrind_annotate/cg_annotate are
+		# PERL scripts, so an interpreterless container leaves a visible error in
+		# the artifact instead of a silently empty file. --auto=no skips source
+		# annotation (function table only). No --threshold: the legacy cg_annotate
+		# caps it at 20 and would dump usage instead of a profile.
+		"$annotate_bin" --auto=no "$ms_out" >"$tmp_dir/annotate-$ms_name.txt" 2>&1
+		# Totals line differs by generation: legacy prints 'N  PROGRAM TOTALS',
+		# new cg_annotate prints a TOTALS row — match either, digits only (the
+		# events header defines a single Ir column).
+		ms_totals=$(grep -E 'PROGRAM TOTALS|^TOTALS' \
+			"$tmp_dir/annotate-$ms_name.txt" | tail -1 | tr -dc '0-9')
 		if [ -n "$ms_totals" ]; then
 			[ "$ms_totals" = "$ms_ir" ] || {
 				echo "ERR: Ir parse mismatch for '$ms_name': summary=$ms_ir annotate=$ms_totals" >&2
