@@ -73,12 +73,33 @@ target_compile_features(pfm3_tests PRIVATE cxx_std_14)
 # gtest_main supplies main() AND transitively links gtest (PUBLIC dep) —
 # linking both trips a "duplicate libraries" warning on Apple's linker.
 target_link_libraries(pfm3_tests PRIVATE GTest::gtest_main)
+# The firmware-TU closure (see the pfm3_fw_host object library below). OBJECT
+# library: its objects land directly in pfm3_tests — compile graph and object
+# bytes are IDENTICAL to the pre-refactor monolithic target_sources list.
+target_link_libraries(pfm3_tests PRIVATE pfm3_fw_host)
 
 # --- Firmware host-testability seam (see tests/SEAM.md) ----------------------
 # Pulls host-compilable firmware TUs in behind the PFM3_HOST define. This block
-# is the ENTIRE coupling between the test build and the firmware: no toolchain
-# file, no firmware/CMakeLists.txt edit, no fake HAL headers.
+# is the ENTIRE coupling between the test/bench builds and the firmware: no
+# toolchain file, no firmware/CMakeLists.txt edit, no fake HAL headers.
+#
+# The closure lives in the pfm3_fw_host OBJECT library (not directly in
+# pfm3_tests) so the perf bench binary (pfm3_bench, below) links the SAME
+# objects the golden tests lock — same flags, same seam, byte-identical code
+# under measurement. Everything except the *_test.cpp GLOB sources moves
+# here, unchanged: include paths, PFM3_HOST, -Wno-attributes
+# -Wno-macro-redefined -ffp-contract=off, the FirmwareTftDisplay.cpp -include
+# source property, and the TftAlgo.cpp -fno-sanitize-recover=alignment
+# property (both file-scoped below, unchanged). Includes/defines/options are
+# PUBLIC so pfm3_tests' *_test.cpp TUs compile with the exact flags they had
+# when the closure was inlined in that target (goldens stay byte-identical).
 set(PFM3_FW_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../firmware")
+
+add_library(pfm3_fw_host OBJECT)
+# C++14 PUBLIC: the firmware TUs need it directly, and consumers (pfm3_tests'
+# *_test.cpp TUs, pfm3_bench) inherit the same language rule they had when the
+# closure lived in pfm3_tests.
+target_compile_features(pfm3_fw_host PUBLIC cxx_std_14)
 
 # Firmware headers are included flat ("Sequencer.h", "Common.h", ...), so mirror
 # firmware/CMakeLists.txt's include set. BEFORE keeps firmware headers ahead of
@@ -88,7 +109,7 @@ set(PFM3_FW_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../firmware")
 # minimal host shim that forward-declares FIL and omits the SD-disk/HAL chain
 # the real fatfs.h pulls in (see tests/host_shims/fatfs.h + SEAM.md). Every
 # other firmware header resolves to the real file.
-target_include_directories(pfm3_tests BEFORE PRIVATE
+target_include_directories(pfm3_fw_host BEFORE PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/host_shims"
     "${PFM3_FW_ROOT}/Inc"
     "${PFM3_FW_ROOT}/Src"
@@ -104,7 +125,7 @@ target_include_directories(pfm3_tests BEFORE PRIVATE
 
 # Activates the in-TU seam guards in the firmware TUs (e.g. the LED/HAL block in
 # Sequencer.cpp). Defined ONLY here — never in firmware/CMakeLists.txt.
-target_compile_definitions(pfm3_tests PRIVATE PFM3_HOST)
+target_compile_definitions(pfm3_fw_host PUBLIC PFM3_HOST)
 
 # Golden-master full-render tier (Phase G0): tests/golden_master_test.cpp drives
 # the real Synth::buildNewSampleBlock and compares the int32 output against a
@@ -122,7 +143,7 @@ target_compile_definitions(pfm3_tests PRIVATE
 # host build: UINT_MAX redefinition (Synth.h). (The `return "##"` writable-string
 # warning in Sequencer.cpp is left visible — it's clang-only to suppress and a
 # real firmware smell worth seeing.) Both flags are portable across gcc/clang.
-target_compile_options(pfm3_tests PRIVATE
+target_compile_options(pfm3_fw_host PUBLIC
     -Wno-attributes
     -Wno-macro-redefined
     # Forbid FMA contraction (a*b+c fused into one FMA instruction) so clang and
@@ -161,7 +182,7 @@ target_compile_options(pfm3_tests PRIVATE
 #     that table is defined in Common.cpp (pure data). Pulling the real
 #     Common.cpp (not a stub) keeps the carrier/modulator routing faithful.
 #   * Matrix.cpp has no extern deps beyond its own members.
-target_sources(pfm3_tests PRIVATE
+target_sources(pfm3_fw_host PRIVATE
     "${PFM3_FW_ROOT}/Src/midi/Sequencer.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/stubs/sequencer_collaborators_stub.cpp"
     "${PFM3_FW_ROOT}/Src/utils/Hexter.cpp"
@@ -286,5 +307,20 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
         SOURCE "${PFM3_FW_ROOT}/Src/hardware/TftAlgo.cpp"
         APPEND PROPERTY COMPILE_OPTIONS "-fno-sanitize-recover=alignment")
 endif()
+
+# --- Perf bench binary (Phase 2 CI perf gate) --------------------------------
+# Standalone driver over the SAME object library the golden tests lock: the
+# Callgrind Ir gate (scripts/ci/perf-gate.sh) runs it under valgrind with
+# --toggle-collect scoped to Synth::buildNewSampleBlock, so the measured code
+# is byte-for-byte the code the committed goldens cover (same flags — including
+# -ffp-contract=off — via the PUBLIC interface above).
+#
+# Deliberately NO gtest in this link closure (own main(), no FetchContent
+# target linked): keeps test scaffolding out of the measured process. The
+# project-level GoogleTest FetchContent still configures (top of file) — that
+# is configure-time cost only, nothing gtest lands in the bench binary.
+add_executable(pfm3_bench bench/perf_main.cpp)
+target_compile_features(pfm3_bench PRIVATE cxx_std_14)
+target_link_libraries(pfm3_bench PRIVATE pfm3_fw_host)
 
 gtest_discover_tests(pfm3_tests)
