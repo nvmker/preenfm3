@@ -97,6 +97,11 @@ jobs:
             41898282+github-actions[bot]@users.noreply.github.com
         run: |
           set -e
+          # Container jobs hit git's dubious-ownership guard: the workspace
+          # is checked out under a uid the container user doesn't own. This
+          # is the first container job in the repo that pushes (the goldens
+          # regen runs on plain ubuntu-latest).
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git add scripts/perf-baseline.json
           if git diff --cached --quiet; then
             echo "no baseline changes — already match the measurement"
