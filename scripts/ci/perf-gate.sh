@@ -284,7 +284,7 @@ measure_script() {
 		# the artifact instead of a silently empty file. --auto=no skips source
 		# annotation (function table only). No --threshold: the legacy cg_annotate
 		# caps it at 20 and would dump usage instead of a profile.
-		"$annotate_bin" --auto=no --show-percs=no "$ms_out" \
+		"$annotate_bin" --auto=no --show-percs=no --threshold=1 "$ms_out" \
 			>"$tmp_dir/annotate-$ms_name.txt" 2>&1
 		# Totals line differs by generation: legacy prints 'N  PROGRAM TOTALS',
 		# new cg_annotate prints a TOTALS row. Take ONLY the first field (with
@@ -395,8 +395,10 @@ if [ -n "$fail_scripts" ]; then
 	for s in $fail_scripts; do
 		if [ -n "$annotate_bin" ] && [ -s "$tmp_dir/annotate-$s.txt" ]; then
 			echo "" >&2
-			echo "top functions for '$s' (tail of the annotate table):" >&2
-			tail -30 "$tmp_dir/annotate-$s.txt" | sed 's/^/  /' >&2
+			echo "top functions for '$s' (>=1% of Ir, descending):" >&2
+			# The sorted function list starts at the 'file:function' table header;
+			# rows are descending, so head shows the biggest movers.
+			awk '/file:function/{f=1} f' "$tmp_dir/annotate-$s.txt" | head -28 | sed 's/^/  /' >&2
 		fi
 	done
 	exit 1
