@@ -84,6 +84,36 @@ The CI floor gate (`.github/workflows/coverage.yml` +
 `scripts/ci/coverage-gate.sh`) consumes the same report and fails on
 regression below `scripts/coverage-floor.txt`.
 
+### Perf bench binary (Callgrind Ir gate workload)
+
+```sh
+cmake -B build/bench -S tests -DCMAKE_BUILD_TYPE=Release
+cmake --build build/bench --target pfm3_bench -j
+./build/bench/pfm3_bench --script=a4_default_sustain --json   # list: omit --script
+```
+
+`pfm3_bench` (`bench/perf_main.cpp`) is the workload driver for the CI perf
+gate: it renders the golden-master scripts — paired with the exact
+out-of-band patches the corresponding tests apply — and exits 0. The
+**measurement happens outside the process**: `.github/workflows/benchmark.yml`
+runs it under valgrind/callgrind (toggle-collect scoped to
+`Synth::buildNewSampleBlock`) inside the pinned `gcc:13.3.0-bookworm`
+container, and `scripts/ci/perf-gate.sh` compares total Ir against
+`scripts/perf-baseline.json` (2% regression gate). It has **no gtest** in its
+link closure; `--mode=wall` lands with Phase 3.
+
+## Build layout: the pfm3_fw_host object library
+
+The firmware-TU closure (everything except the `*_test.cpp` GLOB sources,
+including `golden_harness.cpp`) compiles into the **`pfm3_fw_host` OBJECT
+library** — shared by `pfm3_tests` and `pfm3_bench` so the measured code is
+byte-for-byte the code the golden tests lock. Its include paths, `PFM3_HOST`,
+and compile options (`-ffp-contract=off` …) are PUBLIC: consumers compile as if
+the closure were still inlined in their own target (the refactor changed
+nothing about how `pfm3_tests` compiles — the goldens stayed byte-identical).
+New firmware TUs for future coverage sessions belong in
+`target_sources(pfm3_fw_host …)`; new tests are just a dropped-in `*_test.cpp`.
+
 ## How GoogleTest is fetched
 
 `FetchContent_Declare` in [`CMakeLists.txt`](CMakeLists.txt) pulls GoogleTest
