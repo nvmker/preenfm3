@@ -41,7 +41,7 @@ jobs:
         shell: bash
     env:
       PERF_CONTAINER: gcc:13.3.0-bookworm
-      PERF_GATE_REPORT_DIR: /tmp/perf-reports
+      PERF_GATE_REPORT_DIR: /tmp/perf-reports/regen
     steps:
       - name: Checkout (the dispatch branch)
         uses: actions/checkout@v5
@@ -62,9 +62,16 @@ jobs:
         run: scripts/ci/perf-gate.sh build/bench/pfm3_bench \
           scripts/perf-baseline.json --regen
 
-      - name: Self-verify (gate must PASS at 0.0000% vs the fresh baseline)
+      # --threshold=0 = EXACT: the second measurement must reproduce the fresh
+      # baseline bit for bit (0.0000% deltas), not merely sit inside the 2%
+      # regression band. This is the determinism proof for the committed
+      # numbers. Distinct PERF_GATE_REPORT_DIR so the verify run's reports do
+      # not overwrite the regen run's profiles.
+      - name: Self-verify (exact 0.0000% vs the fresh baseline)
+        env:
+          PERF_GATE_REPORT_DIR: /tmp/perf-reports/verify
         run: scripts/ci/perf-gate.sh build/bench/pfm3_bench \
-          scripts/perf-baseline.json
+          scripts/perf-baseline.json --threshold=0
 
       - name: Upload perf reports
         if: always()

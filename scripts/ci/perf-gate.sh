@@ -14,7 +14,7 @@
 # exactly these flags; `make test` / the bench binary alone measure nothing.
 #
 # Baseline: scripts/perf-baseline.json (committed). Entries are script
-# name -> {blocks, ir_total}; meta pins schema/container/build_type/
+# name -> {blocks, ir_total}; meta pins schema/container/compiler/build_type/
 # bench_version/valgrind/threshold_pct. A meta mismatch is a HARD FAIL: a
 # container or valgrind bump invalidates every Ir number, and comparing across
 # toolchains is apples-to-oranges. Regenerate deliberately via the
@@ -30,13 +30,20 @@
 #            scripts/ci/perf-gate.sh build/bench/pfm3_bench \
 #              scripts/perf-baseline.json'
 #
+#
 # Ir parsing: the total comes from the callgrind out-file's trailing
-# `summary: <N>` line (single Ir event column — version-independent). It is
-# cross-checked against cg_annotate/callgrind_annotate TOTALS when either tool
-# exists — a mismatch aborts loudly rather than gating on a mis-parsed number.
-# The per-function top-N report on FAIL uses the same tool (best effort).
+# `summary: <N>` line (single Ir event column — the `events:` header is
+# verified to be exactly Ir before parsing). It is cross-checked against
+# callgrind_annotate/cg_annotate TOTALS when either tool exists — a mismatch
+# aborts loudly, and a present-but-failing annotate tool is a hard error (the
+# cross-check never silently degrades). The per-function report on FAIL uses
+# the same tool (best effort).
 #
 # Usage: perf-gate.sh <bench_bin> <baseline_json> [--regen] [--threshold=PCT]
+#   --threshold=0 means EXACT: every script must measure ir_total == baseline
+#   (used by the regen/bootstrap self-verify steps — Callgrind Ir is
+#   deterministic, so a second measurement must reproduce the numbers bit for
+#   bit; the default 2% band is only for the regression gate itself).
 # Env:  PERF_CONTAINER  container identity (CI always sets it; compared against
 #                       meta.container when non-empty — gate mode only)
 #       PERF_BUILD_TYPE expected CMAKE_BUILD_TYPE (default Release)
@@ -70,10 +77,14 @@ shift 2
 
 regen=0
 threshold_arg=
+threshold_given=0
 for arg in "$@"; do
 	case "$arg" in
 	--regen) regen=1 ;;
-	--threshold=*) threshold_arg=${arg#--threshold=} ;;
+	--threshold=*)
+		threshold_arg=${arg#--threshold=}
+		threshold_given=1
+		;;
 	*)
 		echo "ERR: unknown argument '$arg'" >&2
 		usage_die
@@ -118,6 +129,19 @@ valgrind_version=$("$valgrind" --version 2>/dev/null) || {
 	exit 1
 }
 
+# Compiler identity: gcc codegen is the PRIMARY determinant of Ir — a rebuilt
+# container image or a stray CC override must not silently invalidate the
+# baseline. Resolved from $CC (CMake's convention) or PATH gcc.
+compiler_cmd=${CC:-gcc}
+command -v "$compiler_cmd" >/dev/null 2>&1 || {
+	echo "ERR: compiler '$compiler_cmd' not found on PATH" >&2
+	exit 1
+}
+compiler_version=$("$compiler_cmd" -dumpfullversion 2>/dev/null) || {
+	echo "ERR: '$compiler_cmd -dumpfullversion' failed" >&2
+	exit 1
+}
+
 jq_check() {
 	jq -e "$1" "$baseline" >/dev/null 2>&1
 }
@@ -133,9 +157,10 @@ bench_version_meta=$(jq -r '.meta.bench_version // 0' "$baseline")
 container_meta=$(jq -r '.meta.container // ""' "$baseline")
 build_type_meta=$(jq -r '.meta.build_type // ""' "$baseline")
 valgrind_meta=$(jq -r '.meta.valgrind // ""' "$baseline")
+compiler_meta=$(jq -r '.meta.compiler // ""' "$baseline")
 threshold=$(jq -r '.meta.threshold_pct // 0' "$baseline")
 
-[ -n "$threshold_arg" ] && threshold=$threshold_arg
+[ "$threshold_given" -eq 1 ] && threshold=$threshold_arg
 
 fail_meta() {
 	{
@@ -153,12 +178,12 @@ fail_meta() {
 [ "$schema" = "1" ] || fail_meta "schema is '$schema', this gate understands 1"
 case "$threshold" in
 '' | *[!0-9]*)
-	echo "ERR: threshold '${threshold}' is not a positive integer percent" >&2
+	echo "ERR: threshold '${threshold}' is not an integer percent" >&2
 	exit 1
 	;;
 esac
-[ "$threshold" -ge 1 ] && [ "$threshold" -le 100 ] || {
-	echo "ERR: threshold '${threshold}' outside 1..100" >&2
+[ "$threshold" -ge 0 ] && [ "$threshold" -le 100 ] || {
+	echo "ERR: threshold '${threshold}' outside 0..100 (0 = exact match)" >&2
 	exit 1
 }
 
@@ -177,6 +202,12 @@ if [ "$regen" -eq 0 ]; then
 		fail_meta "build_type is '$build_type_meta', expected '$expected_build_type' (PERF_BUILD_TYPE)"
 	[ "$valgrind_meta" = "$valgrind_version" ] ||
 		fail_meta "valgrind is '$valgrind_meta', running '$valgrind_version'"
+	if [ -n "$compiler_meta" ]; then
+		[ "$compiler_meta" = "$compiler_version" ] ||
+			fail_meta "compiler is '$compiler_meta', running '$compiler_cmd $compiler_version'"
+	else
+		echo "WARN: baseline carries no meta.compiler — compiler identity check skipped (a regen stamps it)" >&2
+	fi
 else
 	# Regen mode: the environment IS the new truth; the workflow/container pin
 	# is what makes this deliberate rather than drift. Validate what stays.
@@ -189,6 +220,23 @@ else
 		exit 1
 	}
 fi
+
+# Baseline entry validation (both modes): keys must be slug identifiers
+# (they are iterated as shell words AND used to build report file names), and
+# every ir_total/blocks must be a real JSON integer in shell-safe range. In
+# regen mode non-positive ir_total stays legal (that is what a regen TEMPLATE
+# looks like); the gate mode additionally refuses it below.
+bad_keys=$(jq -r '[.ir | keys[] | select(test("^[a-z0-9_]+$") | not)] | join(", ")' "$baseline")
+[ -z "$bad_keys" ] || {
+	echo "ERR: baseline keys are not slug identifiers (a-z, 0-9, _): $bad_keys" >&2
+	exit 1
+}
+jq -e '[.ir | to_entries[] | .value.blocks, .value.ir_total
+        | (type == "number") and (floor == .) and (. >= 0) and (. < 9007199254740992)]
+      | all' "$baseline" >/dev/null || {
+	echo "ERR: baseline entries must carry integer blocks/ir_total values in shell-safe range" >&2
+	exit 1
+}
 
 # Zero-baseline guard (gate mode): an entry with ir_total <= 0 would divide to
 # infinity below — or worse, pass vacuously after a broken measurement wrote
@@ -209,12 +257,44 @@ scripts_list=$(jq -r '.ir | keys[]' "$baseline")
 	exit 1
 }
 
+# Registry coverage: the gate iterates BASELINE keys, so a bench registry
+# script missing from the baseline would silently never be measured (plan §2.3:
+# missing script in baseline → FAIL). pfm3_bench --list prints one registry key
+# per line; any bench-only key is a hard error pointing at the regen flow.
+bench_list=$("$bench_bin" --list 2>/dev/null) || {
+	echo "ERR: '$bench_bin --list' failed — rebuild pfm3_bench from this branch" >&2
+	exit 1
+}
+bench_only=$(printf '%s\n%s\n' "$scripts_list" "$bench_list" | sort | uniq -u)
+[ -z "$bench_only" ] || {
+	echo "ERR: baseline and bench registry keys differ:$bench_only" >&2
+	echo "     A baseline key the bench doesn't know fails at measurement (bench exit 2);" >&2
+	echo "     a bench key missing from the baseline would silently never be gated. Add" >&2
+	echo "     the entries to scripts/perf-baseline.json (ir_total 0 + blocks) and" >&2
+	echo "     regenerate via .github/workflows/regenerate-perf-baseline.yml in the" >&2
+	echo "     same PR." >&2
+	exit 1
+}
+
 # --- measurement --------------------------------------------------------------
+export_reports() {
+	# Best-effort report export for CI artifact upload (never gates). Runs from
+	# the EXIT trap so early aborts (parse errors, plausibility failures) still
+	# ship their diagnostics instead of leaving the upload path empty.
+	if [ -n "${PERF_GATE_REPORT_DIR:-}" ] && [ -d "$tmp_dir" ]; then
+		mkdir -p "$PERF_GATE_REPORT_DIR" 2>/dev/null &&
+			cp "$tmp_dir"/cg-*.out "$tmp_dir"/bench-*.log "$PERF_GATE_REPORT_DIR"/ 2>/dev/null
+		[ -z "$annotate_bin" ] ||
+			cp "$tmp_dir"/annotate-*.txt "$PERF_GATE_REPORT_DIR"/ 2>/dev/null
+		return 0
+	fi
+}
+
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/pfm3-perf-gate.XXXXXX") || exit 1
 if [ "${PERF_GATE_KEEP_TMP:-0}" = "1" ]; then
-	trap 'echo "perf-gate: measurement dir kept: $tmp_dir"' EXIT INT TERM
+	trap 'export_reports; echo "perf-gate: measurement dir kept: $tmp_dir"' EXIT INT TERM
 else
-	trap 'rm -rf "$tmp_dir"' EXIT INT TERM
+	trap 'export_reports; rm -rf "$tmp_dir"' EXIT INT TERM
 fi
 
 # --toggle-collect='*buildNewSampleBlock*': count ONLY inside the render window
@@ -240,15 +320,27 @@ measure_script() {
 
 	ms_out="$tmp_dir/cg-$ms_name.out"
 	ms_log="$tmp_dir/bench-$ms_name.log"
-	if ! "$valgrind" --tool=callgrind \
+	"$valgrind" --tool=callgrind \
 		--toggle-collect='*buildNewSampleBlock*' \
 		--callgrind-out-file="$ms_out" \
 		-- "$bench_bin" --script="$ms_name" --blocks="$ms_blocks" --mode=ir \
-		>"$ms_log" 2>&1; then
-		echo "ERR: valgrind/bench failed for script '$ms_name' (exit $?)" >&2
+		>"$ms_log" 2>&1
+	ms_rc=$?
+	if [ "$ms_rc" -ne 0 ]; then
+		echo "ERR: valgrind/bench failed for script '$ms_name' (exit $ms_rc)" >&2
 		tail -20 "$ms_log" >&2
 		exit 1
 	fi
+
+	# The events header defines the column layout — everything downstream
+	# assumes exactly one Ir column. A future valgrind default adding columns
+	# must hard-fail, not silently measure the wrong event.
+	ms_events=$(sed -n 's/^events:[[:space:]]*//p' "$ms_out" | tail -1)
+	[ "$ms_events" = "Ir" ] || {
+		echo "ERR: callgrind events header is '$ms_events', expected 'Ir' — refusing" >&2
+		echo "     to parse a multi-column file whose layout this gate does not know." >&2
+		exit 1
+	}
 
 	# Total Ir from the out-file's summary line (the file's `events: Ir`
 	# header defines one column, so the bare number IS the Ir total; the file
@@ -300,7 +392,13 @@ measure_script() {
 				exit 1
 			}
 		else
-			echo "WARN: $annotate_bin produced no TOTALS for '$ms_name' — cross-check skipped, see annotate-$ms_name.txt" >&2
+			# Fail-closed: the tool exists on this machine, so the cross-check is
+			# expected to work. A missing perl, a format change, a crash — all are
+			# setup failures, not a reason to gate on an unverified number.
+			echo "ERR: $annotate_bin produced no TOTALS for '$ms_name' — cross-check" >&2
+			echo "     unavailable (broken annotate install? see annotate-$ms_name.txt in the" >&2
+			echo "     report dir). Refusing to gate without the independent check." >&2
+			exit 1
 		fi
 	fi
 
@@ -349,19 +447,23 @@ for s in $scripts_list; do
 done
 
 # --- verdict -------------------------------------------------------------------
-# Best-effort report export for CI artifact upload (never gates).
-if [ -n "${PERF_GATE_REPORT_DIR:-}" ] && [ -d "$tmp_dir" ]; then
-	mkdir -p "$PERF_GATE_REPORT_DIR" 2>/dev/null &&
-		cp "$tmp_dir"/cg-*.out "$tmp_dir"/bench-*.log "$PERF_GATE_REPORT_DIR"/ 2>/dev/null
-	[ -z "$annotate_bin" ] ||
-		cp "$tmp_dir"/annotate-*.txt "$PERF_GATE_REPORT_DIR"/ 2>/dev/null
-fi
-
 if [ "$regen" -eq 1 ]; then
 	jq --arg v "$valgrind_version" '.meta.valgrind = $v' \
 		"$regen_tmp" >"$regen_tmp.next" || exit 1
 	mv "$regen_tmp.next" "$regen_tmp"
-	if [ -n "$threshold_arg" ]; then
+	# Regen re-stamps EVERY identity field the environment now provides, so a
+	# bench_version/build_type bump flows through the documented regen path
+	# instead of stranding the workflow on a stale-meta self-verify failure.
+	jq --argjson bv "$BENCH_VERSION" '.meta.bench_version = $bv' \
+		"$regen_tmp" >"$regen_tmp.next" || exit 1
+	mv "$regen_tmp.next" "$regen_tmp"
+	jq --arg bt "${PERF_BUILD_TYPE:-$build_type_meta}" '.meta.build_type = $bt' \
+		"$regen_tmp" >"$regen_tmp.next" || exit 1
+	mv "$regen_tmp.next" "$regen_tmp"
+	jq --arg cv "$compiler_version" '.meta.compiler = $cv' \
+		"$regen_tmp" >"$regen_tmp.next" || exit 1
+	mv "$regen_tmp.next" "$regen_tmp"
+	if [ "$threshold_given" -eq 1 ]; then
 		jq --argjson t "$threshold" '.meta.threshold_pct = $t' \
 			"$regen_tmp" >"$regen_tmp.next" || exit 1
 		mv "$regen_tmp.next" "$regen_tmp"
@@ -395,9 +497,12 @@ if [ -n "$fail_scripts" ]; then
 	for s in $fail_scripts; do
 		if [ -n "$annotate_bin" ] && [ -s "$tmp_dir/annotate-$s.txt" ]; then
 			echo "" >&2
-			echo "top functions for '$s' (>=1% of Ir, descending):" >&2
+			echo "top functions for '$s' (hottest first):" >&2
 			# The sorted function list starts at the 'file:function' table header;
-			# rows are descending, so head shows the biggest movers.
+			# rows are descending, so head shows the biggest contributors.
+			# --threshold semantics vary by annotate generation (per-function on
+			# legacy, cumulative on new cg_annotate) — this is a best-effort
+			# diagnostic, never a gate input.
 			awk '/file:function/{f=1} f' "$tmp_dir/annotate-$s.txt" | head -28 | sed 's/^/  /' >&2
 		fi
 	done

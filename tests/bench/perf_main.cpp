@@ -22,9 +22,12 @@
 // Usage:
 //   pfm3_bench --script=<name> [--blocks=N] [--mode=ir] [--json]
 //              [--repeat=R] [--warmup=W]
+//   pfm3_bench --list        one registry key per line (for perf-gate.sh)
 //
 //   --script   registry key (required). Unknown name → registry list, exit 2.
-//   --blocks   render block count (default: the entry's golden count).
+//   --blocks   render block count (default: the entry's golden count). Must be
+//              a plain decimal integer ≥ 1 (strtoul quirk: '-1' would wrap to
+//              ULONG_MAX and blow up the output allocation — reject signs).
 //   --mode     ir  — render once, exit 0 (Callgrind measures around us).
 //              wall — NOT IMPLEMENTED YET (Phase 3); exit 3.
 //   --json     print a machine-readable summary line (humans/diagnostics).
@@ -37,7 +40,6 @@
 
 #include <cstdlib>
 #include <cstring>
-#include <functional>
 #include <iostream>
 #include <map>
 #include <string>
@@ -114,9 +116,14 @@ int main(int argc, char** argv) {
     std::size_t blocks = 0;      // 0 = use the entry's defaultBlocks
     std::string mode = "ir";
     bool json = false;
+    bool listMode = false;
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
+        if (arg == "--list") {
+            listMode = true;
+            continue;
+        }
         const std::string::size_type eq = arg.find('=');
         const std::string flag = arg.substr(0, eq == std::string::npos ? arg.size() : eq);
         const std::string value = eq == std::string::npos ? std::string() : arg.substr(eq + 1);
@@ -124,6 +131,13 @@ int main(int argc, char** argv) {
         if (flag == "--script" && !value.empty()) {
             scriptName = value;
         } else if (flag == "--blocks" && !value.empty()) {
+            // Plain decimal digits only: a leading '+'/'-' would survive
+            // strtoul as a huge wrapped value and blow up the allocation.
+            if (value.find_first_not_of("0123456789") != std::string::npos) {
+                std::cerr << "ERR: --blocks must be a positive integer, got '"
+                          << value << "'\n";
+                return 2;
+            }
             char* end = nullptr;
             const unsigned long v = std::strtoul(value.c_str(), &end, 10);
             if (end == nullptr || *end != '\0' || v == 0) {
@@ -151,7 +165,16 @@ int main(int argc, char** argv) {
                      "Use --mode=ir.\n";
         return 3;
     }
-    if (scriptName.empty()) {
+    if (listMode) {
+        // Machine-readable registry keys for scripts/ci/perf-gate.sh's
+        // coverage check (bench scripts missing from the baseline must be a
+        // loud failure, not a silently unmeasured workload).
+        for (const auto& kv : registry()) {
+            std::cout << kv.first << "\n";
+        }
+        return 0;
+    }
+    if (scriptName.empty() && !listMode) {
         printUsage(argv[0]);
         printRegistry();
         return 2;
