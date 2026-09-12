@@ -29,15 +29,15 @@
   "wall": {
     "a4_default_sustain": {
       "blocks": 200,
-      "ns_per_block": 0
+      "ns_per_block": 1112
     },
     "fm_algo27_6carrier": {
       "blocks": 200,
-      "ns_per_block": 0
+      "ns_per_block": 1857
     },
     "arp_triad_up": {
       "blocks": 300,
-      "ns_per_block": 0
+      "ns_per_block": 1030
     }
   }
 }
