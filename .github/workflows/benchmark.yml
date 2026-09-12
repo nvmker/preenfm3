@@ -1,12 +1,11 @@
-# Reusable perf gate: Callgrind instruction-count (Ir) regression gate over the
-# golden-master render workload. Called by ci.yml (push/PR) in parallel with
+# Reusable perf gates over the golden-master render workload: TWO signals,
+# two steps. Called by ci.yml (push/PR) in parallel with
 # build/test/static-analysis/coverage. Builds tests/bench/perf_main.cpp
-# (pfm3_bench — same pfm3_fw_host object library the golden tests lock), runs
-# it under valgrind/callgrind with --toggle-collect scoped to
-# Synth::buildNewSampleBlock, and FAILS any baseline script whose total Ir
-# regresses more than meta.threshold_pct (2%) vs scripts/perf-baseline.json.
-# See _bmad-output/planning-artifacts/ci-performance-proposal.md (three-signal
-# design; this is signal 1) + ci-performance-implementation-plan.md §2.
+# (pfm3_bench — same pfm3_fw_host object library the golden tests lock) in
+# the pinned container and FAILS any baseline script whose numbers regress
+# beyond the thresholds in scripts/perf-baseline.json. See
+# _bmad-output/planning-artifacts/ci-performance-proposal.md (three-signal
+# design) + ci-performance-implementation-plan.md §2/§3a.
 #
 # ISA-GAP HONESTY (proposal determinism pitfall #3): the measured code is
 # x86-64-compiled firmware TUs, NOT Cortex-M7. Absolute Ir says nothing about
@@ -23,6 +22,21 @@
 # bump hard-fails the gate's meta check — that is the deliberate regen path
 # (regenerate-perf-baseline.yml, decision D4).
 #
+# SIGNAL 2 — wall-clock trend (Phase 3a): a second step gates the SAME
+# workloads on median wall-clock ns/block (steady_clock around renderScript
+# only, median of repeat=10 renders after warmup=3, fresh harness per
+# render — measured inside pfm3_bench). Unlike Ir, wall time DOES depend on
+# the runner (shared GitHub runners mix Xeon/EPYC, cache sizes, noisy
+# neighbors), so it is gated generously at meta.wall_threshold_pct (25%) — a
+# hard floor only for regressions the deterministic Ir gate structurally
+# cannot see (cache misses, allocation churn, algorithmic blowup behind an
+# equal instruction mix). Numbers land in the step summary as a trend table;
+# there is deliberately NO wall speedup notice (noise — a one-sided notice
+# on a noisy signal would cry wolf). Runs as a SEPARATE step (--only=wall)
+# so a wall failure gets its own red step + summary section inside this job
+# (GitHub's PR checks list shows the job-level entry only — steps are
+# visible in the run view/summary).
+#
 # NOTE: no `concurrency:` block here. As a reusable workflow, we inherit the
 # caller's (ci.yml) concurrency group — declaring one that resolves to the
 # same group self-deadlocks (see the note in tests.yml).
@@ -37,7 +51,7 @@ permissions:
 
 jobs:
   ir-gate:
-    name: Perf gate (Callgrind Ir)
+    name: Perf gates (Callgrind Ir + wall-clock trend)
     runs-on: ubuntu-latest
     # PIN — the Ir baseline is only valid for this exact compiler. Bump ONLY
     # through a baseline regen (regenerate-perf-baseline.yml) in the same PR.
@@ -98,19 +112,48 @@ jobs:
 
       # Gate table AND failure detail (stderr) land in the step summary
       # (size-gate pattern: 2>&1 before the tee). pipefail keeps the gate's
-      # exit code alive through the pipe.
+      # exit code alive through the pipe. The ```text fences matter: the
+      # summary renders as Markdown, and an unfenced plain-text table has
+      # its alignment spaces collapsed into a run-on paragraph.
       - name: Perf gate (Callgrind Ir vs baseline)
         if: steps.bootstrap.outputs.template == 'false'
         run: |
           set -o pipefail
-          scripts/ci/perf-gate.sh build/bench/pfm3_bench \
-            scripts/perf-baseline.json 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo '```text'
+            scripts/ci/perf-gate.sh build/bench/pfm3_bench \
+              scripts/perf-baseline.json --only=ir
+            rc=$?
+            echo '```'
+            exit "$rc"
+          } 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Signal 2 (Phase 3a): wall-clock trend, same job/container/build.
+      # Plain sequencing (no `if:` beyond the template condition) — if the Ir
+      # step above failed, the job is already red and this step is skipped
+      # that run: the red step already names the Ir failure, the wall trend
+      # re-runs on the next update. Same tee/pipefail/fence pattern so the
+      # trend table + failure detail reach the summary renderable.
+      - name: Perf wall gate (wall-clock trend vs baseline)
+        if: steps.bootstrap.outputs.template == 'false'
+        run: |
+          set -o pipefail
+          {
+            echo '```text'
+            scripts/ci/perf-gate.sh build/bench/pfm3_bench \
+              scripts/perf-baseline.json --only=wall
+            rc=$?
+            echo '```'
+            exit "$rc"
+          } 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
       # Bootstrap path (pure template only): regenerate into a COPY — the
       # committed file is never touched — then self-verify by gating against
-      # the copy with --threshold=0: the second measurement must equal the
-      # first EXACTLY (0.0000%) — same-container determinism evidence, not a
-      # 2%-band pass. The artifact is what a human commits to finish
+      # the copy with --threshold=0: Ir must equal the first measurement
+      # EXACTLY (0.0000% — same-container determinism evidence), while wall
+      # (no exact mode exists — it is not bit-deterministic) self-verifies
+      # inside its 25% band. The regen step needs no --only: a regen always
+      # measures BOTH signals. The artifact is what a human commits to finish
       # bootstrapping.
       - name: Bootstrap baseline (measure + self-verify, upload artifact)
         if: steps.bootstrap.outputs.template == 'true'
@@ -120,6 +163,7 @@ jobs:
           cp scripts/perf-baseline.json /tmp/perf-baseline.bootstrapped.json
           scripts/ci/perf-gate.sh build/bench/pfm3_bench \
             /tmp/perf-baseline.bootstrapped.json --regen
+      # --threshold=0 means: Ir exact 0.0000% + wall inside its 25% band.
       - name: Bootstrap self-verify (exact 0.0000% deltas)
         if: steps.bootstrap.outputs.template == 'true'
         env:

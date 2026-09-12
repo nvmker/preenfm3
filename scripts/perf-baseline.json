@@ -1,13 +1,16 @@
 {
-  "_contract": "Perf Ir baseline for scripts/ci/perf-gate.sh (Callgrind gate). Ir totals are ONLY valid for the exact toolchain in meta (compiler, container, valgrind, bench_version) — a change to any of them invalidates every number and must go through .github/workflows/regenerate-perf-baseline.yml (manual dispatch on the PR branch, D4) or the local docker one-liner in the gate script's header. Gate fails any script regressing > meta.threshold_pct (D1: 2%).",
+  "_contract": "Perf baseline for scripts/ci/perf-gate.sh (two signals, schema 2). .ir: Callgrind Ir totals per script (blocks, ir_total) — deterministic, gated at meta.threshold_pct (D1: 2%). .wall: wall-clock ns/block per script (blocks, ns_per_block) — median of repeat=10 renders after warmup=3 on the same workload, gated at meta.wall_threshold_pct (25%). All numbers are ONLY valid for the exact toolchain in meta (compiler, container, valgrind, bench_version) — a change to any of them invalidates every number and must go through .github/workflows/regenerate-perf-baseline.yml (manual dispatch on the PR branch, D4) or the local docker one-liner in the gate script's header. Wall is a TREND signal, not a bit-deterministic one (shared-runner clock noise): its 25% band is a generous safety net for cache/allocation/algorithmic regressions the Ir gate cannot see, and its numbers are only meaningful as that safety net — never as an exact reference. Regen rewrites BOTH sections; entries must stay key- and blocks-aligned between them.",
   "meta": {
-    "schema": 1,
+    "schema": 2,
     "container": "gcc:13.3.0-bookworm",
     "compiler": "13.3.0",
     "build_type": "Release",
     "bench_version": 1,
     "valgrind": "valgrind-3.19.0",
-    "threshold_pct": 2
+    "threshold_pct": 2,
+    "wall_threshold_pct": 25,
+    "wall_warmup": 3,
+    "wall_repeat": 10
   },
   "ir": {
     "a4_default_sustain": {
@@ -21,6 +24,20 @@
     "arp_triad_up": {
       "blocks": 300,
       "ir_total": 2564040
+    }
+  },
+  "wall": {
+    "a4_default_sustain": {
+      "blocks": 200,
+      "ns_per_block": 1112
+    },
+    "fm_algo27_6carrier": {
+      "blocks": 200,
+      "ns_per_block": 1857
+    },
+    "arp_triad_up": {
+      "blocks": 300,
+      "ns_per_block": 1030
     }
   }
 }

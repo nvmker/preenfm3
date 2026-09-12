@@ -1,12 +1,27 @@
-// pfm3_bench — standalone perf driver for the CI Callgrind Ir gate.
+// pfm3_bench — standalone perf driver for the CI perf gates (two signals).
 //
-// Renders the golden-master workload deterministically and exits 0 on success;
-// the MEASUREMENT happens outside this process: scripts/ci/perf-gate.sh runs
-// it under `valgrind --tool=callgrind --toggle-collect='*buildNewSampleBlock*'`
-// so only the render window (buildNewSampleBlock + callees) is counted. This
-// binary therefore prints nothing the gate parses — stdout is for humans
-// (--json) only. See _bmad-output/planning-artifacts/ci-performance-proposal.md
-// (three-signal design) + ci-performance-implementation-plan.md §2.2.
+//   --mode=ir   (default) Render once, N blocks, exit 0. The MEASUREMENT
+//               happens outside this process: scripts/ci/perf-gate.sh runs it
+//               under `valgrind --tool=callgrind
+//               --toggle-collect='*buildNewSampleBlock*'` so only the render
+//               window (buildNewSampleBlock + callees) is counted. stdout is
+//               for humans (--json) only — the gate never parses it.
+//   --mode=wall Time the render INSIDE the process: W warmup renders, then R
+//               measured renders — a FRESH harness per iteration (workload ≡
+//               the golden workload's first render; no cross-repeat
+//               synth-state drift), each timed with steady_clock around ONLY
+//               the renderScript call (harness construction and output
+//               allocation stay outside the timed window). Prints the MEDIAN
+//               ns/block. With --json, EXACTLY ONE JSON line goes to stdout
+//               and the gate PARSES it — the documented exception to Phase
+//               2's "gate never parses bench stdout": wall time can only be
+//               observed where it happens, and perf-gate.sh's fail-closed
+//               guards (JSON shape, blocks cross-check, plausibility floor)
+//               replace the out-file parsing guarantees.
+//
+// See _bmad-output/planning-artifacts/ci-performance-proposal.md (three-signal
+// design; ir + wall are the two host signals) +
+// ci-performance-implementation-plan.md §2.2/§3a.
 //
 // WORKLOAD ≡ GOLDEN WORKLOAD: the registry below pairs each script factory
 // with the exact out-of-band patches the corresponding TEST in
@@ -20,7 +35,7 @@
 // interface, including -ffp-contract=off, so Ir counts are reproducible).
 //
 // Usage:
-//   pfm3_bench --script=<name> [--blocks=N] [--mode=ir] [--json]
+//   pfm3_bench --script=<name> [--blocks=N] [--mode=ir|wall] [--json]
 //              [--repeat=R] [--warmup=W]
 //   pfm3_bench --list        one registry key per line (for perf-gate.sh)
 //
@@ -28,19 +43,28 @@
 //   --blocks   render block count (default: the entry's golden count). Must be
 //              a plain decimal integer ≥ 1 (strtoul quirk: '-1' would wrap to
 //              ULONG_MAX and blow up the output allocation — reject signs).
-//   --mode     ir  — render once, exit 0 (Callgrind measures around us).
-//              wall — NOT IMPLEMENTED YET (Phase 3); exit 3.
-//   --json     print a machine-readable summary line (humans/diagnostics).
-//   --repeat / --warmup — accepted for CLI-shape compatibility, used by
-//              --mode=wall only (Phase 3); ignored in ir mode.
+//   --mode     ir (default) or wall — see the mode notes at the top. Any other
+//              value → usage + exit 3.
+//   --repeat   wall mode: measured render count (default 10). Plain decimal
+//              integer ≥ 1. Ignored in ir mode.
+//   --warmup   wall mode: untimed warmup render count (default 3). Plain
+//              decimal integer ≥ 0. Ignored in ir mode.
+//   --json     machine-readable summary line. wall+--json prints the single
+//              JSON line the gate parses: script/blocks/mode/warmup/repeat/
+//              ns_per_block (median ns/block as a double).
 //
-// Exit codes: 0 success · 2 usage/unknown script · 3 unsupported mode.
+// Exit codes: 0 success · 2 usage/unknown script/bad numeric arg · 3 unknown
+// mode.
 
 #include "../golden_harness.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <iomanip>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <string>
 #include <vector>
@@ -96,7 +120,7 @@ const std::map<std::string, BenchEntry>& registry() {
 
 void printUsage(const char* argv0) {
     std::cerr << "usage: " << argv0
-              << " --script=<name> [--blocks=N] [--mode=ir] [--json]"
+              << " --script=<name> [--blocks=N] [--mode=ir|wall] [--json]"
                  " [--repeat=R] [--warmup=W]\n";
 }
 
@@ -115,6 +139,8 @@ int main(int argc, char** argv) {
     std::string scriptName;
     std::size_t blocks = 0;      // 0 = use the entry's defaultBlocks
     std::string mode = "ir";
+    std::size_t repeat = 10;     // wall: measured renders (default 10)
+    std::size_t warmup = 3;      // wall: untimed warmup renders (default 3)
     bool json = false;
     bool listMode = false;
 
@@ -150,8 +176,45 @@ int main(int argc, char** argv) {
             mode = value;
         } else if (flag == "--json") {
             json = true;
-        } else if (flag == "--repeat" || flag == "--warmup") {
-            // Phase 3 (wall mode) CLI shape — parsed for acceptance, unused in ir mode.
+        } else if (flag == "--repeat") {
+            // Same digits-only discipline as --blocks: a leading '+'/'-'
+            // would survive strtoul as a huge wrapped value. repeat >= 1
+            // (a median needs at least one sample) and capped at a sane
+            // bound: without the cap, strtoul(ULONG_MAX) wraps the
+            // warmup+repeat loop bound and the median would index an EMPTY
+            // sample vector (UB).
+            if (value.empty() ||
+                value.find_first_not_of("0123456789") != std::string::npos) {
+                std::cerr << "ERR: --repeat must be an integer >= 1, got '"
+                          << value << "'\n";
+                return 2;
+            }
+            char* end = nullptr;
+            const unsigned long v = std::strtoul(value.c_str(), &end, 10);
+            if (end == nullptr || *end != '\0' || v == 0 || v > 1000000) {
+                std::cerr << "ERR: --repeat must be an integer in [1, 1000000], got '"
+                          << value << "'\n";
+                return 2;
+            }
+            repeat = static_cast<std::size_t>(v);
+        } else if (flag == "--warmup") {
+            // Digits-only; warmup may be 0 (no untimed renders). Same cap:
+            // warmup+repeat must never overflow size_t (empty-median UB) and
+            // the per-repeat harness allocation must stay bounded.
+            if (value.empty() ||
+                value.find_first_not_of("0123456789") != std::string::npos) {
+                std::cerr << "ERR: --warmup must be an integer >= 0, got '"
+                          << value << "'\n";
+                return 2;
+            }
+            char* end = nullptr;
+            const unsigned long v = std::strtoul(value.c_str(), &end, 10);
+            if (end == nullptr || *end != '\0' || v > 1000000) {
+                std::cerr << "ERR: --warmup must be an integer in [0, 1000000], got '"
+                          << value << "'\n";
+                return 2;
+            }
+            warmup = static_cast<std::size_t>(v);
         } else {
             std::cerr << "ERR: unknown argument '" << arg << "'\n";
             printUsage(argv[0]);
@@ -159,10 +222,12 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (mode != "ir") {
-        std::cerr << "ERR: --mode=" << mode
-                  << " is not implemented (Phase 3 — wall-clock trend). "
-                     "Use --mode=ir.\n";
+    // Mode is validated EARLY — before --list and before any render — so
+    // `--list --mode=wall` keeps working and an unknown mode never reaches a
+    // workload. exit 3 keeps the Phase-2 contract (unknown mode ≠ usage).
+    if (mode != "ir" && mode != "wall") {
+        std::cerr << "ERR: --mode=" << mode << " is not a known mode (ir, wall)\n";
+        printUsage(argv[0]);
         return 3;
     }
     if (listMode) {
@@ -190,9 +255,83 @@ int main(int argc, char** argv) {
     if (blocks == 0) {
         blocks = entry.defaultBlocks;
     }
+    // Output-buffer overflow guard (both modes share this allocation): a
+    // --blocks value near ULONG_MAX wraps blocks*kSamplesPerBlock to a tiny
+    // size_t and renderScript would write out of bounds. The registry
+    // defaults (200/300) can never trip this — only an explicit --blocks can.
+    if (blocks > std::numeric_limits<std::size_t>::max() /
+                     golden::GoldenHarness::kSamplesPerBlock) {
+        std::cerr << "ERR: --blocks value " << blocks
+                  << " overflows the output allocation (blocks * "
+                  << golden::GoldenHarness::kSamplesPerBlock
+                  << " samples)\n";
+        return 2;
+    }
 
-    // Construct → preRender → render, mirroring runGolden's sequence exactly.
-    // fixtureDir is empty: the bench never touches fixtures (no compare/regen).
+    if (mode == "wall") {
+        // Wall-clock trend mode: W warmup renders, then R measured renders,
+        // each on a FRESH harness (construction + output allocation strictly
+        // OUTSIDE the timed window; only renderScript is timed). One repeat's
+        // ns_per_block = elapsed_ns / blocks. The script is constructed ONCE
+        // before the loop — the factory builds a RenderScript vector, and
+        // building it inside the timed window would bill script-construction
+        // allocation to every sample (measurement-contract violation).
+        const golden::RenderScript script = entry.script();
+        std::vector<double> nsPerBlock;
+        nsPerBlock.reserve(repeat);
+        for (std::size_t i = 0; i < warmup + repeat; ++i) {
+            golden::GoldenHarness harness(std::string(),
+                                           golden::TimbreSetup::g0Default());
+            if (entry.preRender != nullptr) {
+                entry.preRender(harness);
+            }
+            std::vector<int32_t> out(
+                blocks * golden::GoldenHarness::kSamplesPerBlock);
+            const auto t0 = std::chrono::steady_clock::now();
+            harness.renderScript(script, blocks, out.data());
+            const auto t1 = std::chrono::steady_clock::now();
+            if (i >= warmup) {
+                const auto elapsedNs =
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0)
+                        .count();
+                nsPerBlock.push_back(static_cast<double>(elapsedNs) /
+                                     static_cast<double>(blocks));
+            }
+        }
+        std::sort(nsPerBlock.begin(), nsPerBlock.end());
+        const std::size_t n = nsPerBlock.size();  // == repeat, validated >= 1
+        const double median =
+            (n % 2 == 1) ? nsPerBlock[n / 2]
+                         : (nsPerBlock[n / 2 - 1] + nsPerBlock[n / 2]) / 2.0;
+        if (json) {
+            // EXACTLY one JSON line on stdout — perf-gate.sh parses this (the
+            // documented wall-mode exception). setprecision(12) keeps the
+            // double round-trippable instead of collapsing to 6 digits /
+            // scientific notation. min/max ride along (diagnostics only —
+            // the gate gates on ns_per_block; the spread is what separates a
+            // stable regression from scheduler noise in post-mortems).
+            std::cout << std::setprecision(12);
+            std::cout << "{\"script\": \"" << scriptName
+                      << "\", \"blocks\": " << blocks
+                      << ", \"mode\": \"wall\""
+                      << ", \"warmup\": " << warmup
+                      << ", \"repeat\": " << repeat
+                      << ", \"ns_per_block\": " << median
+                      << ", \"min\": " << nsPerBlock.front()
+                      << ", \"max\": " << nsPerBlock.back() << "}\n";
+        } else {
+            std::cout << scriptName << ": " << blocks
+                      << " blocks, wall median " << median
+                      << " ns/block (min " << nsPerBlock.front() << ", max "
+                      << nsPerBlock.back() << "; repeat=" << repeat
+                      << " warmup=" << warmup << ")\n";
+        }
+        return 0;
+    }
+
+    // ir mode: construct → preRender → render, mirroring runGolden's sequence
+    // exactly. fixtureDir is empty: the bench never touches fixtures (no
+    // compare/regen).
     golden::GoldenHarness harness(std::string(), golden::TimbreSetup::g0Default());
     if (entry.preRender != nullptr) {
         entry.preRender(harness);
