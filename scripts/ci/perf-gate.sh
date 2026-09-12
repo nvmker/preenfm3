@@ -284,16 +284,15 @@ measure_script() {
 		# the artifact instead of a silently empty file. --auto=no skips source
 		# annotation (function table only). No --threshold: the legacy cg_annotate
 		# caps it at 20 and would dump usage instead of a profile.
-		"$annotate_bin" --auto=no "$ms_out" >"$tmp_dir/annotate-$ms_name.txt" 2>&1
+		"$annotate_bin" --auto=no --show-percs=no "$ms_out" \
+			>"$tmp_dir/annotate-$ms_name.txt" 2>&1
 		# Totals line differs by generation: legacy prints 'N  PROGRAM TOTALS',
-		# new cg_annotate prints a TOTALS row — match either, digits only (the
-		# events header defines a single Ir column).
+		# new cg_annotate prints a TOTALS row. Take ONLY the first field (with
+		# --show-percs=no a stray percentage can no longer contaminate it either;
+		# the events header defines a single Ir column).
 		ms_totals=$(grep -E 'PROGRAM TOTALS|^TOTALS' \
-			"$tmp_dir/annotate-$ms_name.txt" | tail -1 | tr -dc '0-9')
-		if [ -z "$ms_totals" ] && grep -q 'missing command line' \
-			"$tmp_dir/annotate-$ms_name.txt" 2>/dev/null; then
-			echo "WARN: $annotate_bin cannot parse the callgrind format (cachegrind-only annotate?) — cross-check unavailable" >&2
-		fi
+			"$tmp_dir/annotate-$ms_name.txt" | tail -1 |
+			awk '{gsub(/,/, "", $1); print $1}' | tr -dc '0-9')
 		if [ -n "$ms_totals" ]; then
 			[ "$ms_totals" = "$ms_ir" ] || {
 				echo "ERR: Ir parse mismatch for '$ms_name': summary=$ms_ir annotate=$ms_totals" >&2
