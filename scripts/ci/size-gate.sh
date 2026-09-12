@@ -67,7 +67,10 @@ getval() {
 	# shellcheck disable=SC2086 # iterate the whitespace-split list
 	for entry in $1; do
 		case $entry in
-		"$2"=*) printf '%s\n' "${entry#*=}"; return ;;
+		"$2"=*)
+			printf '%s\n' "${entry#*=}"
+			return
+			;;
 		esac
 	done
 }
@@ -99,7 +102,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 		region=${1%%=*}
 		bytes=${1#*=}
 		case $bytes in
-		''|*[!0-9]*|0|0[0-9]*)
+		'' | *[!0-9]* | 0 | 0[0-9]*)
 			echo "ERR: bad budget line '$1' in '$budget_file' — want region=bytes (whole bytes > 0, no leading zeros)" >&2
 			exit 1
 			;;
@@ -117,7 +120,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 		esac
 		;;
 	esac
-done < "$budget_file"
+done <"$budget_file"
 
 # A budget at/above the region's hardware capacity would silently reduce the
 # gate to the linker's own overflow check; budgets are growth budgets BELOW
@@ -144,10 +147,10 @@ seen=''
 while read -r sec sz _; do
 	case $sec:$sz in
 	*:) continue ;;
-	section:size|Section:Size) continue ;;
+	section:size | Section:Size) continue ;;
 	esac
 	case $sec in
-	Total|total) continue ;;
+	Total | total) continue ;;
 	.*) ;;
 	*)
 		echo "ERR: unrecognized size output line: '$sec $sz'" >&2
@@ -155,13 +158,13 @@ while read -r sec sz _; do
 		;;
 	esac
 	case $sz in
-	''|*[!0-9]*)
+	'' | *[!0-9]*)
 		echo "ERR: unrecognized size line: '$sec' size '$sz'" >&2
 		exit 1
 		;;
 	esac
 	case $sec in
-	.isr_vector|.text|.rodata|.ARM.extab|.ARM|.preinit_array|.init_array|.fini_array)
+	.isr_vector | .text | .rodata | .ARM.extab | .ARM | .preinit_array | .init_array | .fini_array)
 		flash=$((flash + sz))
 		seen="$seen flash"
 		;;
@@ -170,7 +173,7 @@ while read -r sec sz _; do
 		dtcmram=$((dtcmram + sz))
 		seen="$seen flash dtcmram"
 		;;
-	.bss|._user_heap_stack)
+	.bss | ._user_heap_stack)
 		dtcmram=$((dtcmram + sz))
 		seen="$seen dtcmram"
 		;;
@@ -194,7 +197,7 @@ while read -r sec sz _; do
 		itcmram=$((itcmram + sz))
 		seen="$seen itcmram"
 		;;
-	.ARM.attributes|.comment|.debug_*)
+	.ARM.attributes | .comment | .debug_*)
 		;;
 	*)
 		echo "ERR: section '$sec' is not classified into any region" >&2
