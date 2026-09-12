@@ -27,6 +27,10 @@
 # change must be a deliberate classification here, not a silent escape from
 # the accounting. A region measured in the ELF with no budget line also
 # aborts (the budget must cover every region; extra unused lines are OK).
+# Budget values must be whole bytes > 0, no leading zeros, within the shell
+# integer range, at or below the region's hardware capacity, and one line
+# per region — anything else aborts (a nonsense budget must never silently
+# disable the gate).
 #
 # arm-none-eabi-size resolved from $ARM_SIZE (test seam, mirrors $LLVM_COV in
 # coverage-gate.sh) or PATH. A crash aborts loudly.
@@ -53,13 +57,25 @@ command -v "$arm_size" >/dev/null 2>&1 || {
 }
 
 # Hardware region capacities per firmware/preenfm3_2MB.ld (flash = the 1920K
-# app partition). Used only for the "% of hardware capacity" column.
+# app partition). Used for the "% of hardware capacity" column AND to reject
+# budgets at/above capacity (those would silently reduce the gate to the
+# linker's own overflow check).
 hw='flash=1966080 dtcmram=131072 ram_d1=524288 ram_d2=131072 ram_d2b=131072 ram_d3=65536 itcmram=64512'
+
+# getval <region=bytes list> <region> — prints the region's bytes, or nothing.
+getval() {
+	# shellcheck disable=SC2086 # iterate the whitespace-split list
+	for entry in $1; do
+		case $entry in
+		"$2"=*) printf '%s\n' "${entry#*=}"; return ;;
+		esac
+	done
+}
 
 # Run size -A (per-section listing: `section size addr`). Capture output to a
 # variable so we can check the exit code directly (POSIX sh has no
 # PIPESTATUS).
-size_out=$("$arm_size" -A "$elf" 2>&1)
+size_out=$(LC_ALL=C "$arm_size" -A "$elf" 2>&1)
 rc=$?
 if [ "$rc" -ne 0 ]; then
 	echo "ERR: $arm_size exited $rc — setup failure (crash / not an ELF):" >&2
@@ -69,8 +85,9 @@ fi
 
 # Budget file: one `region=bytes` per line; blank lines, `#` comments and
 # inline `# ...` annotations are ignored. Region names without a
-# classification are allowed (ignored); on a duplicate region the first line
-# wins.
+# classification are allowed (ignored); duplicate regions, non-positive
+# values, leading zeros, out-of-range values and values above the region's
+# hardware capacity all abort loudly.
 budgets=''
 while IFS= read -r line || [ -n "$line" ]; do
 	line=${line%%#*}
@@ -82,29 +99,60 @@ while IFS= read -r line || [ -n "$line" ]; do
 		region=${1%%=*}
 		bytes=${1#*=}
 		case $bytes in
-		''|*[!0-9]*)
-			echo "ERR: bad budget line '$1' in '$budget_file' — want region=bytes" >&2
+		''|*[!0-9]*|0|0[0-9]*)
+			echo "ERR: bad budget line '$1' in '$budget_file' — want region=bytes (whole bytes > 0, no leading zeros)" >&2
 			exit 1
 			;;
 		esac
+		if [ "${#bytes}" -gt 15 ]; then
+			echo "ERR: budget '$1' in '$budget_file' out of range (max 15 digits)" >&2
+			exit 1
+		fi
 		case " $budgets " in
-		*" $region="*) ;;
+		*" $region="*)
+			echo "ERR: duplicate budget line for '$region' in '$budget_file' — keep exactly one line per region" >&2
+			exit 1
+			;;
 		*) budgets="$budgets $region=$bytes" ;;
 		esac
 		;;
 	esac
 done < "$budget_file"
 
+# A budget at/above the region's hardware capacity would silently reduce the
+# gate to the linker's own overflow check; budgets are growth budgets BELOW
+# capacity by contract (see the size-budget.txt header).
+# shellcheck disable=SC2086 # iterate the whitespace-split list
+for entry in $budgets; do
+	region=${entry%%=*}
+	bytes=${entry#*=}
+	cap=$(getval "$hw" "$region")
+	if [ -n "$cap" ] && [ "$bytes" -gt "$cap" ]; then
+		echo "ERR: budget '$region=$bytes' is above the hardware capacity $cap — budgets must stay below capacity (the linker is the fit check)" >&2
+		exit 1
+	fi
+done
+
 # Classify every dot-section (mapping documented in the header comment).
-# sed drops size's first line (the "<file> :" header). The heredoc-fed loop
-# runs in this shell, so the accumulators survive it.
-sections=$(printf '%s\n' "$size_out" | sed '1d')
+# The only accepted non-section lines are the "<elf> :" banner, the
+# "section size addr" column header and the "Total" summary line — a
+# warning or any other unexpected line aborts: a partially-parsed table
+# must never gate a build. The heredoc-fed loop runs in this shell, so the
+# accumulators survive it.
 flash=0 dtcmram=0 ram_d1=0 ram_d2=0 ram_d2b=0 ram_d3=0 itcmram=0
 seen=''
 while read -r sec sz _; do
+	case $sec:$sz in
+	*:) continue ;;
+	section:size|Section:Size) continue ;;
+	esac
 	case $sec in
+	Total|total) continue ;;
 	.*) ;;
-	*) continue ;;
+	*)
+		echo "ERR: unrecognized size output line: '$sec $sz'" >&2
+		exit 1
+		;;
 	esac
 	case $sz in
 	''|*[!0-9]*)
@@ -155,30 +203,30 @@ while read -r sec sz _; do
 		;;
 	esac
 done <<EOF
-$sections
+$size_out
 EOF
 
+# Every canonical region must have been classified. Empty or truncated
+# size output that silently omits regions would otherwise gate nothing
+# while CI stays green. (If the linker script legitimately stops emitting a
+# region, this error is the deliberate prompt to update the mapping, the
+# budgets and this check together.)
 regions='flash dtcmram ram_d1 ram_d2 ram_d2b ram_d3 itcmram'
-used="flash=$flash dtcmram=$dtcmram ram_d1=$ram_d1 ram_d2=$ram_d2 ram_d2b=$ram_d2b ram_d3=$ram_d3 itcmram=$itcmram"
-
-# getval <region=bytes list> <region> — prints the region's bytes, or nothing.
-getval() {
-	# shellcheck disable=SC2086 # iterate the whitespace-split list
-	for entry in $1; do
-		case $entry in
-		"$2"=*) printf '%s\n' "${entry#*=}"; return ;;
-		esac
-	done
-}
-
-# Regions measured in the ELF, in canonical table order.
-active=''
+unseen=''
 # shellcheck disable=SC2086 # iterate the canonical region list
 for region in $regions; do
 	case " $seen " in
-	*" $region "*) active="$active $region" ;;
+	*" $region "*) ;;
+	*) unseen="$unseen $region" ;;
 	esac
 done
+if [ -n "$unseen" ]; then
+	echo "ERR: no sections classified for region(s):$unseen — empty or truncated size output?" >&2
+	exit 1
+fi
+
+used="flash=$flash dtcmram=$dtcmram ram_d1=$ram_d1 ram_d2=$ram_d2 ram_d2b=$ram_d2b ram_d3=$ram_d3 itcmram=$itcmram"
+active=$regions
 
 # Every measured region must have a budget line (extra unused lines are OK).
 missing=''
@@ -197,14 +245,16 @@ fi
 
 # Markdown utilization table on stdout (the workflow tees it into the step
 # summary). Rows are `region used budget hardware_capacity`; awk does the
-# %-formatting and thousands separators.
+# %-formatting and thousands separators. LC_ALL=C pins the number formatting
+# (mirrors coverage-gate.sh), and an awk failure aborts — a corrupt table
+# must never pass silently.
 rows=''
 # shellcheck disable=SC2086 # iterate the measured region list
 for region in $active; do
 	rows="$rows
 $region $(getval "$used" "$region") $(getval "$budgets" "$region") $(getval "$hw" "$region")"
 done
-printf '%s\n' "$rows" | awk '
+printf '%s\n' "$rows" | LC_ALL=C awk '
 	function commas(n,   s, t) {
 		s = sprintf("%d", n)
 		t = ""
@@ -224,7 +274,10 @@ printf '%s\n' "$rows" | awk '
 		printf "| %s | %s | %s | %.1f%% | %.1f%% |\n", \
 			$1, commas($2), commas($3), 100 * $2 / $3, 100 * $2 / $4
 	}
-'
+' || {
+	echo "ERR: utilization table rendering failed" >&2
+	exit 1
+}
 
 # Gate: FAIL on any over-budget region (the table above still prints — the
 # utilization data is valid even when red).
