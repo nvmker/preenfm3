@@ -1,0 +1,83 @@
+# Reusable perf gate: Callgrind instruction-count (Ir) regression gate over the
+# golden-master render workload. Called by ci.yml (push/PR) in parallel with
+# build/test/static-analysis/coverage. Builds tests/bench/perf_main.cpp
+# (pfm3_bench — same pfm3_fw_host object library the golden tests lock), runs
+# it under valgrind/callgrind with --toggle-collect scoped to
+# Synth::buildNewSampleBlock, and FAILS any baseline script whose total Ir
+# regresses more than meta.threshold_pct (2%) vs scripts/perf-baseline.json.
+# See _bmad-output/planning-artifacts/ci-performance-proposal.md (three-signal
+# design; this is signal 1) + ci-performance-implementation-plan.md §2.
+#
+# ISA-GAP HONESTY (proposal determinism pitfall #3): the measured code is
+# x86-64-compiled firmware TUs, NOT Cortex-M7. Absolute Ir says nothing about
+# the H7's ~640k-cycle/block deadline. RELATIVE DELTAS and call counts are the
+# signal: a >2% host-side delta reliably indicates a real target-side change.
+#
+# Determinism (why a 2% gate is meaningful): guest Ir = f(binary, input).
+# Input = the committed golden scripts. Binary = f(gcc, flags) — pinned by the
+# container below (pitfall #1: never ride ubuntu-latest's drifting compiler).
+# Valgrind emulates a fixed x86-64 baseline, so runner CPU generation does not
+# leak into Ir. Release = -O3 and NO -march=native anywhere (pitfall #2);
+# -ffp-contract=off rides in from the object library so the bench measures the
+# same code shape the golden tests lock. A container/valgrind/bench-version
+# bump hard-fails the gate's meta check — that is the deliberate regen path
+# (regenerate-perf-baseline.yml, decision D4).
+#
+# NOTE: no `concurrency:` block here. As a reusable workflow, we inherit the
+# caller's (ci.yml) concurrency group — declaring one that resolves to the
+# same group self-deadlocks (see the note in tests.yml).
+name: benchmark
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ir-gate:
+    name: Perf gate (Callgrind Ir)
+    runs-on: ubuntu-latest
+    # PIN — the Ir baseline is only valid for this exact compiler. Bump ONLY
+    # through a baseline regen (regenerate-perf-baseline.yml) in the same PR.
+    container: gcc:13.3.0-bookworm
+    env:
+      PERF_CONTAINER: gcc:13.3.0-bookworm # gate cross-checks meta.container
+      # annotate/callgrind reports land here for the artifact upload
+      PERF_GATE_REPORT_DIR: /tmp/perf-reports
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      # gcc image ships cmake's build deps but not cmake/valgrind/jq themselves.
+      # git IS present (buildpack-deps base) for the actions/checkout fallback.
+      - name: Install tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends cmake valgrind jq
+
+      - name: Configure bench (Release = -O3, no -march=native)
+        run: cmake -B build/bench -S tests -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build pfm3_bench
+        run: cmake --build build/bench --target pfm3_bench -j"$(nproc)"
+
+      # Gate table + failure detail land in the step summary (size-gate
+      # pattern). pipefail so the gate's exit code survives the tee.
+      - name: Perf gate (Callgrind Ir vs baseline)
+        run: |
+          set -o pipefail
+          scripts/ci/perf-gate.sh build/bench/pfm3_bench \
+            scripts/perf-baseline.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # A red gate still ships its diagnostics: per-script callgrind .out files
+      # + annotate tables (run-id-scoped name, mirrors the build.yml pattern).
+      - name: Upload perf reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: perf-annotate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/perf-reports
+          retention-days: 30
