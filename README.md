@@ -40,6 +40,13 @@ own line of development. I intend to keep developing the firmware here.
   fixtures locking `Synth::buildNewSampleBlock` end-to-end. Upstream ships no
   test harness; this fork covers the whole render path as a regression net. See
   [`tests/README.md`](tests/README.md) + [`tests/golden/README.md`](tests/golden/README.md).
+- **Hardening + release history.** On top of the changes above, the fork has
+  fixed ~90 defects inherited from upstream (found via static analysis,
+  sanitizers, the host suite, and an on-device validation program — zero
+  regressions vs upstream v1.11 in the full A/B). Per-release details live in
+  [`CHANGELOG.md`](CHANGELOG.md), and each
+  [GitHub release](https://github.com/nvmker/preenfm3/releases) carries the
+  same notes plus downloadable firmware.
 
 **Features added:**
 
@@ -48,7 +55,7 @@ own line of development. I intend to keep developing the firmware here.
   within it — previously the loader scanned a single fixed directory. The bank
   and preset cursor persist across navigation and reboot.
 
-Current firmware version: v1.11 (see [`firmware/Inc/version.h`](firmware/Inc/version.h)).
+For the current release, see the [releases page](https://github.com/nvmker/preenfm3/releases).
 
 ---
 
