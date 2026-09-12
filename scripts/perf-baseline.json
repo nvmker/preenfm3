@@ -1,8 +1,9 @@
 {
-  "_contract": "Perf Ir baseline for scripts/ci/perf-gate.sh (Callgrind gate). Ir totals are ONLY valid for the exact toolchain in meta — a container/gcc/valgrind/bench-version change invalidates every number and must go through .github/workflows/regenerate-perf-baseline.yml (manual dispatch on the PR branch, D4). Gate fails any script regressing > meta.threshold_pct (D1: 2%).",
+  "_contract": "Perf Ir baseline for scripts/ci/perf-gate.sh (Callgrind gate). Ir totals are ONLY valid for the exact toolchain in meta (compiler, container, valgrind, bench_version) — a change to any of them invalidates every number and must go through .github/workflows/regenerate-perf-baseline.yml (manual dispatch on the PR branch, D4) or the local docker one-liner in the gate script's header. Gate fails any script regressing > meta.threshold_pct (D1: 2%).",
   "meta": {
     "schema": 1,
     "container": "gcc:13.3.0-bookworm",
+    "compiler": "13.3.0",
     "build_type": "Release",
     "bench_version": 1,
     "valgrind": "valgrind-3.19.0",

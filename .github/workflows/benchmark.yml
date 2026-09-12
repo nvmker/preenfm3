@@ -50,8 +50,9 @@ jobs:
         shell: bash
     env:
       PERF_CONTAINER: gcc:13.3.0-bookworm # gate cross-checks meta.container
-      # annotate/callgrind reports land here for the artifact upload
-      PERF_GATE_REPORT_DIR: /tmp/perf-reports
+      # annotate/callgrind reports land here (per-step subdirs keep the
+      # bootstrap regen + verify invocations from overwriting each other)
+      PERF_GATE_REPORT_DIR: /tmp/perf-reports/gate
     steps:
       - uses: actions/checkout@v5
         with:
@@ -72,16 +73,21 @@ jobs:
       - name: Build pfm3_bench
         run: cmake --build build/bench --target pfm3_bench -j"$(nproc)"
 
-      # Template-bootstrap check: a baseline entry with ir_total <= 0 means the
-      # committed file is still the regen TEMPLATE (fresh branch / new script).
-      # The gate hard-fails on zeros by design; here we branch instead of
-      # gating: measure a COPY, self-verify it, and upload it as an artifact —
-      # a human then commits the measured numbers (D4: no auto-commit machinery,
-      # no write permissions; the job summary says the gate is INACTIVE).
+      # Template-bootstrap check: a baseline where EVERY entry has
+      # ir_total <= 0 is the committed regen TEMPLATE (fresh branch). A MIXED
+      # baseline (some real numbers + some zeros) is NOT a template — it falls
+      # through to the gate, whose zero-entry hard-fail is the correct loud
+      # response (a new script entry must not silently disable gating for the
+      # existing ones). The gate hard-fails on zeros by design; here we branch
+      # instead of gating: measure a COPY, self-verify it with --threshold=0
+      # (exact equality — Callgrind Ir is deterministic), and upload it as an
+      # artifact — a human then commits the measured numbers (D4: no
+      # auto-commit machinery, no write permissions; the job summary says the
+      # gate is INACTIVE).
       - name: Baseline bootstrap check
         id: bootstrap
         run: |
-          if jq -e '.ir | to_entries | any(.value.ir_total <= 0)' \
+          if jq -e '.ir | to_entries | all(.value.ir_total <= 0)' \
               scripts/perf-baseline.json >/dev/null; then
             echo "template=true" >>"$GITHUB_OUTPUT"
             echo "::warning::perf baseline is a TEMPLATE (zero ir_total)"
@@ -90,27 +96,37 @@ jobs:
             echo "template=false" >>"$GITHUB_OUTPUT"
           fi
 
-      # Gate table + failure detail land in the step summary (size-gate
-      # pattern). pipefail so the gate's exit code survives the tee.
+      # Gate table AND failure detail (stderr) land in the step summary
+      # (size-gate pattern: 2>&1 before the tee). pipefail keeps the gate's
+      # exit code alive through the pipe.
       - name: Perf gate (Callgrind Ir vs baseline)
         if: steps.bootstrap.outputs.template == 'false'
         run: |
           set -o pipefail
           scripts/ci/perf-gate.sh build/bench/pfm3_bench \
-            scripts/perf-baseline.json | tee -a "$GITHUB_STEP_SUMMARY"
+            scripts/perf-baseline.json 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
-      # Bootstrap path (template baseline only): regenerate into a COPY — the
+      # Bootstrap path (pure template only): regenerate into a COPY — the
       # committed file is never touched — then self-verify by gating against
-      # the copy (must PASS at 0.0000% — also the same-container determinism
-      # evidence). The artifact is what a human commits to finish bootstrapping.
+      # the copy with --threshold=0: the second measurement must equal the
+      # first EXACTLY (0.0000%) — same-container determinism evidence, not a
+      # 2%-band pass. The artifact is what a human commits to finish
+      # bootstrapping.
       - name: Bootstrap baseline (measure + self-verify, upload artifact)
         if: steps.bootstrap.outputs.template == 'true'
+        env:
+          PERF_GATE_REPORT_DIR: /tmp/perf-reports/bootstrap-regen
         run: |
           cp scripts/perf-baseline.json /tmp/perf-baseline.bootstrapped.json
           scripts/ci/perf-gate.sh build/bench/pfm3_bench \
             /tmp/perf-baseline.bootstrapped.json --regen
+      - name: Bootstrap self-verify (exact 0.0000% deltas)
+        if: steps.bootstrap.outputs.template == 'true'
+        env:
+          PERF_GATE_REPORT_DIR: /tmp/perf-reports/bootstrap-verify
+        run: |
           scripts/ci/perf-gate.sh build/bench/pfm3_bench \
-            /tmp/perf-baseline.bootstrapped.json
+            /tmp/perf-baseline.bootstrapped.json --threshold=0
           echo ""
           echo "bootstrap: gate INACTIVE this run."
           echo "Commit the measured baseline to activate it:"
