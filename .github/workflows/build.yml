@@ -3,7 +3,8 @@
 #
 # Installs Arm GNU Toolchain 15.x (cached), builds firmware + bootloader in
 # Release via the top-level Makefile wrapper, parses the version headers,
-# exposes fw/bl versions as outputs, and uploads the .bin + .hex.
+# exposes fw/bl versions as outputs, and uploads the .bin + .hex plus the
+# ELF + map (size-gate / link debugging).
 name: build
 
 on:
@@ -75,14 +76,15 @@ jobs:
         run: make all
 
       # Size gate: per-region Flash/RAM budgets (scripts/size-budget.txt).
-      # pipefail so the gate's exit code is not masked by tee; the gate's
-      # Markdown table lands in the step summary. The bootloader is
-      # deliberately NOT gated (own linker script, effectively frozen).
+      # pipefail so the gate's exit code is not masked by tee; 2>&1 puts the
+      # FAIL detail (stderr) in the step summary next to the table. The
+      # bootloader is deliberately NOT gated (own linker script, effectively
+      # frozen).
       - name: Size gate (Flash/RAM budgets)
         run: |
           set -o pipefail
           scripts/ci/size-gate.sh build/release/firmware/preenfm3.elf \
-            scripts/size-budget.txt | tee -a "$GITHUB_STEP_SUMMARY"
+            scripts/size-budget.txt 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Parse versions from headers
         id: versions
@@ -100,6 +102,11 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifacts
+        # Upload even when a later step (e.g. the size gate) failed — the
+        # ELF/map are exactly what you need to diagnose that failure. On a
+        # failed `make all` the step itself errors via if-no-files-found,
+        # which is the intended loudness.
+        if: always()
         # v6 is the first major defaulting to Node.js 24. CAVEAT: v5 only
         # *preliminarily* supported Node 24 but still ran Node 20 by default
         # (per upload-artifact's own v6 notes), so pinning v5 would NOT clear
