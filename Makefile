@@ -196,7 +196,9 @@ test-cov:
 	    -DCMAKE_C_FLAGS="$(COV_FLAGS)" \
 	    -DCMAKE_CXX_FLAGS="$(COV_FLAGS)" \
 	    -DCMAKE_EXE_LINKER_FLAGS="$(COV_FLAGS)"
-	cmake --build $(TEST_COV_DIR) -j
+	# --target pfm3_tests: instrument ONLY the test binary, not pfm3_bench (the
+	# perf driver adds build time under instrumentation and no coverage value).
+	cmake --build $(TEST_COV_DIR) --target pfm3_tests -j
 	LLVM_PROFILE_FILE="$(abspath $(TEST_COV_DIR))/pfm3_tests-%p.profraw" \
 	    ctest --test-dir $(TEST_COV_DIR) --output-on-failure
 	# Fail loudly if ctest produced no profraw (LLVM_PROFILE_FILE not honored, or
@@ -229,7 +231,7 @@ test-asan:
 	    -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
 	    -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
 	    -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
-	cmake --build $(TEST_ASAN_DIR) -j
+	cmake --build $(TEST_ASAN_DIR) --target pfm3_tests -j
 	ctest --test-dir $(TEST_ASAN_DIR) --output-on-failure
 
 # --- Static analysis (cppcheck + clang-tidy) --------------------------------
