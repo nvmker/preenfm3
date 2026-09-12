@@ -5,17 +5,6 @@ for their history.
 
 ---
 
-# preenfm3 firmware — v1.12 release notes
-
-**FINAL — approved + executed 2026-09-12. Release commit `6fea8df`, tag `v1.12`, app md5 `7f20c927…` (505,200 B).**
-
-*Every claim below is verified against the v1.11 tag's tree (the release history
-contains duplicate commits, so the commit log alone overstates what is new —
-claims were checked at file/content level; anything already present in v1.11
-was removed).*
-
----
-
 ## v1.12 — the hardening release
 
 This is a stability and correctness release: ~90 defect fixes (123 commits)
@@ -145,9 +134,3 @@ hardware against the v1.11 firmware it replaces.
 - Settings, mixer banks, presets, sequences, scala files, and user
   waveforms on the SD card are compatible; no migration needed.
 - First boot after flashing is a normal boot; nothing to reconfigure.
-
----
-
-*123 commits since v1.11 (92 fix commits). Every fix in this list is covered
-by a host regression test and/or on-device verification evidence; see the
-repository's validation records for details.*
