@@ -17,10 +17,10 @@
 # stamps the new meta.valgrind/meta.container, and the PR carries both the pin
 # change and the re-measured numbers.
 #
-# CI re-trigger note: the commit is pushed by the default GITHUB_TOKEN, whose
-# pushes do NOT re-trigger on:push/on:pull_request workflows (GitHub loop
-# prevention). The Self-verify step below is therefore the green evidence for
-# the PR; the ci.yml benchmark job can be re-run manually if desired.
+# NOTE: GitHub only registers dispatchable workflows that exist on the DEFAULT
+# branch — until this file merges to master, `gh workflow run` 404s on it. The
+# initial PR bootstraps its baseline via benchmark.yml's template path instead
+# (zero-ir_total baseline → measure + upload artifact → human commits it).
 name: regenerate-perf-baseline
 
 on:
@@ -34,6 +34,11 @@ jobs:
     name: Regenerate perf Ir baseline
     runs-on: ubuntu-latest
     container: gcc:13.3.0-bookworm # PIN — keep in lockstep with benchmark.yml
+    # Container jobs default to `sh` (dash); bash is the documented shell for
+    # these steps (heredocs, [[ ]]) and ships in the gcc (Debian) image.
+    defaults:
+      run:
+        shell: bash
     env:
       PERF_CONTAINER: gcc:13.3.0-bookworm
       PERF_GATE_REPORT_DIR: /tmp/perf-reports
