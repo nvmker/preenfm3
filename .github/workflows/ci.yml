@@ -47,3 +47,18 @@ jobs:
   coverage:
     name: Coverage (floor gate)
     uses: ./.github/workflows/coverage.yml
+
+  # Perf gate (Callgrind instruction-count regression gate) — runs in PARALLEL
+  # with build + test + static-analysis + coverage (no `needs:`) for the same
+  # reason: a green build/test must not mask a render-path slowdown, and
+  # vice-versa. Builds pfm3_bench (the golden workload driver) in a pinned
+  # gcc:13.3.0-bookworm container and FAILS any baseline script whose total Ir
+  # regresses more than meta.threshold_pct (2%, decision D1) vs
+  # scripts/perf-baseline.json. Deterministic: Ir is codegen-exact and
+  # runner-CPU independent; the container pin is what makes the baseline
+  # meaningful. Absolute x86-64 Ir says nothing about the H7 deadline —
+  # relative deltas are the signal. Baseline updates are a deliberate act:
+  # regenerate-perf-baseline.yml (dispatch on the PR branch, D4).
+  benchmark:
+    name: Perf gate (Callgrind Ir)
+    uses: ./.github/workflows/benchmark.yml
