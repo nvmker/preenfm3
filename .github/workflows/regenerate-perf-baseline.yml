@@ -1,12 +1,14 @@
-# Manually-triggered regeneration of the perf Ir baseline
-# (scripts/perf-baseline.json). Run from the Actions tab on the target branch —
-# typically your PR branch when shipping an intentional perf change (an
-# accepted regression, or a speedup worth locking in); the baseline bump then
-# rides in that PR. Builds tests/ in the SAME pinned container benchmark.yml
-# gates in (gcc:13.3.0-bookworm), measures each baseline script under
-# callgrind, rewrites the JSON, then SELF-VERIFIES by running the gate in
-# compare mode — the fresh baseline must PASS at 0.0000% deltas before
-# anything is committed.
+# Manually-triggered regeneration of the perf baseline
+# (scripts/perf-baseline.json) — BOTH signals: it re-measures every script's
+# Callgrind Ir total AND its wall-clock ns/block, rewriting the .ir and
+# .wall sections together (schema 2). Run from the Actions tab on the target
+# branch — typically your PR branch when shipping an intentional perf change
+# (an accepted regression, or a speedup worth locking in); the baseline bump
+# then rides in that PR. Builds tests/ in the SAME pinned container
+# benchmark.yml gates in (gcc:13.3.0-bookworm), measures each baseline script
+# (callgrind for ir, the bench's internal steady_clock timing for wall),
+# rewrites the JSON, then SELF-VERIFIES by running the gate in compare mode
+# before anything is committed.
 #
 # Why manual (workflow_dispatch): an automatic regen would silently mask real
 # perf regressions by overwriting the committed lock. Regen is a deliberate
@@ -31,7 +33,7 @@ permissions:
 
 jobs:
   regen:
-    name: Regenerate perf Ir baseline
+    name: Regenerate perf baseline (Ir + wall)
     runs-on: ubuntu-latest
     container: gcc:13.3.0-bookworm # PIN — keep in lockstep with benchmark.yml
     # Container jobs default to `sh` (dash); bash is the documented shell for
@@ -62,11 +64,13 @@ jobs:
         run: scripts/ci/perf-gate.sh build/bench/pfm3_bench \
           scripts/perf-baseline.json --regen
 
-      # --threshold=0 = EXACT: the second measurement must reproduce the fresh
-      # baseline bit for bit (0.0000% deltas), not merely sit inside the 2%
-      # regression band. This is the determinism proof for the committed
-      # numbers. Distinct PERF_GATE_REPORT_DIR so the verify run's reports do
-      # not overwrite the regen run's profiles.
+      # Self-verify, two semantics: --threshold=0 makes the Ir check EXACT
+      # (the second measurement must reproduce the fresh baseline bit for
+      # bit — 0.0000% deltas — the determinism proof for the committed Ir
+      # numbers), while the wall check — which has no exact mode, wall-clock
+      # being not bit-deterministic — re-measures and must land inside its
+      # 25% band. Distinct PERF_GATE_REPORT_DIR so the verify run's reports
+      # do not overwrite the regen run's profiles.
       - name: Self-verify (exact 0.0000% vs the fresh baseline)
         env:
           PERF_GATE_REPORT_DIR: /tmp/perf-reports/verify
@@ -95,7 +99,7 @@ jobs:
           if git diff --cached --quiet; then
             echo "no baseline changes — already match the measurement"
           else
-            git commit -m "ci(perf): regenerate Ir baseline [skip ci]"
+            git commit -m "ci(perf): regenerate baseline (Ir + wall) [skip ci]"
             git push
             echo "::notice::baseline committed to ${GITHUB_REF_NAME}"
           fi

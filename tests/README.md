@@ -93,14 +93,34 @@ cmake --build build/bench --target pfm3_bench -j
 ```
 
 `pfm3_bench` (`bench/perf_main.cpp`) is the workload driver for the CI perf
-gate: it renders the golden-master scripts — paired with the exact
-out-of-band patches the corresponding tests apply — and exits 0. The
-**measurement happens outside the process**: `.github/workflows/benchmark.yml`
-runs it under valgrind/callgrind (toggle-collect scoped to
-`Synth::buildNewSampleBlock`) inside the pinned `gcc:13.3.0-bookworm`
-container, and `scripts/ci/perf-gate.sh` compares total Ir against
-`scripts/perf-baseline.json` (2% regression gate). It has **no gtest** in its
-link closure; `--mode=wall` lands with Phase 3.
+**gates** (two signals): it renders the golden-master scripts — paired with
+the exact out-of-band patches the corresponding tests apply — and either
+exits 0 (Ir mode: the measurement happens outside the process) or times the
+render itself (wall mode). The **Ir signal** is measured by
+`.github/workflows/benchmark.yml`, which runs the bench under
+valgrind/callgrind (toggle-collect scoped to `Synth::buildNewSampleBlock`)
+inside the pinned `gcc:13.3.0-bookworm` container; `scripts/ci/perf-gate.sh`
+compares total Ir against `scripts/perf-baseline.json` (2% regression gate).
+It has **no gtest** in its link closure.
+
+Wall mode (the second signal, Phase 3a) — usable locally on any OS:
+
+```sh
+./build/bench/pfm3_bench --script=a4_default_sustain --mode=wall --json
+# {"script": "a4_default_sustain", "blocks": 200, "mode": "wall", "warmup": 3,
+#  "repeat": 10, "ns_per_block": ..., "min": ..., "max": ...}
+```
+
+Semantics: `--mode=wall` renders `--warmup` (default 3) untimed warmups,
+then `--repeat` (default 10) measured renders — a FRESH harness per render,
+with only `renderScript` inside the `steady_clock` window — and prints the
+median ns/block (with `--json`, exactly one JSON line; the CI gate parses
+it). Wall is a **trend/safety-net signal**, gated generously at 25% in CI
+(`meta.wall_threshold_pct`): shared-runner clock noise makes it
+non-deterministic, but it catches cache/allocation/algorithmic regressions
+the deterministic Ir gate cannot see. A local wall smoke run works fine on
+any OS with any compiler — only the **Ir** measurement needs the pinned
+container/valgrind.
 
 ## Build layout: the pfm3_fw_host object library
 
