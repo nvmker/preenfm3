@@ -275,7 +275,10 @@ measure_script() {
 	# Cross-check against annotate TOTALS when available: a silent parse drift
 	# must never gate a build.
 	if [ -n "$annotate_bin" ]; then
-		"$annotate_bin" --threshold=99 "$ms_out" >"$tmp_dir/annotate-$ms_name.txt" 2>/dev/null
+		# stderr joins the report file — callgrind_annotate is a PERL script, so an
+		# interpreterless container leaves a visible error in the artifact instead
+		# of a silently empty file.
+		"$annotate_bin" --threshold=99 "$ms_out" >"$tmp_dir/annotate-$ms_name.txt" 2>&1
 		ms_totals=$(grep '^TOTALS' "$tmp_dir/annotate-$ms_name.txt" | tail -1 | tr -dc '0-9')
 		if [ -n "$ms_totals" ]; then
 			[ "$ms_totals" = "$ms_ir" ] || {
@@ -283,6 +286,8 @@ measure_script() {
 				echo "     refusing to gate on an ambiguous number — see $ms_out" >&2
 				exit 1
 			}
+		else
+			echo "WARN: $annotate_bin produced no TOTALS for '$ms_name' — cross-check skipped, see annotate-$ms_name.txt" >&2
 		fi
 	fi
 

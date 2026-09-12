@@ -51,7 +51,7 @@ jobs:
       - name: Install tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends cmake valgrind jq
+          apt-get install -y --no-install-recommends cmake valgrind jq perl
 
       - name: Configure + build bench
         run: |

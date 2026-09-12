@@ -57,12 +57,14 @@ jobs:
         with:
           persist-credentials: false
 
-      # gcc image ships cmake's build deps but not cmake/valgrind/jq themselves.
-      # git IS present (buildpack-deps base) for the actions/checkout fallback.
+      # gcc image ships cmake's build deps but not cmake/valgrind/jq/perl
+      # themselves. git IS present (buildpack-deps base) for actions/checkout.
+      # perl: callgrind_annotate (the Ir cross-check + top-N report) is a
+      # perl script and fails SILENTLY without it.
       - name: Install tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends cmake valgrind jq
+          apt-get install -y --no-install-recommends cmake valgrind jq perl
 
       - name: Configure bench (Release = -O3, no -march=native)
         run: cmake -B build/bench -S tests -DCMAKE_BUILD_TYPE=Release
