@@ -30,6 +30,7 @@ extern char *envCurveNames[];
 #include "UserEnvCurve.h"
 
 #include <math.h>   // lround (was (int)(x + .5f) -- bugprone-incorrect-roundings)
+#include <string.h>  // memcmp (8.1 v2 magic gate; no alignment-sensitive casts)
 
 UserEnvCurve::UserEnvCurve() {
     for (int k=0; k<4; k++) {
@@ -56,9 +57,18 @@ void UserEnvCurve::loadUserEnvCurves() {
 
         int sizeBin = checkSize(fileName);
 
+        // 8.1 (B5): versioned bin cache (magic "P3C2"). 0 = legacy layout
+        // (no magic): untrustworthy — an already-poisoned cache is count/
+        // size-indistinguishable — so fall through to the txt path and let
+        // the v2 save replace the same file in place (one-shot migration).
+        // 1 = v2 loaded; -1 = v2 rejected (numberOfSampleError already
+        // applied — NO txt fallback). Legacy-without-txt takes the no-file
+        // default (linear ramp).
+        bool tryTxt = true;
         if (sizeBin != -1) {
-            loadUserEnvCurveFromBin(f, fileName);
-        } else {
+            tryTxt = (loadUserEnvCurveFromBin(f, fileName) == 0);
+        }
+        if (tryTxt) {
             fsu_->copy_string(fileName, USERCURVE_FILENAME_TXT);
             fileName[20] = (char)('1' + f);
 
@@ -91,21 +101,74 @@ void UserEnvCurve::loadUserEnvCurves() {
     }
 }
 
-void UserEnvCurve::loadUserEnvCurveFromBin(int f, const char* fileName) {
-    load(fileName, 0, userEnvCurveNames[f], 4);
+/*
+ * 8.1 (B5): v2 bin loader. Layout: magic "P3C2" @0, name[4] @4, uint16
+ * count @8, float32 body @10 (266 bytes). Returns 0 = legacy layout (no
+ * magic — no state mutation, caller falls back to the source txt),
+ * 1 = v2 loaded, -1 = v2 rejected via numberOfSampleError. This is the
+ * loader's FIRST-EVER validation: the old one fed the raw count straight
+ * into numberOfSample*4 — a garbage count multiplied into an unbounded
+ * body read that overran the 256-byte curve slot into neighboring memory.
+ */
+int UserEnvCurve::loadUserEnvCurveFromBin(int f, const char* fileName) {
+    char magic[4];
+    if (load(fileName, 0, magic, 4) != 4) {
+        // Shorter than any header: corrupt (e.g. an interrupted save) —
+        // reject rather than guess the layout.
+        numberOfSampleError(f);
+        return -1;
+    }
+    if (memcmp(magic, USERCURVE_BIN_MAGIC, 4) != 0) {
+        return 0;
+    }
+
+    // -1-style pre-set (B1 mirror), but on a LOCAL uint16: the old plan of
+    // pre-setting the 4-byte member to -1 and loading 2 bytes leaves the
+    // high half 0xFFFF — a valid count of 64 would read as 0xFFFF0040 and
+    // reject. A fresh local pre-set to 0xFFFF keeps the partial-read
+    // guarantee (any short write leaves 0xFF bits in the window, never 64)
+    // and makes stale member values impossible. Only exactly 64 with a
+    // full 266-byte extent may reach the body read — that bounds the
+    // previously unbounded numberOfSample*4 access to the 256-byte slot.
+    uint16_t count = 0xFFFF;
+    load(fileName, 8, &count, 2);
+    numberOfSample = count;
+    int sizeBin = checkSize(fileName);
+    if (numberOfSample != 64 || sizeBin < 10 + 64 * 4) {
+        numberOfSampleError(f);
+        return -1;
+    }
+    // 8.1 review: check every read — a name/body short-read (transient I/O)
+    // must reject, not publish stale/partial memory as success.
+    if (load(fileName, 4, userEnvCurveNames[f], 4) != 4) {
+        numberOfSampleError(f);
+        return -1;
+    }
     envCurveNames[3 + f] = userEnvCurveNames[f];
-
-    load(fileName, 4, &numberOfSample, 2);
-
-    int sampleSize = numberOfSample * 4;
-    load(fileName, 6, userEnvCurves[f], sampleSize);
+    if (load(fileName, 10, userEnvCurves[f], 64 * 4) != 64 * 4) {
+        numberOfSampleError(f);
+        return -1;
+    }
+    return 1;
 }
 
 void UserEnvCurve::saveUserEnvCurveToBin(int f, const char* fileName) {
-    save(fileName, 0, userEnvCurveNames[f], 4);
-    save(fileName, 4, &numberOfSample, 2);
-    int sampleSize = numberOfSample * 4;
-    save(fileName, 6, userEnvCurves[f], sampleSize);
+    // 8.1 (B5): v2 layout — magic @0, name @4, uint16 count @8, 256-byte
+    // body @10 (266 bytes total). The magic is written LAST as a commit
+    // marker (8.1 review): an interrupted save that had already written the
+    // magic would leave a magic-bearing partial file that rejects with no
+    // txt fallback; magic-less, it regenerates from the txt on next boot.
+    // Magic bytes copied per-char from the shared define (no const-cast for
+    // save()'s void*, no memcpy-from-literal analyzer complaint on a
+    // deliberately raw 4-byte buffer).
+    char magic[4];
+    for (int i = 0; i < 4; i++) {
+        magic[i] = USERCURVE_BIN_MAGIC[i];
+    }
+    save(fileName, 4, userEnvCurveNames[f], 4);
+    save(fileName, 8, &numberOfSample, 2);
+    save(fileName, 10, userEnvCurves[f], 64 * 4);
+    save(fileName, 0, magic, 4);
 }
 
 void UserEnvCurve::loadUserEnvCurveFromTxt(int f, const char* fileName, int size) {
@@ -113,11 +176,36 @@ void UserEnvCurve::loadUserEnvCurveFromTxt(int f, const char* fileName, int size
     floatRead = 0;
 
     while (floatRead != numberOfSample) {
+        // 8.1 (B5): EOF guards, mirroring the waveform loader. A truncated
+        // txt (declares 64, provides fewer) used to parse stale lineBuffer
+        // bytes past the populated part, normalize the poisoned curve, and
+        // persist it as the bin cache. Reject through numberOfSampleError
+        // BEFORE parsing anything stale.
+        if (readIndex >= size) {
+            numberOfSampleError(f);
+            return;
+        }
         int toRead = (size - readIndex > LINE_BUFFER_SIZE) ? LINE_BUFFER_SIZE : size - readIndex;
-        load(fileName, readIndex,  (void*)&lineBuffer, toRead);
+        if (toRead <= 0) {
+            numberOfSampleError(f);
+            return;
+        }
+        if (load(fileName, readIndex,  (void*)&lineBuffer, toRead) != toRead) {
+            numberOfSampleError(f);
+            return;
+        }
+        // NUL-terminate the populated bytes: stof stops at NUL and
+        // isSeparator(NUL) is false, so every parse/skip loop in the fill
+        // routine is structurally bounded. Reads are <= LINE_BUFFER_SIZE
+        // (64) into the 1024-byte lineBuffer — always room for the NUL.
+        lineBuffer[toRead] = 0;
 
         int used = fillUserEnvCurveFromTxt(f, lineBuffer, toRead, (readIndex+toRead) >= size);
         if (used < 0) {
+            return;  // fill already routed through numberOfSampleError
+        }
+        if (used == 0 || used > toRead) {
+            numberOfSampleError(f);
             return;
         }
         readIndex += used;
@@ -137,7 +225,10 @@ int UserEnvCurve::fillUserEnvCurveFromTxt(int f, char* buffer, int filled, bool 
                 index++;
             }
             int b = 0;
-            while (b<4 && !fsu_->isSeparator(buffer[index])) {
+            // 8.1 review (B5): NUL is not a separator — without this bound a
+            // name cut by the chunk edge copied the NUL and then up to 3
+            // STALE bytes past the populated region into the name.
+            while (b<4 && buffer[index] != 0 && !fsu_->isSeparator(buffer[index])) {
                 userEnvCurveNames[f][b++] = buffer[index++];
             }
             // complete with space
@@ -159,8 +250,46 @@ int UserEnvCurve::fillUserEnvCurveFromTxt(int f, char* buffer, int filled, bool 
             index += floatSize;
         }
 
-        userEnvCurves[f][floatRead++] = fsu_->stof(&buffer[index], floatSize);
-        index += floatSize;
+        userEnvCurves[f][floatRead] = fsu_->stof(&buffer[index], floatSize);
+        // 8.1 review (B5): skip separators explicitly, then require an actual
+        // token to be present. stof's skip phase swallows a trailing
+        // separator run and returns 0.0f with a POSITIVE floatSize — a file
+        // declaring 64 but providing 63 floats + trailing whitespace used to
+        // fabricate the final 0.0 sample and persist it as a v2 cache.
+        while (fsu_->isSeparator(buffer[index])) {
+            index++;
+        }
+        if (buffer[index] == 0) {
+            if (last) {
+                // File ended before the declared count.
+                return numberOfSampleError(f);
+            }
+            // Non-final chunk: the token starts past this chunk's edge (a
+            // separator run or a >40-byte token beat the re-read margin).
+            // Stop WITHOUT counting a sample; the next read delivers the
+            // token whole.
+            break;
+        }
+        int tokenStart = index;
+        userEnvCurves[f][floatRead] = fsu_->stof(&buffer[index], floatSize);
+        // 8.1 (B5): floatSize == 0 means the token could not be consumed
+        // within the populated bytes (stof stopped at the NUL) — the file
+        // ended before the declared count. Reject before consuming it.
+        if (floatSize == 0) {
+            return numberOfSampleError(f);
+        }
+        // 8.1 review (B5): a token whose digits reach the NUL without a
+        // closing separator is TRUNCATED by the chunk boundary, not
+        // complete — parsing its prefix plus its remainder as two samples
+        // corrupts a valid file (phantom sample + shift). Defer on a
+        // non-final chunk: return the token start so the next read
+        // re-parses the whole token. (On a final chunk the NUL is the true
+        // EOF, so the token is complete.)
+        if (!last && buffer[tokenStart + floatSize] == 0) {
+            return tokenStart;
+        }
+        floatRead++;
+        index = tokenStart + floatSize;
 
         // Stop if index > (filled - 30) Or if last && floatRead == 1024
         bStop = (!last && index > (filled - 40)) || floatRead == numberOfSample;
@@ -216,6 +345,11 @@ void UserEnvCurve::normalize(float* buffer, int numberOfSamples) {
 int UserEnvCurve::numberOfSampleError(int f) {
     numberOfSample = 0;
     userEnvCurveNames[f][0] = '#';
+    // A4c (8.1): the waveform twin repoints oscShapeNames[8+f], but the '#'
+    // marker never reached envCurveNames[3+f] — the curve row list kept
+    // showing "Usr1".."Usr4" on a cold boot after a rejected load. Repoint
+    // like the twin so the error is visible.
+    envCurveNames[3 + f] = userEnvCurveNames[f];
     // 7.7: like userWaveform, the curve table is not zeroed at boot —
     // reset the rejected slot to the no-file linear-ramp default so a
     // wrongly selected curve degrades to stock behavior, not power-on garbage.

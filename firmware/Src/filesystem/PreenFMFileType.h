@@ -43,6 +43,13 @@ enum FILE_ENUM {
 #define USERCURVE_FILENAME_TXT               "0:/pfm3/envcurve/usr#.txt"
 #define USERCURVE_FILENAME_BIN               "0:/pfm3/envcurve/usr#.bin"
 
+// 8.1 (B5): v2 cache format identifiers for the user-waveform / user-env-
+// curve bin caches. A previously poisoned cache is count/size-indistinguishable
+// from a valid one, so every legacy (magic-less) cache is regenerated from
+// its source txt exactly once; compared with memcmp, never as a cast int.
+#define USERWAVEFORM_BIN_MAGIC               "P3W2"
+#define USERCURVE_BIN_MAGIC                  "P3C2"
+
 #define DX7_PACKED_PATCH_SIZED 128
 #define DX7_UNPACKED_PATCH_SIZED 155
 

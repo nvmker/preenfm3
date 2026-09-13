@@ -1308,9 +1308,11 @@ void Sequencer::queueNote(uint8_t instrument, uint8_t note, uint8_t velocity) {
     action.timbre = instrument;
     action.param1 = note;
     action.param2 = velocity;
-    if (likely(asyncActions_.hasRoomFor(1))) {
-        asyncActions_.insert(action);
-    } else {
+    // 8.1 (C15): contract-enforced form of the old hasRoomFor(1)+insert
+    // pair — insertChecked refuses and leaves the ring untouched when full
+    // (plain insert would advance the tail onto the head and destroy every
+    // pending event). Behavior identical: drop the newest event, count it.
+    if (!asyncActions_.insertChecked(action)) {
         // Main loop stalled (e.g. SD access); drop the newest event rather
         // than overwrite an unread one.
         droppedAsyncActions_++;
@@ -1323,9 +1325,9 @@ void Sequencer::queueNewSeqValue(uint8_t timbre, uint8_t seqValue, uint8_t newVa
     action.timbre = timbre;
     action.param1 = seqValue;
     action.param2 = newValue;
-    if (likely(asyncActions_.hasRoomFor(1))) {
-        asyncActions_.insert(action);
-    } else {
+    // 8.1 (C15): see queueNote — insertChecked enforces the reservation the
+    // old hasRoomFor(1)+insert pair could only assume.
+    if (!asyncActions_.insertChecked(action)) {
         droppedAsyncActions_++;
     }
 }

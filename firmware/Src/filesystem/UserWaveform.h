@@ -36,7 +36,9 @@ protected:
 private:
     void loadUserWaveformFromTxt(int f, const char* fileName, int size);
     int fillUserWaveFormFromTxt(int f, char* buffer, int filled, bool last);
-    void loadUserWaveformFromBin(int f, const char* fileName);
+    // 8.1 (B5): 0 = legacy layout (no magic; caller regenerates from txt),
+    // 1 = v2 loaded, -1 = v2 rejected (numberOfSampleError applied).
+    int loadUserWaveformFromBin(int f, const char* fileName);
     void saveUserWaveformToBin(int f, const char* fileName);
     void interpolate(float* source, int sourceNumberOfSamples, int targetNumberOfSamples);
     void normalize(float* buffer, int numberOfSamples);
