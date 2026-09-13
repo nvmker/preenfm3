@@ -258,6 +258,12 @@ private:
     char bankNumber[NUMBER_OF_TIMBRES];
     char bankNumberLSB[NUMBER_OF_TIMBRES];
 
+    // 8.1 (C15): asyncActions overflow accounting — the file-global ring is
+    // fed from two unguarded insert() sites (PROGRAM_CHANGE / NRPN 127,127);
+    // one overflow insert used to destroy every pending action. Now counted
+    // here (Sequencer precedent) whenever insertChecked refuses.
+    uint32_t droppedAsyncActions_;
+
 };
 
 #endif /* MIDIDECODER_H_ */

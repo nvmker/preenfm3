@@ -69,6 +69,24 @@ public:
 	    this->tail = (this->tail == size-1) ? 0 : this->tail + 1;
 	}
 
+	// C15 (8.1): WHY this exists — insert() on a full ring is NOT a checked
+	// append: it advances the tail onto the head, getCount() then reads 0,
+	// and a single overflow insert destroys EVERY pending entry. Producers
+	// that cannot prove reservation must use this variant, which leaves the
+	// ring completely untouched on failure (caller drops the newest element
+	// and may count the drop).
+	// SPSC caveat: like hasRoomFor(), this checks ONE element. A
+	// multi-element message must reserve capacity atomically up front with
+	// hasRoomFor(n) (consumer only frees space between checks); n separate
+	// insertChecked calls can still fail mid-message.
+	bool insertChecked(T element) {
+	    if (isFull()) {
+	        return false;
+	    }
+	    insert(element);
+	    return true;
+	}
+
 	T remove() {
 	    T element = this->buf[this->head];
 	    this->head = (this->head == size-1) ? 0 : this->head + 1;

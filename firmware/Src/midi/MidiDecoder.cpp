@@ -73,6 +73,9 @@ MidiDecoder::MidiDecoder() {
     currentEventState.index = 0;
     this->isExternalMidiClockStarted = false;
     this->midiClockCpt = 0;
+    // 8.1 (C15): mirror the device's BSS zero-init for the drop counter
+    // (host tests instantiate MidiDecoder as a stack/global member).
+    this->droppedAsyncActions_ = 0;
     this->runningStatus = 0;
     this->sysexOverflowed = false;
     for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
@@ -373,7 +376,12 @@ void MidiDecoder::midiEventReceived(MidiEvent& midiEvent) {
             newAction.action.param1 = bankNumber[timbres[0]];
             newAction.action.param2 = bankNumberLSB[timbres[0]];
             newAction.action.param3 = midiEvent.value[0];
-            asyncActions.insert(newAction);
+            // 8.1 (C15): insert() on a full ring advances the tail onto the
+            // head — one overflow action used to destroy every pending one.
+            // Drop the newest instead and count it.
+            if (!asyncActions.insertChecked(newAction)) {
+                droppedAsyncActions_++;
+            }
         }
         break;
     case MIDI_SONG_POSITION:
@@ -993,7 +1001,11 @@ void MidiDecoder::decodeNrpn(int timbre) {
         asyncAction.fullBytes = 0l;
         asyncAction.action.actionType = SEND_PATCH_AS_NRPN;
         asyncAction.action.timbre = timbre;
-        asyncActions.insert(asyncAction);
+        // 8.1 (C15): same overflow guard as the PROGRAM_CHANGE site — drop
+        // the newest action and count it instead of emptying the ring.
+        if (!asyncActions.insertChecked(asyncAction)) {
+            droppedAsyncActions_++;
+        }
     }
 }
 

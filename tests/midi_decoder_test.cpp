@@ -492,6 +492,61 @@ TEST_F(MidiNrpn, ParamMsb127WithLsb127EnqueuesSendPatchAsNrpn) {
     EXPECT_EQ(a.action.timbre, 0);
 }
 
+TEST_F(MidiNrpn, SendPatchNrpnOnFullAsyncRingIsDroppedNotDestructive) {
+    // 8.1 (C15): the NRPN 127/127 site used plain insert() — on a FULL ring
+    // that advances the tail onto the head, getCount() reads 0, and one
+    // overflow action destroys EVERY pending entry. With insertChecked the
+    // newest action is dropped instead and the ring is left untouched.
+    // RingBuffer<_, 16> sacrifices one slot: usable capacity 15. Fillers use
+    // plain insert() — into an EMPTY ring it cannot overflow — so this test
+    // compiles and runs identically before and after the migration.
+    AsyncAction filler;
+    filler.fullBytes = 0;
+    filler.action.actionType = LOAD_PRESET;
+    filler.action.param6 = 0x5A;  // recognizable head marker
+    for (int i = 0; i < 15; i++) {
+        asyncActions.insert(filler);
+    }
+    ASSERT_EQ(asyncActions.getCount(), 15);
+    ASSERT_TRUE(asyncActions.isFull());
+
+    FeedNrpn(decoder_, /*paramMSB=*/127, /*paramLSB=*/127,
+             /*valueMSB=*/0, /*valueLSB=*/0);
+
+    EXPECT_EQ(asyncActions.getCount(), 15)
+        << "a dropped overflow action must leave the ring untouched";
+    EXPECT_TRUE(asyncActions.isFull());
+    // FIFO order intact — the head is still the first filler.
+    AsyncAction head = asyncActions.remove();
+    EXPECT_EQ(head.action.param6, 0x5A);
+    EXPECT_EQ(asyncActions.getCount(), 14);
+    // 8.1: the drop is counted — exactly one overflow on this decoder.
+    EXPECT_EQ(decoder_.droppedAsyncActions_, 1u);
+}
+
+TEST_F(MidiNrpn, ProgramChangeOnFullAsyncRingIsDroppedNotDestructive) {
+    // 8.1 (C15): same guard for the PROGRAM_CHANGE enqueue site (gated by
+    // MIDICONFIG_PROGRAM_CHANGE, =1 in this fixture). Fillers use plain
+    // insert() into an empty ring (see the NRPN test above).
+    AsyncAction filler;
+    filler.fullBytes = 0;
+    filler.action.actionType = SEND_PATCH_AS_NRPN;
+    filler.action.param6 = 0xA5;
+    for (int i = 0; i < 15; i++) {
+        asyncActions.insert(filler);
+    }
+    ASSERT_EQ(asyncActions.getCount(), 15);
+
+    Feed({0xC0, 42});  // PROGRAM_CHANGE on channel 1 -> timbre 0
+
+    EXPECT_EQ(asyncActions.getCount(), 15)
+        << "a dropped overflow LOAD_PRESET must leave the ring untouched";
+    AsyncAction head = asyncActions.remove();
+    EXPECT_EQ(head.action.param6, 0xA5);
+    // 8.1: droppedAsyncActions_ incremented by the overflow LOAD_PRESET.
+    EXPECT_EQ(decoder_.droppedAsyncActions_, 1u);
+}
+
 TEST_F(MidiNrpn, ParamMsb2RoutesToStepSequencerValue) {
     // paramMSB in [2,4) -> whichStepSeq = paramMSB-2; decodeNrpn calls
     // synth->setNewStepValueFromMidi(timbre, whichStepSeq, step, value). The
