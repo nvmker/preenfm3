@@ -521,6 +521,47 @@ TEST_F(UserWaveformTest, OneSampleShortWithTrailingWhitespaceIsRejected) {
     EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/waveform/usr1.bin"));
 }
 
+TEST_F(UserWaveformTest, GarbageFinalTokenIsRejectedNotCached) {
+    // Copilot review: stof's skip phase consumed a digitless token ("abc")
+    // as floatSize > 0 with value 0.0f — it used to be accepted as the 64th
+    // sample, normalized, and cached. Digitless tokens now reject.
+    std::string txt = "GARB 64\n";
+    char buf[32];
+    for (int i = 0; i < 63; i++) {
+        snprintf(buf, sizeof(buf), "%.3f ", i / 63.0f);
+        txt += buf;
+    }
+    txt += " abc ";
+    fatfsShimInjectString("0:/pfm3/waveform/usr1.txt", txt.c_str());
+
+    uw_.loadUserWaveforms();
+
+    EXPECT_EQ(uw_.userWaveFormNames[0][0], '#');
+    for (int s = 0; s < 1024; s++) {
+        EXPECT_FLOAT_EQ(userWaveform[0][s], 0.0f) << "sample " << s;
+    }
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/waveform/usr1.bin"));
+}
+
+TEST_F(UserWaveformTest, InterruptedInitialSaveFallsBackToTxt) {
+    // Copilot review: a 0..3-byte bin (interrupted FIRST save — nothing
+    // committed, the magic is written last) must be treated as uncommitted,
+    // not corrupt: the valid txt regenerates it instead of a permanent '#'
+    // with no txt fallback.
+    fatfsShimInjectBytes("0:/pfm3/waveform/usr2.bin", "AB", 2);
+    std::string txt = MakeTxt("NEW9", 64, -1.0f, 2.0f / 63.0f);
+    fatfsShimInjectString("0:/pfm3/waveform/usr2.txt", txt.c_str());
+
+    uw_.loadUserWaveforms();
+
+    EXPECT_NEAR(userWaveform[1][0], -1.0f, 0.01f);
+    EXPECT_NEAR(userWaveform[1][63], 1.0f, 0.01f);
+    EXPECT_EQ(oscShapeNames[8 + 1][0], 'N');
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/waveform/usr2.bin", after));
+    EXPECT_EQ(memcmp(after.data(), USERWAVEFORM_BIN_MAGIC, 4), 0);
+}
+
 TEST_F(UserWaveformTest, LegacyBinWithTxtIsRegeneratedAsV2) {
     // A legacy (magic-less) bin is untrustworthy — a poisoned one is
     // count/size-indistinguishable — so it is regenerated from the source

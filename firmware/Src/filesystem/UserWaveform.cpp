@@ -235,6 +235,23 @@ int UserWaveform::fillUserWaveFormFromTxt(int f, char* buffer, int filled, bool 
         if (floatSize == 0) {
             return numberOfSampleError(f);
         }
+        // Copilot review: stof's skip phase reports skipped non-numeric
+        // characters as consumed — a digitless token ("abc", "-") yields
+        // 0.0f with floatSize > 0 and was accepted as a sample. A valid
+        // numeric token always contains at least one digit; reject
+        // digitless tokens so malformed files cannot be normalized+cached.
+        {
+            bool hasDigit = false;
+            for (int k = tokenStart; k < tokenStart + floatSize; k++) {
+                if (buffer[k] >= '0' && buffer[k] <= '9') {
+                    hasDigit = true;
+                    break;
+                }
+            }
+            if (!hasDigit) {
+                return numberOfSampleError(f);
+            }
+        }
         // 8.1 review (B5): a token whose digits reach the NUL without a
         // closing separator is TRUNCATED by the chunk boundary, not
         // complete — parsing its prefix plus its remainder as two samples
@@ -278,13 +295,12 @@ int UserWaveform::numberOfSampleError(int f) {
  */
 int UserWaveform::loadUserWaveformFromBin(int f, const char* fileName) {
     char magic[4];
-    if (load(fileName, 0, magic, 4) != 4) {
-        // Shorter than any header: corrupt (e.g. an interrupted save) —
-        // reject rather than guess the layout.
-        numberOfSampleError(f);
-        return -1;
-    }
-    if (memcmp(magic, USERWAVEFORM_BIN_MAGIC, 4) != 0) {
+    // Copilot review: ANY failure to read a committed magic — including a
+    // 0..3-byte file left by an interrupted initial save (the magic is
+    // written LAST as the commit marker) — means "no committed v2 cache",
+    // not corruption: return 0 so the caller regenerates from the canonical
+    // txt. Only a PRESENT magic with invalid count/extent/body rejects (-1).
+    if (load(fileName, 0, magic, 4) != 4 || memcmp(magic, USERWAVEFORM_BIN_MAGIC, 4) != 0) {
         return 0;
     }
 
@@ -323,9 +339,6 @@ int UserWaveform::loadUserWaveformFromBin(int f, const char* fileName) {
     }
     oscShapeNames[8 + f] = userWaveFormNames[f];
 
-    waveTables[f + 8].max = (numberOfSample  -1);
-    waveTables[f + 8].precomputedValue = (waveTables[f + 8].max + 1) * waveTables[f + 8].useFreq * PREENFM_FREQUENCY_INVERSED;
-
     // 8.1 (B5): exact final chunk. The old loop always moved a full 512
     // bytes — the final one read/wrote past the declared body, which is
     // why legacy caches came out 512-rounded.
@@ -343,6 +356,11 @@ int UserWaveform::loadUserWaveformFromBin(int f, const char* fileName) {
         }
         loadIndex += chunk;
     }
+    // Copilot review: publish waveTables metadata only AFTER the body fully
+    // loaded — a mid-body read failure used to leave max/precomputedValue
+    // set on a zeroed slot (the same contract the txt path enforces).
+    waveTables[f + 8].max = (numberOfSample  -1);
+    waveTables[f + 8].precomputedValue = (waveTables[f + 8].max + 1) * waveTables[f + 8].useFreq * PREENFM_FREQUENCY_INVERSED;
     return 1;
 }
 

@@ -112,13 +112,12 @@ void UserEnvCurve::loadUserEnvCurves() {
  */
 int UserEnvCurve::loadUserEnvCurveFromBin(int f, const char* fileName) {
     char magic[4];
-    if (load(fileName, 0, magic, 4) != 4) {
-        // Shorter than any header: corrupt (e.g. an interrupted save) —
-        // reject rather than guess the layout.
-        numberOfSampleError(f);
-        return -1;
-    }
-    if (memcmp(magic, USERCURVE_BIN_MAGIC, 4) != 0) {
+    // Copilot review: ANY failure to read a committed magic — including a
+    // 0..3-byte file left by an interrupted initial save (the magic is
+    // written LAST as the commit marker) — means "no committed v2 cache",
+    // not corruption: return 0 so the caller regenerates from the canonical
+    // txt. Only a PRESENT magic with invalid count/extent/body rejects (-1).
+    if (load(fileName, 0, magic, 4) != 4 || memcmp(magic, USERCURVE_BIN_MAGIC, 4) != 0) {
         return 0;
     }
 
@@ -277,6 +276,23 @@ int UserEnvCurve::fillUserEnvCurveFromTxt(int f, char* buffer, int filled, bool 
         // ended before the declared count. Reject before consuming it.
         if (floatSize == 0) {
             return numberOfSampleError(f);
+        }
+        // Copilot review: stof's skip phase reports skipped non-numeric
+        // characters as consumed — a digitless token ("abc", "-") yields
+        // 0.0f with floatSize > 0 and was accepted as a sample. A valid
+        // numeric token always contains at least one digit; reject
+        // digitless tokens so malformed files cannot be normalized+cached.
+        {
+            bool hasDigit = false;
+            for (int k = tokenStart; k < tokenStart + floatSize; k++) {
+                if (buffer[k] >= '0' && buffer[k] <= '9') {
+                    hasDigit = true;
+                    break;
+                }
+            }
+            if (!hasDigit) {
+                return numberOfSampleError(f);
+            }
         }
         // 8.1 review (B5): a token whose digits reach the NUL without a
         // closing separator is TRUNCATED by the chunk boundary, not

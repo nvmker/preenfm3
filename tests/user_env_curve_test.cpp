@@ -391,6 +391,63 @@ TEST_F(UserEnvCurveTest, LegacyBinAloneIsRampNotRewritten) {
     EXPECT_EQ(after, legacy);  // NOT rewritten
 }
 
+TEST_F(UserEnvCurveTest, GarbageFinalTokenIsRejected) {
+    // Copilot review twin: a digitless final token ("abc") used to be
+    // accepted as a 0.0f sample (stof reports skipped chars as consumed)
+    // and the poisoned curve cached. Now rejected like any truncation.
+    std::string txt = "GARB 64\n";
+    char buf[32];
+    for (int i = 0; i < 63; i++) {
+        snprintf(buf, sizeof(buf), "%.3f ", i / 63.0f);
+        txt += buf;
+    }
+    txt += " abc ";
+    fatfsShimInjectString("0:/pfm3/envcurve/usr2.txt", txt.c_str());
+
+    uec_.loadUserEnvCurves();
+
+    EXPECT_EQ(uec_.userEnvCurveNames[1][0], '#');
+    for (int i = 0; i < 64; i++) {
+        EXPECT_FLOAT_EQ(userEnvCurves[1][i], i / 64.0f) << "sample " << i;
+    }
+    EXPECT_FALSE(fatfsShimFileExists("0:/pfm3/envcurve/usr2.bin"));
+}
+
+TEST_F(UserEnvCurveTest, InterruptedInitialSaveFallsBackToTxt) {
+    // Copilot review twin: a 2-byte bin (interrupted first save, no
+    // committed magic) is UNCOMMITTED — the valid txt regenerates it
+    // instead of a permanent '#' with the txt fallback blocked.
+    fatfsShimInjectBytes("0:/pfm3/envcurve/usr1.bin", "AB", 2);
+    std::string txt = MakeTxt("NEW9", 64, 0.0f, 1.0f / 63.0f);
+    fatfsShimInjectString("0:/pfm3/envcurve/usr1.txt", txt.c_str());
+
+    uec_.loadUserEnvCurves();
+
+    EXPECT_FLOAT_EQ(userEnvCurves[0][0], 0.0f);
+    EXPECT_FLOAT_EQ(userEnvCurves[0][63], 1.0f);
+    EXPECT_EQ(envCurveNames[3 + 0][0], 'N');
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/envcurve/usr1.bin", after));
+    EXPECT_EQ(memcmp(after.data(), USERCURVE_BIN_MAGIC, 4), 0);
+}
+
+TEST_F(UserEnvCurveTest, TwoByteBinAloneIsUncommittedNotError) {
+    // Uncommitted 2-byte bin with NO txt: no-file default (ramp), old file
+    // untouched — NOT a '#' error (nothing was committed, nothing rejected).
+    fatfsShimInjectBytes("0:/pfm3/envcurve/usr2.bin", "AB", 2);
+    for (int i = 0; i < 64; i++) userEnvCurves[1][i] = 42.0f;
+
+    uec_.loadUserEnvCurves();
+
+    EXPECT_NE(uec_.userEnvCurveNames[1][0], '#');
+    for (int i = 0; i < 64; i++) {
+        EXPECT_FLOAT_EQ(userEnvCurves[1][i], i / 64.0f) << "sample " << i;
+    }
+    std::vector<uint8_t> after;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/envcurve/usr2.bin", after));
+    EXPECT_EQ(after.size(), 2u);  // not rewritten without a txt
+}
+
 TEST_F(UserEnvCurveTest, OneSampleShortWithTrailingWhitespaceIsRejected) {
     // 8.1 review (B5): stof's skip phase swallows a trailing separator run
     // and returns 0.0f with a POSITIVE floatSize — a curve txt declaring 64
