@@ -19,6 +19,7 @@
 #undef private
 #include "Osc.h"
 
+#include <cmath>
 #include <cstring>
 #include <string>
 #include <vector>
