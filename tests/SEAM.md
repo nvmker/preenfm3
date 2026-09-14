@@ -616,7 +616,7 @@ computed then immediately overwritten. History: the bug was first locked as
 a preserved-as-golden characterization
 (`OscFreqEstimation.AllFrequencyTypesYieldKeyHzFormula` — all
 three types returning the same KEYHZ value) alongside the contrast proof
-that `Osc::newNote`'s switched DID differentiate. Phase 8.8 SW1 added the
+that `Osc::newNote`'s switch DID differentiate. Phase 8.8 SW1 added the
 missing breaks (red→green: the locked golden flipped to
 `OscFreqEstimation.EstimationDifferentiatesByFrequencyTypeLikeNewNote`,
 asserting each type's own `newNote`-mirrored formula, with a non-neutral
