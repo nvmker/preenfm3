@@ -899,6 +899,10 @@ void TftAlgo::drawAlgo(int algo) {
         switch (algoInfo[idx++]) {
             case OPERATORSYNC:
                 operatorMix_[algoInfo[idx] - 1] = OPERATORSYNC;
+                // Intentional fall-through: a synced operator draws like a
+                // normal operator (position + number) — the sync marker was
+                // recorded in operatorMix_ above.
+                __attribute__((fallthrough));
             case OPERATOR:
                 operatorPosition_[algoInfo[idx] - 1] = algoInfo[idx + 1];
                 drawOperator(algoInfo[idx], algoInfo[idx + 1]);

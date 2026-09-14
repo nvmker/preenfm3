@@ -576,6 +576,9 @@ void FMDisplayMidiController::encoderTurned(int encoderNumber, int ticks) {
                     button->valueOff = newValue;
                     displayButtonParam(editControl_, BUTTON_PARAM_LOW);
                 }
+                // 8.8 SW1: LOW must not fall into HIGH — turning the LOW
+                // encoder also shifted the HIGH (on) value by the same ticks.
+                break;
             }
             case 5: {
                 int newValue = button->valueOn + ticks;

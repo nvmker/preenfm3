@@ -506,7 +506,9 @@ void preenfm3_usbDataReceive(uint8_t *buffer) {
                     usartBufferOut.insert(buffer[usbr+3]);
                     SET_BIT(huart1.Instance->CR1, USART_CR1_TXEIE_TXFNFIE);
                 }
-                // Sysex - No thru
+                // Sysex - No thru; intentional fall-through: 3-byte channel
+                // events share the 0x4/0x7 USB forward tail below.
+                __attribute__((fallthrough));
             case 0x4:
             case 0x7:
                 usbMidi.insert(buffer[usbr + 1]);
@@ -522,7 +524,9 @@ void preenfm3_usbDataReceive(uint8_t *buffer) {
                     usartBufferOut.insert(buffer[usbr+2]);
                     SET_BIT(huart1.Instance->CR1, USART_CR1_TXEIE_TXFNFIE);
                 }
-                // Sysex - No thru
+                // Sysex - No thru; intentional fall-through: 2-byte events
+                // share the 0x6 USB forward tail below.
+                __attribute__((fallthrough));
             case 0x6:
                 usbMidi.insert(buffer[usbr + 1]);
                 usbMidi.insert(buffer[usbr + 2]);
