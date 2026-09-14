@@ -141,6 +141,12 @@ protected:
         ASSERT_FALSE(synth().hostVoice(voiceForSlot(0)).isNewNotePending())
             << "fixture: second press must be an established sounding note, "
                "not a pending target";
+        // Prove the promotion actually established note 67 (a canceled or
+        // dropped pending with the old note still sounding would also show
+        // pending==false + one playing voice + a two-entry stack).
+        ASSERT_EQ((int)(uint8_t)synth().hostVoice(voiceForSlot(0)).getNote(),
+                  67)
+            << "fixture: the sounding voice must be the promoted 67";
         ASSERT_EQ(playCount(), 1) << "fixture: MONO must hold a single voice";
         ASSERT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 2)
             << "fixture: stack must hold both presses";
@@ -442,12 +448,19 @@ TEST_F(SynthCore, MonoStackClearedAfterMixerLoad) {
     // (0 -> 2 here) — mirror that order.
     harness_->synthState()->mixerState.instrumentState_[1].numberOfVoices = 2;
     synth().newMixerValue(MIXER_VALUE_NUMBER_OF_VOICES, 1, 0.0f, 2.0f);
-    const int t1Slot0 = (int) static_cast<uint8_t>(
-        synth().getTimbre(1)->voiceNumber_[0]);
-    const int t1Slot1 = (int) static_cast<uint8_t>(
-        synth().getTimbre(1)->voiceNumber_[1]);
+    // Keep the slots SIGNED: voiceNumber_ holds int8_t with -1 meaning
+    // unassigned — casting through uint8_t first would turn -1 into 255
+    // and make the range checks vacuously pass (review round 3, F5).
+    const int t1Slot0 =
+        (int)synth().getTimbre(1)->voiceNumber_[0];
+    const int t1Slot1 =
+        (int)synth().getTimbre(1)->voiceNumber_[1];
     ASSERT_GE(t1Slot0, 0) << "production-faithful two-voice timbre";
+    ASSERT_LE(t1Slot0, MAX_NUMBER_OF_VOICES - 1)
+        << "production-faithful two-voice timbre";
     ASSERT_GE(t1Slot1, 0) << "production-faithful two-voice timbre";
+    ASSERT_LE(t1Slot1, MAX_NUMBER_OF_VOICES - 1)
+        << "production-faithful two-voice timbre";
     ASSERT_NE(t1Slot0, t1Slot1) << "production-faithful two-voice timbre";
     auto* p1 = synth().getTimbre(1)->getParamRaw();
     p1->engine1.playMode = PLAY_MODE_MONO;
