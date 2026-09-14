@@ -281,7 +281,11 @@ TEST(SeqSerialization, Version1BufferParsesAndPreservesTempo) {
 
 #include "Synth.h"
 #include "FMDisplaySequencer.h"
+#include "SequenceBank.h"
+#include "FileSystemUtils.h"
+#include "fatfs.h"
 
+#include <vector>
 #include <new>  // placement new (fixture SetUp constructs into aligned backing)
 
 namespace {
@@ -1623,4 +1627,107 @@ TEST_F(SequencerPhase2, TripClearsArpeggiatorStackBeforeLaterClocks) {
     }
     EXPECT_FALSE(retriggered)
         << "a trip-cleared arp stack must not retrigger on later internal clocks";
+}
+
+// ===========================================================================
+// Phase 8.2 — B8: valid-load voice cleanup (owner decision 2026-09-14:
+// quick release + arp reset + MONO stack clear; rejected loads mutate
+// nothing). A successful slot load replaces the note-off events for notes
+// the previous sequence left sounding — without cleanup, releasing the held
+// key recalls an orphaned note forever.
+// ===========================================================================
+
+class SeqLoadCleanup : public SequencerPhase2 {
+protected:
+    // Drive MONO timbre 0 into the classic orphan state: 60 held, 64
+    // sounding on the single mono voice (stack = [60, 64]).
+    void HoldMonoPair() {
+        auto* p = synth_.getTimbre(0)->getParamRaw();
+        p->engine1.playMode = PLAY_MODE_MONO;
+        synth_.noteOn(0, 60, 100);
+        synth_.noteOn(0, 64, 100);
+        ASSERT_EQ(synth_.getTimbre(0)->getMonoStackSizeForTest(), 2);
+        ASSERT_TRUE(synth_.isPlaying());
+        // Render a few blocks so the legato target note becomes "played"
+        // (the trip-test pattern): the MONO second note leaves a pending
+        // retrigger on the voice until the first render promotes it, and a
+        // quick-release into that pending state would re-fire it.
+        for (int i = 0; i < 4; i++) RenderOne();
+        ASSERT_TRUE(synth_.isPlaying());
+    }
+    void RenderOne() {
+        int32_t b1[64], b2[64], b3[64];
+        synth_.buildNewSampleBlock(b1, b2, b3);
+        blocks_++;
+    }
+    // Build a bank file with one slot saved from the live sequencer and
+    // return its PFM3File descriptor + on-disk path.
+    PFM3File SaveSlot(const char* name12) {
+        fatfsShimReset();
+        fatfsShimMkdir("0:/pfm3");
+        fsu_ = new FileSystemUtils;
+        bank_ = new SequenceBank;
+        bank_->setFileSystemUtils(fsu_);
+        bank_->setSequencer(seq_);
+        bank_->createSequenceFile(name12);
+        PFM3File file = {};
+        strcpy(file.name, name12);
+        file.fileType = FILE_OK;
+        bank_->saveSequence(&file, 0, file.name);
+        return file;
+    }
+    int blocks_ = 0;
+    FileSystemUtils* fsu_ = nullptr;
+    SequenceBank* bank_ = nullptr;
+};
+
+TEST_F(SeqLoadCleanup, ValidLoadQuickReleasesVoicesAndClearsMonoStack) {
+    HoldMonoPair();
+    PFM3File file = SaveSlot("b8cleanup    ");
+
+    bank_->loadSequence(&file, 0);  // accepted load -> B8 cleanup
+
+    EXPECT_EQ(synth_.getTimbre(0)->getMonoStackSizeForTest(), 0)
+        << "valid load must invalidate the MONO held-note stack";
+    // Quick release: the sounding voice retires within a few rendered
+    // blocks (pre-fix it would ring until the outer note-off arrived).
+    bool retired = !synth_.isPlaying();
+    for (int i = 0; i < 200 && !retired; i++) {
+        RenderOne();
+        retired = !synth_.isPlaying();
+    }
+    EXPECT_TRUE(retired) << "valid load must quick-release the sounding voice";
+
+    // The orphaned note-off cannot recall anything: pre-fix cleanup-less
+    // behavior, releasing 64 recalled 60 and the synth kept sounding.
+    synth_.noteOff(0, 64);
+    for (int i = 0; i < 8; i++) RenderOne();
+    EXPECT_FALSE(synth_.isPlaying())
+        << "note-off after cleanup must not recall an orphaned note";
+}
+
+TEST_F(SeqLoadCleanup, RejectedLoadLeavesVoicesAndMonoStackUntouched) {
+    HoldMonoPair();
+    PFM3File file = SaveSlot("b8reject     ");
+
+    // Corrupt only the inner state-version byte of the saved slot.
+    char path[64];
+    snprintf(path, sizeof(path), "0:/pfm3/%s", file.name);
+    std::vector<uint8_t> data;
+    ASSERT_TRUE(fatfsShimExtract(path, data));
+    data[4 + 0] = 0x07;
+    fatfsShimInjectBytes(path, data.data(), data.size());
+
+    bank_->loadSequence(&file, 0);  // rejected: zero mutation
+
+    EXPECT_EQ(synth_.getTimbre(0)->getMonoStackSizeForTest(), 2)
+        << "a rejected load must not touch MONO runtime state";
+    EXPECT_TRUE(synth_.isPlaying())
+        << "a rejected load must leave sounding voices alone";
+
+    // And the sequence itself still behaves: releasing 64 recalls 60.
+    synth_.noteOff(0, 64);
+    EXPECT_TRUE(synth_.isPlaying()) << "recall must still work after rejection";
+    int32_t b1[64], b2[64], b3[64];
+    (void)b1; (void)b2; (void)b3;
 }

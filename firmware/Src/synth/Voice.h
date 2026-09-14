@@ -69,6 +69,10 @@ public:
 
     void noteOnWithoutPop(short note, float newNoteFrequency, short velocity, uint32_t index, float phase = 0.25f);
     void noteOn(short note, float newNoteFrequency, short velocity, uint32_t index, float phase = 0.25f);
+    // B8 (phase 8.2): drop a pending MONO/legato retrigger without killing
+    // the voice -- a quick-released voice would otherwise re-fire its pending
+    // target when the release decay reaches DEAD (endNoteOrBeginNextOne).
+    void cancelPendingNoteOn();
     void glideToNote(short newNote, float newNoteFrequency);
     void killNow();
     void noteOff();

@@ -659,6 +659,15 @@ void Voice::noteOffQuick() {
     lfoNoteOff();
 }
 
+void Voice::cancelPendingNoteOn() {
+    // B8 (phase 8.2): drop a pending MONO/legato retrigger without killing
+    // the voice. The natural release/quick-release decay then simply ends
+    // the note (endNoteOrBeginNextOne's no-pending path retires the voice)
+    // instead of re-firing the orphaned target.
+    this->newNotePending = false;
+    this->pendingNote = 0;
+}
+
 void Voice::killNow() {
     this->newNotePlayed = false;
     this->playing = false;

@@ -193,6 +193,20 @@ void Synth::stopArpegiator(int timbre) {
     timbres_[timbre].resetArpeggiator();
 }
 
+void Synth::clearMonoStack(int timbre) {
+    // B8 (phase 8.2): load-time voice cleanup releases the arp and every
+    // sounding voice, but only the MONO held-note stack invalidation
+    // prevents a later release from recalling an orphaned note.
+    timbres_[timbre].clearMonoStack();
+}
+
+void Synth::cancelPendingNoteOns(int timbre) {
+    // B8 (phase 8.2): a quick-released MONO/legato voice would re-fire its
+    // pending target when the release decay reaches DEAD — cancel the
+    // pending retriggers so the release is deterministic.
+    timbres_[timbre].cancelPendingNoteOns();
+}
+
 
 void Synth::allNoteOff(int timbre) {
     int numberOfVoices = this->synthState_->mixerState.instrumentState_[timbre].numberOfVoices;

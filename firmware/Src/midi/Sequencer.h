@@ -103,7 +103,15 @@ public:
 
     void getFullState(uint8_t* buffer, uint32_t *size);
     void getFullDefaultState(uint8_t* buffer, uint32_t *size, uint8_t seqNumber);
-    void setFullState(uint8_t* buffer);
+    // B6 (phase 8.2): returns acceptance. A buffer that fails the shared
+    // header predicate is NOT published and nothing is discarded — callers
+    // must not publish tables on a rejected buffer either.
+    bool setFullState(uint8_t* buffer);
+    // B6 (phase 8.2): shared inner-state header predicate (the single place
+    // the version + persisted-index sanity is defined). The SequenceBank
+    // loaders call it BEFORE any publication; setFullState re-runs it, so
+    // the two checks cannot drift apart.
+    static bool isAcceptableStateBuffer(const uint8_t* buffer);
 
     void setTempo(float newTempo);
 
@@ -275,6 +283,18 @@ private:
     void handleActionListTrip(uint8_t instrument);
     bool validateActionListInternal(uint8_t instrument, bool includeInactive,
             bool trimAfterReset);
+    // B7 (phase 8.2): pure structural inspection of one chain — no mutation,
+    // no counters. Shared by the runtime single-list validator and the
+    // load-time global pass so the walk contract cannot drift.
+    bool inspectActionListStructure(uint8_t instrument) const;
+    // Owner-checked chain reset: clears the walked nodes unless another
+    // instrument's list retains them (B7 load-time losers).
+    void resetActionListChain(uint8_t instrument, bool preserveOwnedNodes);
+    // B7 (phase 8.2): two-phase load validation — inspect every active chain
+    // without mutation, claim nodes for valid lists (lowest instrument wins
+    // a contested node), then reset losers without clearing survivor nodes.
+    // Returns the number of lists rejected.
+    uint8_t validateActionListsGlobalOnLoad();
     void resetMalformedActionList(uint8_t instrument, bool countLoadReset);
     void trimTrailingFreeActions();
     bool findInsertPosition(uint8_t instrument, uint16_t when, uint16_t liveLimit,

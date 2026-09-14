@@ -544,6 +544,21 @@ void Timbre::monoNoteRemove(char note) {
     }
 }
 
+void Timbre::clearMonoStack() {
+    // B10/B8 (phase 8.2): sequence-state or routing replacement breaks the
+    // note-on/off pairing this stack tracks. Zeroing the size is sufficient:
+    // every recall path (preenNoteOff -> monoNoteRecall) is gated on
+    // monoStackSize_ > 0, so no stale entry can retrigger a note whose
+    // note-off was replaced by the load.
+    monoStackSize_ = 0;
+}
+
+void Timbre::cancelPendingNoteOns() {
+    for (int k = 0; k < numberOfVoices_; k++) {
+        voices_[voiceNumber_[k]]->cancelPendingNoteOn();
+    }
+}
+
 void Timbre::monoNoteRecall() {
     // Retrigger the most recent still-held note exactly like a fresh press
     // of that note would (glide/legato/envelope semantics included).
@@ -3220,6 +3235,7 @@ float Timbre::hostMaxMatrixSource(SourceEnum source) {
     }
     return maximum;
 }
+
 #endif
 
 void Timbre::setMatrixSourceMPE(uint8_t channel, enum SourceEnum source, float newValue) {

@@ -18,6 +18,7 @@
 #include "Sequencer.h"
 #include <RingBuffer.h>
 #include <atomic>
+#include <string.h>  // memset for the B7 load-window owner scratch
 #include "Synth.h"
 #include "FMDisplaySequencer.h"
 
@@ -44,6 +45,14 @@ SeqMidiAction actions[SEQ_ACTION_SIZE];
 __attribute__((section(".ram_d3")))
 #endif
 StepSeqValue stepNotes[NUMBER_OF_STEP_SEQUENCES][256];
+
+// B7 (phase 8.2): load-window transient used ONLY inside
+// validateActionListsGlobalOnLoad() while the walk is paused. 0xFF =
+// unclaimed, otherwise the claiming instrument index. Nothing maintains it
+// at runtime — this is deliberately NOT the §8.3 persistent owner map
+// (that map was rejected as defense-in-depth cost; this scratch exists only
+// to make load-time healing non-destructive across instruments).
+static uint8_t loadActionOwner[SEQ_ACTION_SIZE];
 
 static uint16_t compactedActionIndex(uint16_t oldIndex, uint16_t oldLastFreeAction) {
     const uint16_t firstDynamic = NUMBER_OF_TIMBRES * 2;
@@ -698,12 +707,36 @@ void Sequencer::finishActionListLoad(bool acceptedState) {
         for (int instrument = 0; instrument < NUMBER_OF_TIMBRES; instrument++) {
             // Poison is runtime state, not part of the persisted block.
             actionListPoisoned_[instrument] = false;
-            if (!validateActionListInternal(instrument, false, false)) {
-                anyReset = true;
-            }
         }
+        // B7 (phase 8.2): two-phase GLOBAL validation. The legacy per-list
+        // loop reset each failing chain as it validated it, so a reset walk
+        // could mark shared nodes SEQ_ACTION_NONE that another instrument's
+        // still-valid list owned (destructive healing). The global pass
+        // inspects every active chain first, then resets losers only,
+        // preserving survivor-owned nodes.
+        const uint8_t listsRejected = validateActionListsGlobalOnLoad();
+        anyReset = listsRejected > 0;
         if (allocatorAdjusted || anyReset) {
             trimTrailingFreeActions();
+        }
+
+        // B8 (phase 8.2, owner decision 2026-09-14: quick release): a valid
+        // slot load replaces the note-off events for notes the previous
+        // sequence left sounding. Release every timbre through the quick
+        // path and reset the runtime note sources (arp + MONO stack — the
+        // arp reset alone does NOT clear the MONO held-note stack, and a
+        // stale entry could recall an orphaned note). Runs after state
+        // acceptance and list validation, immediately before publication
+        // completes. Rejected loads never reach this point. The null guard
+        // keeps host table-only fixtures (no Synth wired) usable; device
+        // builds always wire a synth.
+        if (synth_ != nullptr) {
+            for (int timbre = 0; timbre < NUMBER_OF_TIMBRES; timbre++) {
+                synth_->stopArpegiator(timbre);
+                synth_->allNoteOffQuick(timbre);
+                synth_->cancelPendingNoteOns(timbre);
+                synth_->clearMonoStack(timbre);
+            }
         }
 
         // Persisted files contain list/state data, not live traversal state.
@@ -748,7 +781,7 @@ void Sequencer::trimTrailingFreeActions() {
     lastFreeAction_ = limit;
 }
 
-void Sequencer::resetMalformedActionList(uint8_t instrument, bool countLoadReset) {
+void Sequencer::resetActionListChain(uint8_t instrument, bool preserveOwnedNodes) {
     const uint16_t head = instrument * 2;
     const uint16_t tail = head + 1;
     const uint16_t lastFreeSnapshot = lastFreeAction_;
@@ -756,13 +789,25 @@ void Sequencer::resetMalformedActionList(uint8_t instrument, bool countLoadReset
     const uint16_t hopBudget = walkHopBudget(lastFreeSnapshot);
 
     // Reclaim every reachable dynamic slot, but remain bounded because the
-    // chain being repaired may itself be cyclic.
+    // chain being repaired may itself be cyclic or escape into another
+    // instrument's territory.
     uint16_t index = actions[head].nextIndex;
     uint16_t hops = 0;
     while (index != tail && index != head && hops < hopBudget) {
         if (index < NUMBER_OF_TIMBRES * 2 || index >= liveLimit) break;
         const uint16_t nextIndex = actions[index].nextIndex;
-        actions[index].actionType = SEQ_ACTION_NONE;
+        if (preserveOwnedNodes) {
+            // B7 (phase 8.2): a losing list's reset must skip nodes a
+            // survivor retains (claimed during the global pass). Nodes the
+            // loser itself claimed (its exclusive prefix) and unclaimed
+            // nodes are reclaimed as before.
+            const uint8_t owner = loadActionOwner[index];
+            if (owner == 0xFF || owner == instrument) {
+                actions[index].actionType = SEQ_ACTION_NONE;
+            }
+        } else {
+            actions[index].actionType = SEQ_ACTION_NONE;
+        }
         index = nextIndex;
         hops++;
     }
@@ -778,17 +823,19 @@ void Sequencer::resetMalformedActionList(uint8_t instrument, bool countLoadReset
     nextActionTimerOutOfSync_[instrument] = false;
     nextActionIndex_[instrument] = tail;
     previousActionIndex_[instrument] = head;
+}
+
+void Sequencer::resetMalformedActionList(uint8_t instrument, bool countLoadReset) {
+    resetActionListChain(instrument, false);
     if (countLoadReset) listsResetOnLoad_++;
 }
 
-// Structural validation of one instrument's recorded-action chain. Inactive
-// lists remain byte-identical during ordinary loads; includeInactive is used
-// only after a runtime trip, immediately before a main-loop insertion would
-// otherwise reactivate the poisoned links.
-bool Sequencer::validateActionListInternal(uint8_t instrument, bool includeInactive,
-        bool trimAfterReset) {
-    if (!includeInactive && !seqActivated_[instrument]) return true;
-
+// B7 (phase 8.2): pure structural inspection of one instrument's recorded-
+// action chain — the exact walk contract of the legacy validator, without
+// any mutation or counter updates. The runtime single-list validator and
+// the load-time global pass both route through this function, so the two
+// validation contexts cannot drift apart.
+bool Sequencer::inspectActionListStructure(uint8_t instrument) const {
     const uint16_t head = instrument * 2;
     const uint16_t tail = head + 1;
     const uint16_t lastFreeSnapshot = lastFreeAction_;
@@ -837,7 +884,72 @@ bool Sequencer::validateActionListInternal(uint8_t instrument, bool includeInact
         index = nextIndex;
     }
 
-    if (ok && index == tail) {
+    return ok && index == tail;
+}
+
+// B7 (phase 8.2): two-phase load-time validation. See the call site in
+// finishActionListLoad for the defect history. Phases:
+//   1. Inspect every ACTIVE chain with the shared pure walk — no mutation.
+//   2. Claim dynamic nodes for each structurally-valid list in instrument
+//      order. A valid list that reaches a node already claimed by a
+//      lower-numbered valid list is demoted to a sharing loser (a singly
+//      linked chain has one nextIndex per node, so a shared segment is a
+//      shared SUFFIX and at most one sharer can be valid — the demotion
+//      check is defense against any shape that still passes the walk).
+//      Lowest instrument index wins: deterministic across boots and equal
+//      to the legacy validation order.
+//   3. Reset every loser with the owner-checked reclaim (a loser's
+//      exclusive nodes are reclaimed; survivor-owned nodes are untouched).
+// Returns the number of lists rejected; listsResetOnLoad_ counts each one.
+uint8_t Sequencer::validateActionListsGlobalOnLoad() {
+    bool valid[NUMBER_OF_TIMBRES];
+    bool loser[NUMBER_OF_TIMBRES];
+
+    // Phase 1 — pure inspection.
+    for (int i = 0; i < NUMBER_OF_TIMBRES; i++) {
+        loser[i] = seqActivated_[i] && !inspectActionListStructure(i);
+        valid[i] = seqActivated_[i] && !loser[i];
+    }
+
+    // Phase 2 — claim nodes for valid lists; demote sharers.
+    memset(loadActionOwner, 0xFF, sizeof(loadActionOwner));
+    for (int i = 0; i < NUMBER_OF_TIMBRES; i++) {
+        if (!valid[i]) continue;
+        const uint16_t tail = i * 2 + 1;
+        uint16_t index = actions[i * 2].nextIndex;
+        while (index != tail) {
+            if (loadActionOwner[index] == 0xFF) {
+                loadActionOwner[index] = (uint8_t)i;
+            } else if (loadActionOwner[index] != (uint8_t)i) {
+                loser[i] = true;
+                break;
+            }
+            index = actions[index].nextIndex;
+        }
+    }
+
+    // Phase 3 — owner-checked resets.
+    uint8_t resetCount = 0;
+    for (int i = 0; i < NUMBER_OF_TIMBRES; i++) {
+        if (!loser[i]) continue;
+        resetActionListChain(i, true);
+        listsResetOnLoad_++;
+        resetCount++;
+    }
+    return resetCount;
+}
+
+// Structural validation of one instrument's recorded-action chain. Inactive
+// lists remain byte-identical during ordinary loads; includeInactive is used
+// only after a runtime trip, immediately before a main-loop insertion would
+// otherwise reactivate the poisoned links. The walk itself lives in
+// inspectActionListStructure (shared with the load-time global pass); this
+// runtime path adds the mutate-on-failure semantics its callers rely on.
+bool Sequencer::validateActionListInternal(uint8_t instrument, bool includeInactive,
+        bool trimAfterReset) {
+    if (!includeInactive && !seqActivated_[instrument]) return true;
+
+    if (inspectActionListStructure(instrument)) {
         actionListPoisoned_[instrument] = false;
         return true;
     }
@@ -1164,16 +1276,45 @@ void Sequencer::getFullState(uint8_t* buffer, uint32_t *size) {
     *size = index;
 }
 
-void Sequencer::setFullState(uint8_t* buffer) {
-    SEQ_VERSION version = (SEQ_VERSION)buffer[0];
+// Serialized inner-state layout offsets (V2), shared by getFullState /
+// loadStateVersion2 / isAcceptableStateBuffer so the B6 header predicate
+// cannot drift from the parser. V1 has no per-timbre step-seq byte (the
+// loader defaults instrumentStepSeq_[t] = t).
+static constexpr uint32_t kStateTimbreBlockOffset = 20;        // 1+12+1+4+2
+static constexpr uint32_t kStateTimbreStride = 8;              // u16+u16+flag+flag+flag+seqIdx
+static constexpr uint32_t kStateInstrumentStepSeqInStride = 7;  // last byte of the stride
+
+bool Sequencer::isAcceptableStateBuffer(const uint8_t* buffer) {
+    const uint8_t version = buffer[0];
     if (version != SEQ_VERSION1 && version != SEQ_VERSION2) {
-        return;
+        return false;
+    }
+    if (version == SEQ_VERSION2) {
+        // B6 (phase 8.2): the persisted instrumentStepSeq_ bytes index
+        // stepNotes/stepActivated_ on every later use (e.g. isStepActivated,
+        // the step walk). An unbounded byte is an out-of-bounds read waiting
+        // to happen — reject the whole slot before any publication rather
+        // than clamping corrupt data into a wrong-but-loadable state.
+        for (int t = 0; t < NUMBER_OF_TIMBRES; t++) {
+            if (buffer[kStateTimbreBlockOffset + kStateTimbreStride * t
+                    + kStateInstrumentStepSeqInStride] >= NUMBER_OF_STEP_SEQUENCES) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool Sequencer::setFullState(uint8_t* buffer) {
+    if (!isAcceptableStateBuffer(buffer)) {
+        return false;
     }
 
     // 8.1: an accepted loaded state supersedes actions already published by
     // decode. A producer insert after this snapshot belongs to the new state.
+    // (Runs only after acceptance: a rejected buffer discards nothing.)
     asyncActions_.discardAllFromConsumer();
-    switch (version) {
+    switch (buffer[0]) {
     case SEQ_VERSION1:
         loadStateVersion1(buffer);
         break;
@@ -1181,6 +1322,7 @@ void Sequencer::setFullState(uint8_t* buffer) {
         loadStateVersion2(buffer);
         break;
     }
+    return true;
 }
 
 void Sequencer::loadStateVersion1(uint8_t* buffer) {
