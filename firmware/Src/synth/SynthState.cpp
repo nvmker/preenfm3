@@ -406,6 +406,9 @@ void SynthState::loadDx7Patch(int timbre, PFM3File const *bank, int patchNumber,
 void SynthState::loadMixer(PFM3File const *bank, int patchNumber) {
     propagateBeforeNewParamsLoad(currentTimbre);
     storage->getMixerBank()->loadMixer(bank, patchNumber);
+    // B10 (phase 8.4): real bulk replacement — invalidate routing-paired
+    // runtime note state while the pre-load voice mapping is intact.
+    propagateMixerRoutingReplaced();
     // Update and clean all timbres
     this->currentTimbre = 0;
     propagateNewTimbre(currentTimbre);
@@ -563,6 +566,12 @@ void SynthState::propagateAfterNewParamsLoad(int timbre) {
 void SynthState::propagateAfterNewMixerLoad() {
     for (SynthParamListener* listener = firstParamListener; listener != 0; listener = listener->nextListener) {
         listener->afterNewMixerLoad();
+    }
+}
+
+void SynthState::propagateMixerRoutingReplaced() {
+    for (SynthParamListener* listener = firstParamListener; listener != 0; listener = listener->nextListener) {
+        listener->mixerRoutingReplaced();
     }
 }
 

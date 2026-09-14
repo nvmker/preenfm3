@@ -643,6 +643,21 @@ void Synth::afterNewMixerLoad() {
     this->synthState_->mixerState.fxBus_.paramChanged();
 }
 
+void Synth::mixerRoutingReplaced() {
+    // B10 (phase 8.4): a bulk mixer replacement (SD bank load, default-
+    // mixer restore, boot default) rewrote channel/range/shift routing,
+    // orphaning the note-on/off pairing the MONO stack tracks. Called at
+    // the load sites BEFORE propagateAfterNewMixerLoad(): the cancel must
+    // run while the pre-load voice mapping is intact --
+    // Timbre::cancelPendingNoteOns() iterates numberOfVoices_, which
+    // afterNewMixerLoad zeroes first (iteration-1 defect: the cancel ran
+    // as a no-op there). Menu entry/bank preview never reach this hook.
+    for (int timbre = 0; timbre < NUMBER_OF_TIMBRES; timbre++) {
+        timbres_[timbre].cancelPendingNoteOns();
+        timbres_[timbre].clearMonoStack();
+    }
+}
+
 int Synth::getFreeVoice() {
     // Loop on all voices
     bool used[MAX_NUMBER_OF_VOICES];
@@ -798,6 +813,16 @@ void Synth::newMixerValue(uint8_t valueType, uint8_t timbre, float oldValue, flo
         case MIXER_VALUE_MIDI_SHIFT_NOTE:
             timbres_[timbre].resetArpeggiator();
             allNoteOff(timbre);
+            // B10 (phase 8.4): routing replacement breaks the note-on/off
+            // pairing the MONO stack tracks -- a channel change swallows the
+            // note-off entirely, a range/shift change translates it so
+            // monoNoteRemove no-ops; a stale entry would recall a phantom on
+            // later release. Order mirrors the B8 cleanup: release (the
+            // allNoteOff above) -> cancel pending -> clear stack (the natural
+            // release otherwise leaves a pending note-ON as a start-and-
+            // finish blip).
+            timbres_[timbre].cancelPendingNoteOns();
+            timbres_[timbre].clearMonoStack();
             break;
         case MIXER_VALUE_NUMBER_OF_VOICES:
             // If unison stop sound !

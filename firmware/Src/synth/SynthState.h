@@ -557,6 +557,7 @@ public:
 
     void propagateAfterNewParamsLoad(int timbre);
     void propagateAfterNewMixerLoad();
+    void propagateMixerRoutingReplaced();
     void propagateNewTimbre(int timbre);
 
     SynthEditMode getSynthMode() {

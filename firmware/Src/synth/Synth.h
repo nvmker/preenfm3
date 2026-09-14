@@ -96,6 +96,7 @@ public:
     void beforeNewParamsLoad(int timbre);
     void afterNewParamsLoad(int timbre);
     void afterNewMixerLoad();
+    void mixerRoutingReplaced();
     void showAlgo() {
     }
     void showIMInformation() {
