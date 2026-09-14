@@ -898,20 +898,29 @@ bool Sequencer::inspectActionListStructure(uint8_t instrument) const {
 //      check is defense against any shape that still passes the walk).
 //      Lowest instrument index wins: deterministic across boots and equal
 //      to the legacy validation order.
-//   3. Reset every loser with the owner-checked reclaim (a loser's
-//      exclusive nodes are reclaimed; survivor-owned nodes are untouched).
+//   3. Claim STILL-UNCLAIMED nodes for structurally-valid INACTIVE chains
+//      (review finding, BH#1/ECH#1): an active loser's reset walk can pass
+//      through an inactive chain's exclusive nodes and would reclaim them,
+//      silently destroying the recorded-but-deactivated sequence. Inactive
+//      claims run AFTER the active pass so playback (active lists) always
+//      wins a contested node; inactive chains are never reset here and
+//      cannot demote an active list.
+//   4. Reset every loser with the owner-checked reclaim (a loser's
+//      exclusive nodes are reclaimed; survivor-owned nodes — active or
+//      inactive-valid — are untouched).
 // Returns the number of lists rejected; listsResetOnLoad_ counts each one.
 uint8_t Sequencer::validateActionListsGlobalOnLoad() {
     bool valid[NUMBER_OF_TIMBRES];
     bool loser[NUMBER_OF_TIMBRES];
 
-    // Phase 1 — pure inspection.
+    // Phase 1 — pure inspection (active chains; inactive chains are
+    // inspected in phase 3 only when their protection matters).
     for (int i = 0; i < NUMBER_OF_TIMBRES; i++) {
         loser[i] = seqActivated_[i] && !inspectActionListStructure(i);
         valid[i] = seqActivated_[i] && !loser[i];
     }
 
-    // Phase 2 — claim nodes for valid lists; demote sharers.
+    // Phase 2 — claim nodes for valid ACTIVE lists; demote sharers.
     memset(loadActionOwner, 0xFF, sizeof(loadActionOwner));
     for (int i = 0; i < NUMBER_OF_TIMBRES; i++) {
         if (!valid[i]) continue;
@@ -928,7 +937,26 @@ uint8_t Sequencer::validateActionListsGlobalOnLoad() {
         }
     }
 
-    // Phase 3 — owner-checked resets.
+    // Phase 3 — protect structurally-valid INACTIVE chains: claim their
+    // still-unclaimed nodes so loser resets cannot eat them. (An inactive
+    // chain sharing nodes with a valid ACTIVE chain stays unclaimed on the
+    // shared suffix — the active list owns it; that inactive chain is
+    // corrupt-by-sharing and remains untouched, byte-identical, exactly as
+    // before. It only loses nodes no active list retained anyway.)
+    for (int i = 0; i < NUMBER_OF_TIMBRES; i++) {
+        if (seqActivated_[i]) continue;
+        if (!inspectActionListStructure(i)) continue;
+        const uint16_t tail = i * 2 + 1;
+        uint16_t index = actions[i * 2].nextIndex;
+        while (index != tail) {
+            if (loadActionOwner[index] == 0xFF) {
+                loadActionOwner[index] = (uint8_t)i;
+            }
+            index = actions[index].nextIndex;
+        }
+    }
+
+    // Phase 4 — owner-checked resets.
     uint8_t resetCount = 0;
     for (int i = 0; i < NUMBER_OF_TIMBRES; i++) {
         if (!loser[i]) continue;
@@ -1276,10 +1304,13 @@ void Sequencer::getFullState(uint8_t* buffer, uint32_t *size) {
     *size = index;
 }
 
-// Serialized inner-state layout offsets (V2), shared by getFullState /
-// loadStateVersion2 / isAcceptableStateBuffer so the B6 header predicate
-// cannot drift from the parser. V1 has no per-timbre step-seq byte (the
-// loader defaults instrumentStepSeq_[t] = t).
+// Serialized inner-state layout offsets (V2). The PARSER and SERIALIZER
+// (loadStateVersion2 / getFullState) advance manual cursor indices; this
+// predicate mirrors their layout with named constants, and the offsets are
+// independently pinned by tests (sequencer_test.cpp layout constants, the
+// B6 test's data[4+27] step-seq byte, and the round-trip goldens) so a
+// parser drift fails loudly instead of silently diverging from the B6
+// header check.
 static constexpr uint32_t kStateTimbreBlockOffset = 20;        // 1+12+1+4+2
 static constexpr uint32_t kStateTimbreStride = 8;              // u16+u16+flag+flag+flag+seqIdx
 static constexpr uint32_t kStateInstrumentStepSeqInStride = 7;  // last byte of the stride

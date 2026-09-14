@@ -4,7 +4,7 @@ Host-side C++ unit tests for preenfm3 firmware, built with **GoogleTest** and
 run with **CTest**. No hardware, no cross-compiler — these compile on your dev
 machine (or CI) with the system `g++`/`clang++`.
 
-> **Status:** a full regression suite — 33 test files, 688 tests, golden-master
+> **Status:** a full regression suite — 33 test files, 691 tests, golden-master
 > full-render fixtures, ASAN+UBSAN clean, ~89% measured line coverage of
 > `firmware/Src` (ratcheted floor: 89%, see `scripts/coverage-floor.txt`). It
 > grew out of the original scaffolding while landing the four coverage targets
