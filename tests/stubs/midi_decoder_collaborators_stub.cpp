@@ -56,6 +56,19 @@ bool SynthState::scalaSettingsChanged(int /*timbre*/) { return false; }
 void SynthState::setParamsAndTimbre(struct OneSynthParams* /*newParams*/, int /*newCurrentTimbre*/) {}
 void SynthState::loadPresetFromMidi(int /*timbre*/, int /*bank*/, int /*bankLSB*/, int /*patchNumber*/, struct OneSynthParams* /*params*/) {}
 
+// B10 (phase 8.4) glue test: SynthState::propagateMixerRoutingReplaced is
+// driven by tests/synth_core_test.cpp MonoStackClearedThroughSynthState-
+// Propagate (the only out-of-line propagate a test calls). The body mirrors
+// SynthState.cpp VERBATIM — a plain firstParamListener fan-out, same shape
+// as the header-inline propagateNewMixerValue. A no-op stub would defeat
+// the test, which pins propagate -> listener -> Synth::mixerRoutingReplaced
+// (the fixture registers synth_ via ss_->insertParamListener).
+void SynthState::propagateMixerRoutingReplaced() {
+    for (SynthParamListener* listener = firstParamListener; listener != 0; listener = listener->nextListener) {
+        listener->mixerRoutingReplaced();
+    }
+}
+
 // --- allParameterRows -------------------------------------------------------
 // FAVOR-REAL-DATA EXCEPTION (flagged in tests/SEAM.md Target #4 appendix).
 // `allParameterRows` is a `struct AllParameterRowsDisplay` (an array of

@@ -118,8 +118,11 @@ protected:
     }
 
     // B10 (phase 8.4): stage MONO timbre 0 with the held-note stack [60, 67]
-    // and the single legato voice sounding 67 (renders between the presses
-    // promote each legato target to an ordinary sounding note).
+    // and the single legato voice sounding 67. The renders between the
+    // presses promote each legato target through the quick-dead tail
+    // (ENV_STATE_ON_QUICK_R table is size-1 — promotion completes within
+    // ~2 blocks); the bounded wait below makes the fixture self-verifying
+    // rather than assuming the second press is an established note.
     void HoldMonoPairB10() {
         auto* p = synth().getTimbre(0)->getParamRaw();
         p->engine1.playMode = PLAY_MODE_MONO;
@@ -127,6 +130,17 @@ protected:
         renderBlocks(3);
         synth().noteOn(0, 67, 100);
         renderBlocks(3);
+        // Bounded promotion wait: render up to 8 extra blocks until the
+        // second press's pending legato target is promoted, then PROVE the
+        // fixture ends on an established sounding note.
+        for (int i = 0;
+             i < 8 && synth().hostVoice(voiceForSlot(0)).isNewNotePending();
+             i++) {
+            renderBlock();
+        }
+        ASSERT_FALSE(synth().hostVoice(voiceForSlot(0)).isNewNotePending())
+            << "fixture: second press must be an established sounding note, "
+               "not a pending target";
         ASSERT_EQ(playCount(), 1) << "fixture: MONO must hold a single voice";
         ASSERT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 2)
             << "fixture: stack must hold both presses";
@@ -422,8 +436,19 @@ TEST_F(SynthCore, MonoStackClearedAfterMixerLoad) {
     // routing, so the invalidation must cover every timbre. Give timbre 1
     // two voices (the default harness setup gives it none) and hold a MONO
     // pair there too; scaleFrequencies are wired for every timbre by the
-    // golden harness, so the pair really routes.
+    // golden harness, so the pair really routes. Production-faithful grant:
+    // FMDisplayMixer writes the mixer-state field FIRST (FMDisplayMixer.cpp
+    // `*((int8_t*)valueP) = newValue`) and only then propagates old->new
+    // (0 -> 2 here) — mirror that order.
+    harness_->synthState()->mixerState.instrumentState_[1].numberOfVoices = 2;
     synth().newMixerValue(MIXER_VALUE_NUMBER_OF_VOICES, 1, 0.0f, 2.0f);
+    const int t1Slot0 = (int) static_cast<uint8_t>(
+        synth().getTimbre(1)->voiceNumber_[0]);
+    const int t1Slot1 = (int) static_cast<uint8_t>(
+        synth().getTimbre(1)->voiceNumber_[1]);
+    ASSERT_GE(t1Slot0, 0) << "production-faithful two-voice timbre";
+    ASSERT_GE(t1Slot1, 0) << "production-faithful two-voice timbre";
+    ASSERT_NE(t1Slot0, t1Slot1) << "production-faithful two-voice timbre";
     auto* p1 = synth().getTimbre(1)->getParamRaw();
     p1->engine1.playMode = PLAY_MODE_MONO;
     synth().noteOn(1, 60, 100);
@@ -499,6 +524,40 @@ TEST_F(SynthCore, MonoStackClearedAfterMixerLoad) {
     EXPECT_TRUE(renderIsSilent(64))
         << "the canceled target must not re-fire (no start-and-finish "
            "blip) after the load";
+    EXPECT_EQ(playCount(), 0);
+}
+
+TEST_F(SynthCore, MonoStackClearedThroughSynthStatePropagate) {
+    // B10 glue/integration: pins the production wiring
+    // SynthState::propagateMixerRoutingReplaced() -> param listener ->
+    // Synth::mixerRoutingReplaced() override. Unlike the direct
+    // synth().mixerRoutingReplaced() seams above, this drives the ACTUAL
+    // propagate path the three load sites call (SynthState.cpp loadMixer,
+    // FMDisplayMenu default-load, preenfm3.cpp boot) — if the listener
+    // registration were dropped (golden_harness.cpp
+    // ss_->insertParamListener(synth_)), the propagate fans out to nothing
+    // and both asserts below fail.
+    HoldMonoPairB10();
+
+    // Stage a pending legato target on top of the held pair (no render
+    // between the presses — same staging recipe as the pending-at-load
+    // section above).
+    synth().noteOn(0, 60, 100);
+    synth().noteOn(0, 64, 100);
+    Voice& v = synth().hostVoice(voiceForSlot(0));
+    ASSERT_TRUE(v.isNewNotePending())
+        << "fixture: legato target must be pending at the propagate";
+
+    harness_->synthState()->propagateMixerRoutingReplaced();
+
+    EXPECT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 0)
+        << "the production propagate path must clear the MONO held-note stack";
+    EXPECT_FALSE(v.isNewNotePending())
+        << "the production propagate path must cancel the pending retrigger";
+
+    // The canceled target never re-fires and the timbre ends silent.
+    EXPECT_LT(renderUntilSilent(2200), 2200);
+    EXPECT_TRUE(renderIsSilent(8));
     EXPECT_EQ(playCount(), 0);
 }
 

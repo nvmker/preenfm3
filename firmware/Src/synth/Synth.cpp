@@ -652,6 +652,11 @@ void Synth::mixerRoutingReplaced() {
     // Timbre::cancelPendingNoteOns() iterates numberOfVoices_, which
     // afterNewMixerLoad zeroes first (iteration-1 defect: the cancel ran
     // as a no-op there). Menu entry/bank preview never reach this hook.
+    // Device caveat: beforeNewParamsLoad quick-releases voices, and a staged
+    // pending can promote during the load's blocking SD I/O (quick-release +
+    // SD read while the audio ISR renders) BEFORE this hook runs — the cancel
+    // is best-effort on the load paths; the known window is tracked in
+    // deferred-work ("mixer load atomicity").
     for (int timbre = 0; timbre < NUMBER_OF_TIMBRES; timbre++) {
         timbres_[timbre].cancelPendingNoteOns();
         timbres_[timbre].clearMonoStack();
@@ -670,7 +675,16 @@ int Synth::getFreeVoice() {
         int nv = this->synthState_->mixerState.instrumentState_[t].numberOfVoices;
 
         for (int v = 0; v < nv; v++) {
-            used[timbres_[t].voiceNumber_[v]] = true;
+            // -1 = slot not (yet) granted — FMDisplayMixer writes the
+            // mixer-state numberOfVoices field BEFORE propagating, so a
+            // voice grant to a 0-voice timbre scans slots that still hold
+            // -1 here; indexing used[] with them was an out-of-bounds
+            // stack write (caught by ASAN under the B10 production-faithful
+            // test ordering; the comment above always meant to skip them).
+            int voice = timbres_[t].voiceNumber_[v];
+            if (voice >= 0) {
+                used[voice] = true;
+            }
         }
     }
 
@@ -815,8 +829,9 @@ void Synth::newMixerValue(uint8_t valueType, uint8_t timbre, float oldValue, flo
             allNoteOff(timbre);
             // B10 (phase 8.4): routing replacement breaks the note-on/off
             // pairing the MONO stack tracks -- a channel change swallows the
-            // note-off entirely, a range/shift change translates it so
-            // monoNoteRemove no-ops; a stale entry would recall a phantom on
+            // note-off entirely, a range change rejects it (first/last-note
+            // gate), and a shift change translates it so monoNoteRemove
+            // no-ops; a stale entry would recall a phantom on
             // later release. Order mirrors the B8 cleanup: release (the
             // allNoteOff above) -> cancel pending -> clear stack (the natural
             // release otherwise leaves a pending note-ON as a start-and-

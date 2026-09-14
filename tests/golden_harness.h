@@ -209,6 +209,10 @@ public:
     // Access the wired Synth (for noteOn/noteOff between render calls).
     Synth& synth() { return *synth_; }
 
+    // B10 glue test drives the production propagate path
+    // (SynthState::propagateMixerRoutingReplaced -> param listener -> Synth).
+    SynthState* synthState() { return ss_; }
+
     // Isolate dry-path rendering in focused Synth tests without exposing the
     // production SynthState through the harness API.
     void setReverbLevel(float level) { ss_->mixerState.reverbLevel_ = level; }
