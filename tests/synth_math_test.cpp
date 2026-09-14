@@ -331,17 +331,26 @@ protected:
 TEST_F(OscFreqEstimation, EstimationDifferentiatesByFrequencyTypeLikeNewNote) {
     // 8.8 SW1 defects 3+4 (red→green): with the breaks restored, each
     // frequencyType returns its OWN formula (mirroring Osc::newNote), instead
-    // of every type collapsing onto the KEYHZ result.
+    // of every type collapsing onto the KEYHZ result. Tuning is deliberately
+    // NON-neutral (452 Hz, not 440) so the tuning_*INV440 factor is actually
+    // exercised — dropping it would shift every expectation — and each type
+    // is checked BOTH against its transcribed formula AND for direct parity
+    // with newNote's mainFrequency (estimation and newNote must not drift).
     const float noteFreq = 220.0f;
     const float mul = 2.0f;
     const float detune = 0.5f;
-    const float tuneScale = 440.0f * kInv440;  // ~= 1.0 (neutral tuning)
+    synthState_->mixerState.tuning_ = 452.0f;
+    const float tuneScale = 452.0f * kInv440;  // ~= 1.0273, NOT neutral
 
     // KEYBOARD: note freq scaled by mul, detune as a PERCENTAGE term.
     Configure(OSC_FT_KEYBOARD, mul, detune);
+    struct OscState sKb = {};
+    osc_.newNote(&sKb, noteFreq, 0.0f);
     const float estKb = osc_.getNoteRealFrequencyEstimation(&oscState_, noteFreq);
     EXPECT_NEAR(estKb, noteFreq * mul * (1.0f + detune * .05f) * tuneScale, kArithTol)
         << "KEYBOARD must return the newNote KEYBOARD formula";
+    EXPECT_FLOAT_EQ(estKb, sKb.mainFrequency)
+        << "KEYBOARD estimation must track newNote's mainFrequency";
 
     // FIXE: the estimation reads mainFrequency — call newNote first, exactly
     // like the firmware call order (Timbre.cpp newNote → estimation).
@@ -353,9 +362,13 @@ TEST_F(OscFreqEstimation, EstimationDifferentiatesByFrequencyTypeLikeNewNote) {
 
     // KEYHZ: note freq scaled by mul, detune as an ABSOLUTE Hz offset.
     Configure(OSC_FT_KEYHZ, mul, detune);
+    struct OscState sHz = {};
+    osc_.newNote(&sHz, noteFreq, 0.0f);
     const float estKeyHz = osc_.getNoteRealFrequencyEstimation(&oscState_, noteFreq);
     EXPECT_NEAR(estKeyHz, noteFreq * mul * tuneScale + detune, kArithTol)
         << "KEYHZ case must return the KEYHZ formula (unchanged by the fix)";
+    EXPECT_FLOAT_EQ(estKeyHz, sHz.mainFrequency)
+        << "KEYHZ estimation must track newNote's mainFrequency";
 
     // The three results are DISTINCT (pre-fix, all three equaled estKeyHz).
     EXPECT_NE(estKb, estKeyHz);

@@ -1066,11 +1066,18 @@ TEST_F(MidiDecoderPhase2, MpeGlobalChannelCcDoesNotTouchPitchBend) {
     // MATRIX_SOURCE_PITCHBEND (CC number 127 / value 127 read as pb=8191,
     // a near-full-scale bend). With the break, CC terminates after
     // controlChange() and only a real pitch-bend event writes the source.
+    // The CC-side oracle: userCC_[0]=64 routes CC64 to timbre 0's
+    // MATRIX_SOURCE_USER_CC1 — proving controlChange() still EXECUTES (the
+    // fix must stop the fall-through, not skip the CC itself).
     ss_->mixerState.MPE_inst1_ = 1;
+    ss_->mixerState.userCC_[0] = 64;
     Feed({0x91, 60, 100});      // member-channel note: timbre 0 voice exists
     Feed({0xE0, 0x00, 0x40});   // center the bend: pb = 0
     EXPECT_FLOAT_EQ(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_PITCHBEND), 0.0f);
-    Feed({0xB0, 127, 127});     // CC on the global channel
+    Feed({0xB0, 64, 100});      // CC64 on the global channel (mapped user CC)
+    EXPECT_FLOAT_EQ(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_USER_CC1),
+                    100 * kInv127)
+        << "global-channel CC must still execute via controlChange()";
     EXPECT_FLOAT_EQ(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_PITCHBEND), 0.0f)
         << "global-channel CC must not be reinterpreted as pitch bend";
     Feed({0xE0, 0x7F, 0x7F});   // real bend, full up: pb = 8191

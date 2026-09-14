@@ -614,16 +614,18 @@ the `OSC_FT_KEYBOARD`, `OSC_FT_FIXE`, and `OSC_FT_KEYHZ` cases. All three
 fell through to the KEYHZ formula; the KEYBOARD and FIXE results were
 computed then immediately overwritten. History: the bug was first locked as
 a preserved-as-golden characterization
-(`OscFreqEstimationFallThrough.AllFrequencyTypesYieldKeyHzFormula` — all
+(`OscFreqEstimation.AllFrequencyTypesYieldKeyHzFormula` — all
 three types returning the same KEYHZ value) alongside the contrast proof
 that `Osc::newNote`'s switched DID differentiate. Phase 8.8 SW1 added the
 missing breaks (red→green: the locked golden flipped to
 `OscFreqEstimation.EstimationDifferentiatesByFrequencyTypeLikeNewNote`,
-asserting each type's own `newNote`-mirrored formula; the clamp test now
-exercises all three arms). The other three 8.8 SW1 real defects fixed in the
-same change: the MPE global-channel CC→PITCH_BEND stomp (MidiDecoder), the
-MIDI-controller LOW/HIGH encoder coupling (FMDisplayMidiController), and the
-`-Werror=implicit-fallthrough` promotion that keeps the class closed.
+asserting each type's own `newNote`-mirrored formula, with a non-neutral
+tuning so the tuning term is actually exercised, plus direct newNote-parity
+assertions; the clamp test now exercises all three arms). The other two real
+defects fixed in the same change: the MPE global-channel CC→PITCH_BEND stomp
+(MidiDecoder) and the MIDI-controller LOW/HIGH encoder coupling
+(FMDisplayMidiController). The `-Werror=implicit-fallthrough` promotion
+closes the class (it is a prevention gate, not one of the defect fixes).
 
 ### Signal-fidelity note — host goldens guard the shared source, not -Ofast
 
