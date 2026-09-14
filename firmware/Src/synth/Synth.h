@@ -56,6 +56,8 @@ public:
     void stopArpegiator(int timbre);
     void allNoteOff(int timbre);
     void allNoteOffQuick(int timbre);
+    void clearMonoStack(int timbre);
+    void cancelPendingNoteOns(int timbre);
     void allSoundOff();
     void allSoundOff(int timbre);
     bool isPlaying();

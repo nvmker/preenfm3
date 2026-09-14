@@ -17,6 +17,7 @@
 #include "fatfs.h"
 #define private public
 #include "SequenceBank.h"
+#include "FMDisplaySequencer.h"
 #undef private
 
 #include <cstring>
@@ -642,4 +643,414 @@ TEST_F(SequenceBankTest, AcceptedLoadResetsStaleRuntimeCursorsForResync) {
     EXPECT_TRUE(seq_->isNextActionTimerOutOfSyncForTest(0));
     EXPECT_TRUE(seq_->isSeqActivated(0));
     EXPECT_EQ(seq_->getWalkTrips(), 0);
+}
+
+// ===========================================================================
+// Phase 8.2 — B6 (validate before publication), B7 (two-phase global
+// shared-node detection). Fixtures follow the H4 autopsy pattern: craft the
+// state header + raw action chain, save it through a real bank file, and
+// load it into a fresh sequencer.
+// ===========================================================================
+
+// State-layout offsets (V2): timbre t block at 20+8t with seqActivated at
+// 24+8t and instrumentStepSeq at 27+8t (see loadStateVersion2).
+static void SetSeqActivatedInState(uint8_t* state, int timbre) {
+    state[24 + 8 * timbre] = 1;
+}
+
+static void LinkAction(uint16_t index, uint16_t when, uint16_t next) {
+    actions[index].when = when;
+    actions[index].nextIndex = next;
+    actions[index].actionType = SEQ_ACTION_NOTE;
+    actions[index].param1 = 60;
+    actions[index].param2 = 100;
+}
+
+// B6: a rejected slot must leave EVERYTHING untouched. Snapshot every live
+// surface, load a corrupted slot, compare.
+TEST_F(SequenceBankTest, InvalidInnerVersionV2RejectsBeforeAnyPublication) {
+    bank_.createSequenceFile("b6rejectv2");
+    PFM3File bank = {};
+    strcpy(bank.name, "b6rejectv2");
+    bank.fileType = FILE_OK;
+    bank_.saveSequence(&bank, 0, bank.name);
+
+    // Corrupt ONLY the inner state-version byte of slot 0's state block.
+    std::vector<uint8_t> data;
+    ASSERT_TRUE(fatfsShimExtract("0:/pfm3/b6rejectv2", data));
+    data[4 + 0] = 0x07;
+    fatfsShimInjectBytes("0:/pfm3/b6rejectv2", data.data(), data.size());
+
+    // Stamp the live target so "unchanged" is a strong claim.
+    std::unique_ptr<Sequencer> seq2 = MakeSequencer();
+    TestSequenceBank bank2;
+    bank2.setFileSystemUtils(fsu_);
+    bank2.setSequencer(seq2.get());
+    seq2->setSequenceName("LIVESTATE   ");
+    memset(actions, 0, sizeof(actions));
+    // Keep instrument 0's sentinels structurally valid (empty list) so the
+    // post-reject queue-drain can insert the queued note below.
+    actions[0].nextIndex = 1;
+    actions[1].when = 4095;
+    actions[1].nextIndex = 0;
+    actions[5].when = 0x4321;
+    actions[5].actionType = SEQ_ACTION_CC;
+    actions[5].nextIndex = 9;
+    stepNotes[2][50].full = 0x11223344;
+    seq2->setActionListCursorForTest(0, 777, 888);
+    seq2->queueNote(0, 61, 100);  // queued async action must survive rejection
+
+    std::vector<uint8_t> actionsBefore((uint8_t*)actions,
+            (uint8_t*)actions + sizeof(actions));
+    std::vector<uint8_t> stepsBefore((uint8_t*)stepNotes,
+            (uint8_t*)stepNotes + sizeof(stepNotes));
+    uint8_t stateBefore[256] = {};
+    uint32_t stateSize = 0;
+    seq2->getFullState(stateBefore, &stateSize);
+
+    static bool hookFired = false;
+    hookFired = false;
+    struct HookGuard {
+        ~HookGuard() { SequenceBank::setLoadPublishHookForTest(nullptr); }
+    } hookGuard;
+    SequenceBank::setLoadPublishHookForTest([](Sequencer*) { hookFired = true; });
+
+    bank2.loadSequence(&bank, 0);
+
+    EXPECT_FALSE(hookFired) << "a rejected slot must never enter the publication window";
+    EXPECT_FALSE(seq2->isActionListLoadInProgressForTest());
+    EXPECT_EQ(0, memcmp(actionsBefore.data(), actions, sizeof(actions)))
+        << "action table must stay byte-identical on rejection";
+    EXPECT_EQ(0, memcmp(stepsBefore.data(), stepNotes, sizeof(stepNotes)))
+        << "step table must stay byte-identical on rejection";
+    uint8_t stateAfter[256] = {};
+    uint32_t stateSizeAfter = 0;
+    seq2->getFullState(stateAfter, &stateSizeAfter);
+    EXPECT_EQ(stateSize, stateSizeAfter);
+    EXPECT_EQ(0, memcmp(stateBefore, stateAfter, stateSize))
+        << "sequencer state must stay byte-identical on rejection";
+    EXPECT_EQ(seq2->getPreviousActionIndexForTest(0), 777);
+    EXPECT_EQ(seq2->getNextActionIndexForTest(0), 888);
+    EXPECT_EQ(seq2->getListsResetOnLoad(), 0u);
+    EXPECT_EQ(seq2->getWalkTrips(), 0u);
+    EXPECT_EQ(seq2->getDroppedAsyncActions(), 0u);
+
+    // The queued async action was not discarded: draining it after the
+    // rejected load still records the note. (Needs a live display: the
+    // activation refresh dereferences displaySequencer_.)
+    FMDisplaySequencer dispSeq;
+    int dummyRefreshA = 0, dummyRefreshB = 0;
+    dispSeq.setRefreshStatusPointer(&dummyRefreshA, &dummyRefreshB);
+    seq2->setDisplaySequencer(&dispSeq);
+    seq2->start();
+    seq2->setRecording(0, true);
+    seq2->processAsyncActions();
+    EXPECT_TRUE(seq2->isSeqActivated(0)) << "queued note must survive a rejected load";
+}
+
+// B6: same contract through the V1 loader (hand-built V1 bank container).
+TEST_F(SequenceBankTest, InvalidInnerVersionV1RejectsBeforeAnyPublication) {
+    std::vector<uint8_t> data(4 + 1024 + 16384 + 12336, 0);
+    uint32_t v1 = SEQUENCE_BANK_VERSION1;
+    memcpy(data.data(), &v1, 4);
+    uint8_t state[1024];  // full state block: the loader copies 1024 bytes
+    uint32_t sz = 0;
+    seq_->setSequenceName("V1REJECT    ");
+    seq_->getFullState(state, &sz);
+    memcpy(data.data() + 4, state, 1024);
+    // State block says version 1 (valid), then corrupt it to 0x07.
+    data[4 + 0] = 0x07;
+    fatfsShimInjectBytes("0:/pfm3/b6rejectv1", data.data(), data.size());
+
+    std::unique_ptr<Sequencer> seq2 = MakeSequencer();
+    TestSequenceBank bank2;
+    bank2.setFileSystemUtils(fsu_);
+    bank2.setSequencer(seq2.get());
+    seq2->setSequenceName("LIVEV1      ");
+    memset(actions, 0, sizeof(actions));
+    actions[7].when = 0x55AA;
+    actions[7].actionType = SEQ_ACTION_CC;
+    stepNotes[4][10].full = 0xCAFEF00D;
+
+    std::vector<uint8_t> actionsBefore((uint8_t*)actions,
+            (uint8_t*)actions + sizeof(actions));
+    std::vector<uint8_t> stepsBefore((uint8_t*)stepNotes,
+            (uint8_t*)stepNotes + sizeof(stepNotes));
+
+    PFM3File bank = {};
+    strcpy(bank.name, "b6rejectv1");
+    bank.fileType = FILE_OK;
+    bank2.loadSequence(&bank, 0);
+
+    EXPECT_EQ(0, memcmp(actionsBefore.data(), actions, sizeof(actions)));
+    EXPECT_EQ(0, memcmp(stepsBefore.data(), stepNotes, sizeof(stepNotes)));
+    char nm[13];
+    strncpy(nm, seq2->getSequenceName(), 12);
+    nm[12] = 0;
+    EXPECT_STREQ(nm, "LIVEV1      ") << "V1 loader must not publish a rejected state";
+    EXPECT_EQ(seq2->getListsResetOnLoad(), 0u);
+}
+
+// B6: an out-of-range persisted instrumentStepSeq_ byte rejects the whole
+// slot (it indexes stepNotes/stepActivated_ on every later use); an in-range
+// byte still loads — pin both sides of the boundary.
+TEST_F(SequenceBankTest, OutOfRangeInstrumentStepSeqRejectsBeforeAnyPublication) {
+    for (int variant = 0; variant < 2; variant++) {
+        bank_.createSequenceFile("b6stepseq");
+        PFM3File bank = {};
+        strcpy(bank.name, "b6stepseq");
+        bank.fileType = FILE_OK;
+        // The FILE carries a variant-unique action stamp so variant 1's
+        // publication check cannot be satisfied by variant 0 leftovers.
+        memset(actions, 0, sizeof(actions));
+        actions[9].when = static_cast<uint16_t>(0xBEE0 + variant);
+        actions[9].actionType = SEQ_ACTION_CC;
+        bank_.saveSequence(&bank, 0, "STEPSEQBANK ");
+
+        std::vector<uint8_t> data;
+        ASSERT_TRUE(fatfsShimExtract("0:/pfm3/b6stepseq", data));
+        // timbre 0's instrumentStepSeq at state offset 27 (last byte of the
+        // first 8-byte timbre block).
+        data[4 + 27] = variant == 0 ? 12 : 5;   // 12 = first out-of-range value
+
+        std::unique_ptr<Sequencer> seq2 = MakeSequencer();
+        TestSequenceBank bank2;
+        bank2.setFileSystemUtils(fsu_);
+        bank2.setSequencer(seq2.get());
+        seq2->setSequenceName("LIVESTEPSEQ ");
+        // The LIVE table gets a different stamp: on a valid load the FILE's
+        // 0xBEE0+variant must overwrite it (publication proof); on a reject
+        // it must survive byte-identical (snapshot below).
+        memset(actions, 0, sizeof(actions));
+        actions[9].when = static_cast<uint16_t>(0xBADA + variant);
+        actions[9].actionType = SEQ_ACTION_CC;
+        std::vector<uint8_t> actionsBefore((uint8_t*)actions,
+                (uint8_t*)actions + sizeof(actions));
+
+        fatfsShimInjectBytes("0:/pfm3/b6stepseq", data.data(), data.size());
+        bank2.loadSequence(&bank, 0);
+
+        char nm[13];
+        strncpy(nm, seq2->getSequenceName(), 12);
+        nm[12] = 0;
+        if (variant == 0) {
+            EXPECT_EQ(0, memcmp(actionsBefore.data(), actions, sizeof(actions)))
+                << "out-of-range step-seq index must reject before publication";
+            EXPECT_STREQ(nm, "LIVESTEPSEQ ");
+        } else {
+            EXPECT_EQ(actions[9].when, 0xBEE1)
+                << "published table must come from the file on a valid load";
+            EXPECT_STREQ(nm, "STEPSEQBANK ") << "in-range index must still load";
+            EXPECT_EQ(seq2->getInstrumentStepSeq(0), 5);
+        }
+    }
+}
+
+// B7: instrument 0 owns a valid chain; instrument 1's chain joins its
+// suffix. The loser (1) must be reset WITHOUT eating the survivor's nodes.
+// Pre-fix: validating 1 reset its chain and cleared slot 13, leaving
+// instrument 0 active with a broken (half-NONE) chain.
+TEST_F(SequenceBankTest, SharedSuffixLoserResetSurvivorIntact) {
+    uint8_t state[256];
+    uint32_t size = 0;
+    seq_->getFullState(state, &size);
+    const uint16_t lastFree = 20;
+    memcpy(state + 18, &lastFree, sizeof(uint16_t));
+    SetSeqActivatedInState(state, 0);
+    SetSeqActivatedInState(state, 1);
+    seq_->setFullState(state);
+
+    memset(actions, 0, sizeof(actions));
+    // Sentinels: head0(0)/tail0(1), head1(2)/tail1(3)
+    actions[1].when = 4095; actions[1].nextIndex = 0;
+    actions[3].when = 4095; actions[3].nextIndex = 2;
+    // 0 (survivor): head0 -> 12 -> 13 -> tail0
+    actions[0].nextIndex = 12;
+    LinkAction(12, 100, 13);
+    LinkAction(13, 200, 1);           // shared suffix ends at tail0
+    // 1 (loser): head1 -> 14 -> 13 (shared) -> tail0 != tail1 -> invalid
+    actions[2].nextIndex = 14;
+    LinkAction(14, 50, 13);
+    stepNotes[5][77].full = 0x12345678;  // bystander
+
+    bank_.createSequenceFile("b7shared1");
+    PFM3File bank = {};
+    strcpy(bank.name, "b7shared1");
+    bank.fileType = FILE_OK;
+    bank_.saveSequence(&bank, 0, bank.name);
+
+    memset(actions, 0, sizeof(actions));
+    std::unique_ptr<Sequencer> seq2 = MakeSequencer();
+    TestSequenceBank bank2;
+    bank2.setFileSystemUtils(fsu_);
+    bank2.setSequencer(seq2.get());
+    bank2.loadSequence(&bank, 0);
+
+    EXPECT_TRUE(seq2->isSeqActivated(0)) << "survivor stays playable";
+    EXPECT_FALSE(seq2->isSeqActivated(1)) << "sharing loser must be reset";
+    EXPECT_EQ(seq2->getListsResetOnLoad(), 1u);
+    EXPECT_EQ(actions[12].actionType, SEQ_ACTION_NOTE) << "survivor node 12";
+    EXPECT_EQ(actions[13].actionType, SEQ_ACTION_NOTE)
+        << "shared node 13 belongs to the survivor and must never be reclaimed";
+    EXPECT_EQ(actions[14].actionType, SEQ_ACTION_NONE) << "loser's exclusive node reclaimed";
+    EXPECT_EQ(actions[2].nextIndex, 3) << "loser head -> own tail (empty)";
+    // Survivor chain walks head0 -> 12 -> 13 -> tail0 in 2 hops.
+    uint16_t index = actions[0].nextIndex;
+    int hops = 0;
+    while (index != 1 && hops < 20) { index = actions[index].nextIndex; hops++; }
+    EXPECT_EQ(hops, 2) << "survivor chain must remain fully linked";
+    EXPECT_EQ(stepNotes[5][77].full, 0x12345678u);
+}
+
+// B7: the INVALID list is processed first (lower instrument). Pre-fix its
+// destructive reset erased the shared nodes before the valid list was ever
+// validated, so BOTH died (count == 2). Post-fix the later valid list
+// survives with the shared nodes intact.
+TEST_F(SequenceBankTest, InvalidEarlierListDoesNotEatValidLaterList) {
+    uint8_t state[256];
+    uint32_t size = 0;
+    seq_->getFullState(state, &size);
+    const uint16_t lastFree = 20;
+    memcpy(state + 18, &lastFree, sizeof(uint16_t));
+    SetSeqActivatedInState(state, 0);
+    SetSeqActivatedInState(state, 1);
+    seq_->setFullState(state);
+
+    memset(actions, 0, sizeof(actions));
+    actions[1].when = 4095; actions[1].nextIndex = 0;
+    actions[3].when = 4095; actions[3].nextIndex = 2;
+    // 0 (invalid): head0 -> 12 -> 13 -> tail1 (escapes into another list's
+    // sentinel: nextIndex < firstDynamic fails the walk)
+    actions[0].nextIndex = 12;
+    LinkAction(12, 100, 13);
+    LinkAction(13, 200, 3);
+    // 1 (valid): head1 -> 14 -> 13 -> tail1
+    actions[2].nextIndex = 14;
+    LinkAction(14, 50, 13);
+
+    bank_.createSequenceFile("b7shared2");
+    PFM3File bank = {};
+    strcpy(bank.name, "b7shared2");
+    bank.fileType = FILE_OK;
+    bank_.saveSequence(&bank, 0, bank.name);
+
+    memset(actions, 0, sizeof(actions));
+    std::unique_ptr<Sequencer> seq2 = MakeSequencer();
+    TestSequenceBank bank2;
+    bank2.setFileSystemUtils(fsu_);
+    bank2.setSequencer(seq2.get());
+    bank2.loadSequence(&bank, 0);
+
+    EXPECT_FALSE(seq2->isSeqActivated(0)) << "invalid list is reset";
+    EXPECT_TRUE(seq2->isSeqActivated(1))
+        << "valid later list must survive an earlier list's reset";
+    EXPECT_EQ(seq2->getListsResetOnLoad(), 1u)
+        << "pre-fix destructive healing also killed the valid list (count 2)";
+    EXPECT_EQ(actions[12].actionType, SEQ_ACTION_NONE) << "loser's exclusive node";
+    EXPECT_EQ(actions[13].actionType, SEQ_ACTION_NOTE)
+        << "shared node 13 belongs to survivor 1";
+    EXPECT_EQ(actions[14].actionType, SEQ_ACTION_NOTE) << "survivor's own node";
+}
+
+// B7: one survivor, TWO losers sharing its suffix ("more complex shared
+// cycle" — multiple lists may legitimately be reset).
+TEST_F(SequenceBankTest, MultiLoserSharedSuffixResetsLosersOnly) {
+    uint8_t state[256];
+    uint32_t size = 0;
+    seq_->getFullState(state, &size);
+    const uint16_t lastFree = 20;
+    memcpy(state + 18, &lastFree, sizeof(uint16_t));
+    SetSeqActivatedInState(state, 0);
+    SetSeqActivatedInState(state, 1);
+    SetSeqActivatedInState(state, 2);
+    seq_->setFullState(state);
+
+    memset(actions, 0, sizeof(actions));
+    actions[1].when = 4095; actions[1].nextIndex = 0;
+    actions[3].when = 4095; actions[3].nextIndex = 2;
+    actions[5].when = 4095; actions[5].nextIndex = 4;
+    // 0 (survivor): head0 -> 12 -> tail0
+    actions[0].nextIndex = 12;
+    LinkAction(12, 100, 1);
+    // 1 (loser, shared suffix): head1 -> 13 -> 12 -> tail0 (wrong tail)
+    actions[2].nextIndex = 13;
+    LinkAction(13, 50, 12);
+    // 2 (loser, genuine CYCLE): head2 -> 14 -> 15 -> 14 ... never reaches
+    // any tail — inspection and reset must both stay hop-budget bounded.
+    actions[4].nextIndex = 14;
+    LinkAction(14, 50, 15);
+    LinkAction(15, 60, 14);
+    stepNotes[5][77].full = 0x9ABCDEF0;
+
+    bank_.createSequenceFile("b7shared3");
+    PFM3File bank = {};
+    strcpy(bank.name, "b7shared3");
+    bank.fileType = FILE_OK;
+    bank_.saveSequence(&bank, 0, bank.name);
+
+    memset(actions, 0, sizeof(actions));
+    std::unique_ptr<Sequencer> seq2 = MakeSequencer();
+    TestSequenceBank bank2;
+    bank2.setFileSystemUtils(fsu_);
+    bank2.setSequencer(seq2.get());
+    bank2.loadSequence(&bank, 0);
+
+    EXPECT_TRUE(seq2->isSeqActivated(0));
+    EXPECT_FALSE(seq2->isSeqActivated(1));
+    EXPECT_FALSE(seq2->isSeqActivated(2));
+    EXPECT_EQ(seq2->getListsResetOnLoad(), 2u) << "both losers are rejected";
+    EXPECT_EQ(actions[12].actionType, SEQ_ACTION_NOTE)
+        << "survivor node must never be reclaimed by any loser reset";
+    EXPECT_EQ(actions[13].actionType, SEQ_ACTION_NONE);
+    EXPECT_EQ(actions[14].actionType, SEQ_ACTION_NONE);
+    EXPECT_EQ(actions[15].actionType, SEQ_ACTION_NONE)
+        << "cyclic loser's nodes reclaimed, bounded walk";
+    EXPECT_EQ(stepNotes[5][77].full, 0x9ABCDEF0u);
+}
+
+// B7 review (BH#1/ECH#1): instrument 0 is INACTIVE but carries a
+// structurally valid recorded chain; instrument 1 is an active loser whose
+// chain shares node 12. The loser's reset must not eat the inactive chain's
+// recorded data (it would silently destroy a deactivated sequence).
+TEST_F(SequenceBankTest, ActiveLoserResetSparesValidInactiveChain) {
+    uint8_t state[256];
+    uint32_t size = 0;
+    seq_->getFullState(state, &size);
+    const uint16_t lastFree = 20;
+    memcpy(state + 18, &lastFree, sizeof(uint16_t));
+    SetSeqActivatedInState(state, 1);  // ONLY instrument 1 active
+    seq_->setFullState(state);
+
+    memset(actions, 0, sizeof(actions));
+    actions[1].when = 4095; actions[1].nextIndex = 0;
+    actions[3].when = 4095; actions[3].nextIndex = 2;
+    // 0 (inactive, VALID chain): head0 -> 12 -> tail0
+    actions[0].nextIndex = 12;
+    LinkAction(12, 100, 1);
+    // 1 (active loser): head1 -> 13 -> 12 -> tail0 (wrong tail)
+    actions[2].nextIndex = 13;
+    LinkAction(13, 50, 12);
+
+    bank_.createSequenceFile("b7inactive");
+    PFM3File bank = {};
+    strcpy(bank.name, "b7inactive");
+    bank.fileType = FILE_OK;
+    bank_.saveSequence(&bank, 0, bank.name);
+
+    memset(actions, 0, sizeof(actions));
+    std::unique_ptr<Sequencer> seq2 = MakeSequencer();
+    TestSequenceBank bank2;
+    bank2.setFileSystemUtils(fsu_);
+    bank2.setSequencer(seq2.get());
+    bank2.loadSequence(&bank, 0);
+
+    EXPECT_FALSE(seq2->isSeqActivated(0)) << "inactive list stays inactive";
+    EXPECT_EQ(actions[0].nextIndex, 12)
+        << "inactive chain head untouched";
+    EXPECT_EQ(actions[12].actionType, SEQ_ACTION_NOTE)
+        << "inactive-valid node must be protected from the loser's reset";
+    EXPECT_EQ(actions[13].actionType, SEQ_ACTION_NONE)
+        << "loser's exclusive node reclaimed";
+    EXPECT_FALSE(seq2->isSeqActivated(1));
+    EXPECT_EQ(seq2->getListsResetOnLoad(), 1u) << "only the active loser counts";
 }

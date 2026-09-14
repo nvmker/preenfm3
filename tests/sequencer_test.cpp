@@ -281,7 +281,12 @@ TEST(SeqSerialization, Version1BufferParsesAndPreservesTempo) {
 
 #include "Synth.h"
 #include "FMDisplaySequencer.h"
+#include "SequenceBank.h"
+#include "FileSystemUtils.h"
+#include "fatfs.h"
 
+#include <vector>
+#include <cassert>
 #include <new>  // placement new (fixture SetUp constructs into aligned backing)
 
 namespace {
@@ -1623,4 +1628,200 @@ TEST_F(SequencerPhase2, TripClearsArpeggiatorStackBeforeLaterClocks) {
     }
     EXPECT_FALSE(retriggered)
         << "a trip-cleared arp stack must not retrigger on later internal clocks";
+}
+
+// ===========================================================================
+// Phase 8.2 — B8: valid-load voice cleanup (owner decision 2026-09-14:
+// quick release + arp reset + MONO stack clear; rejected loads mutate
+// nothing). A successful slot load replaces the note-off events for notes
+// the previous sequence left sounding — without cleanup, releasing the held
+// key recalls an orphaned note forever.
+// ===========================================================================
+
+class SeqLoadCleanup : public SequencerPhase2 {
+protected:
+    // Drive MONO timbre 0 into the orphan state: 60 held, 64 the legato
+    // target on the single mono voice (stack = [60, 64]).
+    // renderOutPending=false keeps the legato target PENDING at load time
+    // (pins cancelPendingNoteOns: a quick-release into a pending target
+    // would re-fire it when the decay reaches DEAD). true promotes the
+    // target to an ordinary sounding note first (pins the plain
+    // quick-release path).
+    void HoldMonoPair(bool renderOutPending) {
+        auto* p = synth_.getTimbre(0)->getParamRaw();
+        p->engine1.playMode = PLAY_MODE_MONO;
+        synth_.noteOn(0, 60, 100);
+        synth_.noteOn(0, 64, 100);
+        ASSERT_EQ(synth_.getTimbre(0)->getMonoStackSizeForTest(), 2);
+        ASSERT_TRUE(synth_.isPlaying());
+        if (renderOutPending) {
+            ASSERT_TRUE(AnyVoicePending()) << "fixture: legato target starts pending";
+            for (int i = 0; i < 4; i++) RenderOne();
+            ASSERT_TRUE(synth_.isPlaying());
+        } else {
+            ASSERT_TRUE(AnyVoicePending())
+                << "fixture: legato target must still be pending at load";
+        }
+    }
+    bool AnyVoicePending() {
+        for (int v = 0; v < 16; v++) {
+            if (synth_.hostVoice(v).isNewNotePending()) return true;
+        }
+        return false;
+    }
+    // Note sounding on the first playing voice, or -1 when silent.
+    int PlayingVoiceNote() {
+        for (int v = 0; v < 16; v++) {
+            if (synth_.hostVoice(v).isPlaying()) {
+                return (int)(uint8_t)synth_.hostVoice(v).getNote();
+            }
+        }
+        return -1;
+    }
+    void RenderOne() {
+        int32_t b1[64], b2[64], b3[64];
+        synth_.buildNewSampleBlock(b1, b2, b3);
+        blocks_++;
+    }
+    // Build a bank file with one slot saved from the live sequencer and
+    // return its PFM3File descriptor + on-disk path. name must fit
+    // PFM3File::name (12 chars + NUL).
+    PFM3File SaveSlot(const char* name12) {
+        // ASSERT_* cannot return a value; the length is a compile-time
+        // literal contract here, so a plain assert guards it.
+        assert(strlen(name12) == 12 && "fixture: name must be 12 chars");
+        fatfsShimReset();
+        fatfsShimMkdir("0:/pfm3");
+        fsu_ = new FileSystemUtils;
+        bank_ = new SequenceBank;
+        bank_->setFileSystemUtils(fsu_);
+        bank_->setSequencer(seq_);
+        bank_->createSequenceFile(name12);
+        PFM3File file = {};
+        strcpy(file.name, name12);
+        file.fileType = FILE_OK;
+        bank_->saveSequence(&file, 0, file.name);
+        return file;
+    }
+    // Copilot review (PR #46): the heap objects SaveSlot allocates must be
+    // released — the base SequencerPhase2 fixture deliberately placement-
+    // news into member backings (no teardown by design), but these two are
+    // plain heap allocations LeakSanitizer would flag. Mirrors the
+    // new-in-SetUp / delete-in-TearDown pattern of SequenceBankTest.
+    void TearDown() override {
+        delete bank_;
+        delete fsu_;
+        bank_ = nullptr;
+        fsu_ = nullptr;
+    }
+    int blocks_ = 0;
+    FileSystemUtils* fsu_ = nullptr;
+    SequenceBank* bank_ = nullptr;
+};
+
+TEST_F(SeqLoadCleanup, ValidLoadQuickReleasesVoicesAndClearsMonoStack) {
+    HoldMonoPair(false);  // legato target PENDING at load time
+    PFM3File file = SaveSlot("b8cleanup   ");
+
+    bank_->loadSequence(&file, 0);  // accepted load -> B8 cleanup
+
+    EXPECT_EQ(synth_.getTimbre(0)->getMonoStackSizeForTest(), 0)
+        << "valid load must invalidate the MONO held-note stack";
+    // Pending retriggers cancelled on every voice: without the cancel the
+    // quick-release decay would RE-FIRE note 64 when the envelopes reach
+    // DEAD (endNoteOrBeginNextOne promotes the pending target).
+    for (int v = 0; v < 16; v++) {
+        EXPECT_FALSE(synth_.hostVoice(v).isNewNotePending())
+            << "pending retrigger must be cancelled, voice " << v;
+    }
+    // Quick release: the sounding voice retires within a few rendered
+    // blocks (pre-fix it would ring until the outer note-off arrived).
+    bool retired = !synth_.isPlaying();
+    for (int i = 0; i < 200 && !retired; i++) {
+        RenderOne();
+        retired = !synth_.isPlaying();
+    }
+    EXPECT_TRUE(retired) << "valid load must quick-release the sounding voice";
+
+    // The orphaned note-off cannot recall anything: pre-fix cleanup-less
+    // behavior, releasing 64 recalled 60 and the synth kept sounding.
+    synth_.noteOff(0, 64);
+    for (int i = 0; i < 8; i++) RenderOne();
+    EXPECT_FALSE(synth_.isPlaying())
+        << "note-off after cleanup must not recall an orphaned note";
+}
+
+TEST_F(SeqLoadCleanup, ValidLoadCancelsStaleGlideTargets) {
+    // ECH#2: noteOffQuick clears `gliding` but not nextGlidingNote — a
+    // stale glide target must not survive the load cleanup (a later reuse
+    // of the voice could promote the obsolete target on its note-off).
+    auto* p = synth_.getTimbre(0)->getParamRaw();
+    p->engine1.playMode = PLAY_MODE_MONO;
+    p->engine2.glideType = GLIDE_TYPE_ALWAYS;
+    synth_.noteOn(0, 60, 100);
+    RenderOne();
+    synth_.noteOn(0, 64, 100);  // legato target -> glideToNote
+    bool glideLive = false;
+    for (int v = 0; v < 16; v++) {
+        glideLive |= synth_.hostVoice(v).getNextGlidingNote() != 0;
+    }
+    ASSERT_TRUE(glideLive) << "fixture: a glide target must be live at load";
+
+    PFM3File file = SaveSlot("b8glide     ");
+    bank_->loadSequence(&file, 0);
+
+    for (int v = 0; v < 16; v++) {
+        EXPECT_EQ(synth_.hostVoice(v).getNextGlidingNote(), 0)
+            << "stale glide target must be cancelled, voice " << v;
+    }
+}
+
+TEST_F(SeqLoadCleanup, ValidLoadClearsArpeggiatorStackBeforeLaterClocks) {
+    // B8's stopArpegiator leg (review BH#6): a held note parked in the arp
+    // stack must not retrigger on internal clocks after a valid load —
+    // mirrors TripClearsArpeggiatorStackBeforeLaterClocks.
+    synth_.setNewValueFromMidi(0, ROW_ARPEGGIATOR1,
+        ENCODER_ARPEGGIATOR_BPM, 120.0f);
+    synth_.setNewValueFromMidi(0, ROW_ARPEGGIATOR1,
+        ENCODER_ARPEGGIATOR_CLOCK, static_cast<float>(CLOCK_INTERNAL));
+    synth_.noteOn(0, 60, 100);  // clock is internal: enters the arp stack
+
+    PFM3File file = SaveSlot("b8arpclck   ");
+    bank_->loadSequence(&file, 0);  // accepted -> stopArpegiator(0)
+
+    int32_t b1[64], b2[64], b3[64];
+    bool retriggered = false;
+    for (int block = 0; block < 2000; block++) {
+        synth_.buildNewSampleBlock(b1, b2, b3);
+        retriggered |= synth_.isPlaying();
+    }
+    EXPECT_FALSE(retriggered)
+        << "a load-cleared arp stack must not retrigger on later internal clocks";
+}
+
+TEST_F(SeqLoadCleanup, RejectedLoadLeavesVoicesAndMonoStackUntouched) {
+    HoldMonoPair(true);  // promoted, ordinary sounding note 64
+    PFM3File file = SaveSlot("b8reject    ");
+
+    // Corrupt only the inner state-version byte of the saved slot.
+    char path[64];
+    snprintf(path, sizeof(path), "0:/pfm3/%s", file.name);
+    std::vector<uint8_t> data;
+    ASSERT_TRUE(fatfsShimExtract(path, data));
+    data[4 + 0] = 0x07;
+    fatfsShimInjectBytes(path, data.data(), data.size());
+
+    bank_->loadSequence(&file, 0);  // rejected: zero mutation
+
+    EXPECT_EQ(synth_.getTimbre(0)->getMonoStackSizeForTest(), 2)
+        << "a rejected load must not touch MONO runtime state";
+    EXPECT_TRUE(synth_.isPlaying())
+        << "a rejected load must leave sounding voices alone";
+
+    // And the sequence itself still behaves: releasing 64 must recall 60
+    // (asserted by the sounding NOTE, not just isPlaying — the released
+    // voice would still be playing during its decay).
+    synth_.noteOff(0, 64);
+    RenderOne();
+    EXPECT_EQ(PlayingVoiceNote(), 60) << "recall must retrigger held note 60";
 }

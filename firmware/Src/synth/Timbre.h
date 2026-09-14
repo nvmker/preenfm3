@@ -87,6 +87,20 @@ public:
     void monoNotePush(char note, char velocity);
     void monoNoteRemove(char note);
     void monoNoteRecall();
+    // B10/B8 (phase 8.2): invalidate the MONO held-note stack. Sequence-state
+    // or routing replacement breaks the note-on/off pairing the stack tracks;
+    // a stale entry would let a later MONO release "recall" a note whose
+    // note-off was replaced by the load. Phase 8.4 will reuse this primitive
+    // for the four routing-replacement cases.
+    void clearMonoStack();
+    // B8 (phase 8.2): drop pending MONO/legato retriggers on every voice. A
+    // quick-released voice whose envelopes are still decaying would otherwise
+    // re-fire its pending target when the decay reaches DEAD
+    // (endNoteOrBeginNextOne) — an orphan revival the load meant to end.
+    void cancelPendingNoteOns();
+#ifdef PFM3_HOST
+    int getMonoStackSizeForTest() const { return monoStackSize_; }
+#endif
 
     void numberOfVoicesChanged(uint8_t newNumberOfVoices) {
         if (likely(newNumberOfVoices > 0)) {

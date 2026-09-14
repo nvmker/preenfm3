@@ -659,6 +659,23 @@ void Voice::noteOffQuick() {
     lfoNoteOff();
 }
 
+void Voice::cancelPendingNoteOn() {
+    // B8 (phase 8.2): drop pending MONO/legato retriggers and stale glide
+    // targets without killing the voice. The quick-release decay then
+    // simply ends the note (endNoteOrBeginNextOne's no-pending path retires
+    // the voice) instead of re-firing the orphaned target; and a later
+    // reuse of this voice cannot promote the obsolete glide target on its
+    // note-off (review finding ECH#2: noteOffQuick clears `gliding` but
+    // leaves nextGlidingNote live -- preenNoteOff's glide branch would then
+    // re-on the old target after the voice was reassigned). killNow clears
+    // the same fields; this is its non-killing counterpart.
+    this->newNotePending = false;
+    this->pendingNote = 0;
+    this->nextGlidingNote = 0;
+    this->gliding = false;
+    this->newGlide = false;
+}
+
 void Voice::killNow() {
     this->newNotePlayed = false;
     this->playing = false;

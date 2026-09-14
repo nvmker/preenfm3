@@ -205,6 +205,15 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
         return;
     }
 
+    // B6 (phase 8.2): validate the inner state header BEFORE any publication.
+    // A slot whose state block carries an unknown version (or an out-of-range
+    // persisted index) must leave the tables, sequencer state, cursors,
+    // queues and voices completely untouched — not half-published beside the
+    // old state. The walk never pauses for a rejected slot.
+    if (!Sequencer::isAcceptableStateBuffer((const uint8_t*)storageBuffer)) {
+        return;
+    }
+
     // Pause only the RAM publication transaction. SD reads above remain fully
     // interruptible; SysTick/external-clock walks cannot observe mixed tables
     // or deactivate poison between state restore and active-only validation.
@@ -213,12 +222,12 @@ void SequenceBank::loadSequenceDataVersion1(FIL* sequenceFile, int patchNumber) 
     // V1 intentionally updates only its six-sequence payload span; preserve
     // the historical behavior for the remaining V2-only live table bytes.
     __builtin_memcpy(stepNotes, stagedStepNotes, version1StepSize);
-    sequencer->setFullState((uint8_t*)storageBuffer);
+    // B6: the acceptance predicate lives inside setFullState itself, so the
+    // loader's decision cannot drift from the parse-side check.
+    const bool acceptedState = sequencer->setFullState((uint8_t*)storageBuffer);
 #ifdef PFM3_HOST
     if (loadPublishHookForTest_ != nullptr) loadPublishHookForTest_(sequencer);
 #endif
-    const bool acceptedState = storageBuffer[0] == SEQ_VERSION1
-        || storageBuffer[0] == SEQ_VERSION2;
     sequencer->finishActionListLoad(acceptedState);
 }
 
@@ -250,15 +259,19 @@ void SequenceBank::loadSequenceDataVersion2(FIL* sequenceFile, int patchNumber) 
         return;
     }
 
+    // B6 (phase 8.2): same validate-before-publication contract as the V1
+    // loader above — zero mutation on a rejected header.
+    if (!Sequencer::isAcceptableStateBuffer((const uint8_t*)storageBuffer)) {
+        return;
+    }
+
     sequencer->beginActionListLoad();
     __builtin_memcpy(actions, stagedActions, sizeof(stagedActions));
     __builtin_memcpy(stepNotes, stagedStepNotes, sizeof(stagedStepNotes));
-    sequencer->setFullState((uint8_t*)storageBuffer);
+    const bool acceptedState = sequencer->setFullState((uint8_t*)storageBuffer);
 #ifdef PFM3_HOST
     if (loadPublishHookForTest_ != nullptr) loadPublishHookForTest_(sequencer);
 #endif
-    const bool acceptedState = storageBuffer[0] == SEQ_VERSION1
-        || storageBuffer[0] == SEQ_VERSION2;
     sequencer->finishActionListLoad(acceptedState);
 }
 
