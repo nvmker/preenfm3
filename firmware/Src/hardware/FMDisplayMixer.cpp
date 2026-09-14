@@ -619,7 +619,9 @@ void FMDisplayMixer::refreshMixerByStep(int currentTimbre, int &refreshStatus, i
             tft_->setCharBackgroundColor(COLOR_BLACK);
             tft_->setCharColor(COLOR_GREEN);
             tft_->print(valueTitle);
-            // NO BREAK ....
+            // Intentional fall-through: refresh step 6 prints the value label
+            // ABOVE, then reuses the common button rendering of steps 5..1.
+            __attribute__((fallthrough));
         }
         case 5:
         case 4:

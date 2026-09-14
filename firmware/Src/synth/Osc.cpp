@@ -229,8 +229,10 @@ float Osc::getNoteRealFrequencyEstimation(struct OscState* oscState, float newNo
     switch ((int)oscillator->frequencyType) {
     case OSC_FT_KEYBOARD:
         realNoteFrequencyEstimation = newNoteFrequency *  oscillator->frequencyMul * (1.0f + oscillator->detune * .05f) * (synthState_->mixerState.tuning_ * INV440);
+        break;
     case OSC_FT_FIXE:
         realNoteFrequencyEstimation = oscState->mainFrequency;
+        break;
     case OSC_FT_KEYHZ:
         realNoteFrequencyEstimation = newNoteFrequency *  oscillator->frequencyMul * (synthState_->mixerState.tuning_ * INV440) + oscillator->detune;
     }

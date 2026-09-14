@@ -3095,6 +3095,9 @@ linearBefore: for (int n = 0; n < intBreakNote; n++) {
             break;
         case MIDI_NOTE_CURVE_M_EXP:
             multiplier = -1.0f;
+            // Intentional fall-through: negative exponential only selects the
+            // -1 multiplier, then reuses the common exponential calculation.
+            __attribute__((fallthrough));
         case MIDI_NOTE_CURVE_EXP:
             if (floatBreakNote == 0) {
                 floatBreakNote = 1;
@@ -3133,6 +3136,9 @@ linearAfter: for (int n = intBreakNote + 1; n < 128; n++) {
             break;
         case MIDI_NOTE_CURVE_M_EXP:
             multiplier = -1.0f;
+            // Intentional fall-through: negative exponential only selects the
+            // -1 multiplier, then reuses the common exponential calculation.
+            __attribute__((fallthrough));
         case MIDI_NOTE_CURVE_EXP:
             if (floatBreakNote == 0) {
                 floatBreakNote = 1;

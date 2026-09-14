@@ -26,15 +26,13 @@
 //     tables[]/stateInc[]/stateTarget[]. The fixtures call the relevant init()
 //     before any DSP assert — same contract as the firmware.
 //
-// KNOWN LATENT BUG preserved as golden (do NOT fix here — flagged for a separate
-// change; see OscFreqEstimationFallThrough suite + tests/SEAM.md Target #3):
-//   Osc::getNoteRealFrequencyEstimation has NO `break` between the
-//   OSC_FT_KEYBOARD / OSC_FT_FIXE / OSC_FT_KEYHZ cases, so all three
-//   frequencyTypes fall through to the KEYHZ formula (the KEYBOARD and FIXE
-//   results are computed then immediately overwritten). Contrast: Osc::newNote's
-//   switch DOES have breaks and differentiates the types. This suite asserts the
-//   CURRENT (KEYHZ-wins-for-all) estimation behavior so a future fix is a
-//   visible, deliberate change.
+// KNOWN LATENT BUG FIXED HERE (8.8 SW1): Osc::getNoteRealFrequencyEstimation
+// had NO `break` between the OSC_FT_KEYBOARD / OSC_FT_FIXE / OSC_FT_KEYHZ
+// cases, so all three frequencyTypes fell through to the KEYHZ formula (the
+// KEYBOARD and FIXE results were computed then immediately overwritten).
+// The missing breaks are now present; the suite below asserts each type's
+// OWN formula, mirroring Osc::newNote's differentiated switch (see
+// tests/SEAM.md Target #3 for the pre-fix characterization history).
 
 #include <gtest/gtest.h>
 
@@ -299,17 +297,13 @@ TEST_F(OscDsp, GetNextBlockAgreesSampleForSampleWithGetNextSample) {
 }
 
 // ===========================================================================
-// OSC — getNoteRealFrequencyEstimation: the marquee latent-bug capture.
+// OSC — getNoteRealFrequencyEstimation: per-frequencyType formulas (8.8 SW1).
 //
-// The switch over OSC_FT_{KEYBOARD,FIXE,KEYHZ} has NO `break`, so all three
-// cases fall through to the KEYHZ formula. KEYBOARD and FIXE results are
-// computed then immediately overwritten. We assert the CURRENT (KEYHZ-wins)
-// behavior as golden; a future fix that adds the breaks is a deliberate,
-// visible change that flips these tests.
-//
-// Contrast proof: Osc::newNote's switch DOES have breaks, so it differentiates
-// the three types — proving the fall-through is specific to the estimation
-// function, not a property of the frequencyType enum or the inputs.
+// The switch over OSC_FT_{KEYBOARD,FIXE,KEYHZ} now HAS breaks (the missing
+// breaks were a real defect — every type used to return the KEYHZ formula).
+// Each case returns its OWN formula, mirroring Osc::newNote's differentiated
+// switch: KEYBOARD scales note freq with the detune-percentage term, FIXE
+// returns the mainFrequency newNote computed, KEYHZ adds an absolute detune.
 // ===========================================================================
 
 class OscFreqEstimation : public ::testing::Test {
@@ -334,48 +328,65 @@ protected:
     }
 };
 
-TEST_F(OscFreqEstimation, AllFrequencyTypesYieldKeyHzFormula) {
-    // THE fall-through lock. With tuning_=440, (tuning_*INV440) ~= 1.0, so the
-    // KEYHZ formula is: newNoteFrequency * frequencyMul * ~1.0 + detune. ALL
-    // THREE frequencyTypes must return this SAME value (the KEYBOARD/FIXE
-    // results are computed then overwritten by the fall-through). If the missing
-    // breaks are ever added, KEYBOARD and FIXE return DIFFERENT values and this
-    // test fails loudly.
+TEST_F(OscFreqEstimation, EstimationDifferentiatesByFrequencyTypeLikeNewNote) {
+    // 8.8 SW1 defects 3+4 (red→green): with the breaks restored, each
+    // frequencyType returns its OWN formula (mirroring Osc::newNote), instead
+    // of every type collapsing onto the KEYHZ result.
     const float noteFreq = 220.0f;
     const float mul = 2.0f;
     const float detune = 0.5f;
-    const float expectedKeyHz =
-        noteFreq * mul * (440.0f * kInv440) + detune;
+    const float tuneScale = 440.0f * kInv440;  // ~= 1.0 (neutral tuning)
 
+    // KEYBOARD: note freq scaled by mul, detune as a PERCENTAGE term.
     Configure(OSC_FT_KEYBOARD, mul, detune);
     const float estKb = osc_.getNoteRealFrequencyEstimation(&oscState_, noteFreq);
+    EXPECT_NEAR(estKb, noteFreq * mul * (1.0f + detune * .05f) * tuneScale, kArithTol)
+        << "KEYBOARD must return the newNote KEYBOARD formula";
+
+    // FIXE: the estimation reads mainFrequency — call newNote first, exactly
+    // like the firmware call order (Timbre.cpp newNote → estimation).
     Configure(OSC_FT_FIXE, mul, detune);
+    osc_.newNote(&oscState_, noteFreq, 0.0f);   // = mul*1000 + detune*100 = 2050
     const float estFixe = osc_.getNoteRealFrequencyEstimation(&oscState_, noteFreq);
+    EXPECT_NEAR(estFixe, mul * 1000.0f + detune * 100.0f, kArithTol)
+        << "FIXE must return newNote's mainFrequency, not a KEYHZ overwrite";
+
+    // KEYHZ: note freq scaled by mul, detune as an ABSOLUTE Hz offset.
     Configure(OSC_FT_KEYHZ, mul, detune);
     const float estKeyHz = osc_.getNoteRealFrequencyEstimation(&oscState_, noteFreq);
+    EXPECT_NEAR(estKeyHz, noteFreq * mul * tuneScale + detune, kArithTol)
+        << "KEYHZ case must return the KEYHZ formula (unchanged by the fix)";
 
-    EXPECT_NEAR(estKeyHz, expectedKeyHz, kArithTol)
-        << "KEYHZ case must return the KEYHZ formula";
-    EXPECT_NEAR(estKb, estKeyHz, kArithTol)
-        << "KEYBOARD falls through to KEYHZ (missing-break bug): values must match";
-    EXPECT_NEAR(estFixe, estKeyHz, kArithTol)
-        << "FIXE falls through to KEYHZ (missing-break bug): values must match";
+    // The three results are DISTINCT (pre-fix, all three equaled estKeyHz).
+    EXPECT_NE(estKb, estKeyHz);
+    EXPECT_NE(estFixe, estKeyHz);
+    EXPECT_NE(estKb, estFixe);
 }
 
 TEST_F(OscFreqEstimation, EstimationClampsBelowOne) {
     // The function clamps a sub-1Hz result to 1 (guard against div-by-zero /
-    // inaudible estimations downstream). KEYHZ formula with tiny inputs.
+    // inaudible estimations downstream). All three arms clamp (KEYHZ formula
+    // with tiny inputs; KEYBOARD with mul=0; FIXE reading a zeroed
+    // mainFrequency — the two non-KEYHZ arms were dead code pre-8.8-SW1).
     Configure(OSC_FT_KEYHZ, /*mul=*/0.0f, /*detune=*/0.0f);
-    const float est = osc_.getNoteRealFrequencyEstimation(&oscState_, 0.001f);
-    EXPECT_FLOAT_EQ(est, 1.0f);
+    const float estKeyHz = osc_.getNoteRealFrequencyEstimation(&oscState_, 0.001f);
+    EXPECT_FLOAT_EQ(estKeyHz, 1.0f);
+
+    Configure(OSC_FT_KEYBOARD, /*mul=*/0.0f, /*detune=*/0.0f);
+    const float estKb = osc_.getNoteRealFrequencyEstimation(&oscState_, 0.001f);
+    EXPECT_FLOAT_EQ(estKb, 1.0f);
+
+    std::memset(&oscState_, 0, sizeof(oscState_));  // mainFrequency = 0
+    Configure(OSC_FT_FIXE, /*mul=*/0.0f, /*detune=*/0.0f);
+    const float estFixe = osc_.getNoteRealFrequencyEstimation(&oscState_, 0.001f);
+    EXPECT_FLOAT_EQ(estFixe, 1.0f);
 }
 
 TEST_F(OscFreqEstimation, NewNoteDifferentiatesByFrequencyType) {
-    // CONTRAST proof: Osc::newNote's switch HAS breaks, so the three types yield
-    // DISTINCT mainFrequency values (for the same inputs). This pins the bug as
-    // estimation-specific: if someone "fixes" the estimation fall-through by
-    // copying newNote's structure, this test still passes (it documents the
-    // intended differentiated behavior), while the estimation test above flips.
+    // Contrast proof retained from the pre-fix era: Osc::newNote's switch HAS
+    // breaks, so the three types yield DISTINCT mainFrequency values (for the
+    // same inputs). The estimation switch now mirrors this (see the suite
+    // test above); this test documents the reference formulas the fix copied.
     const float noteFreq = 220.0f;
     const float mul = 2.0f;
     const float detune = 1.0f;

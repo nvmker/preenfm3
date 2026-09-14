@@ -274,11 +274,13 @@ must be designed around when the tests are written (next step).
    behavior; **assert what the code does, not what it intended** — flag the bug
    separately, don't silently "fix" it in the golden.
 
-3. **`Osc/Env/Matrix.cpp` — beware the latent fall-through and the near-empty
-   TU.** (i) `Osc::getNoteRealFrequencyEstimation` has a **missing `break`**
-   between `OSC_FT_KEYBOARD` and `OSC_FT_FIXE` (fall-through). A host test
-   must assert the *current* (fall-through) output as the golden; fixing it is
-   a separate, explicit decision. (ii) `Matrix.cpp` has almost no testable
+3. **`Osc/Env/Matrix.cpp` — the former fall-through (8.8 SW1) and the near-
+   empty TU.** (i) `Osc::getNoteRealFrequencyEstimation` HAD a **missing
+   `break`** between `OSC_FT_KEYBOARD` / `OSC_FT_FIXE` / `OSC_FT_KEYHZ` (every
+   type fell through to the KEYHZ formula). FIXED in phase 8.8 SW1 — the
+   breaks are present and the host tests now assert each type's OWN formula,
+   mirroring `Osc::newNote` (see the "Latent bug" history section below).
+   (ii) `Matrix.cpp` has almost no testable
    body — the real coverage lives in `FMDisplay.cpp`; don't claim "Matrix
    coverage" from testing `Matrix::init` alone. (iii) Runtime tables (`incTab`,
    `waveTables` precompute) must be initialized via `init()` before any assert
@@ -605,24 +607,23 @@ rather than used indiscriminately — it is a scoped, justified deviation for a
 struct the firmware treats as a bag of bytes with one float field. `Env` and
 `Matrix` need no `SynthState`.
 
-### Latent bug PRESERVED as golden — `getNoteRealFrequencyEstimation` fall-through
+### Latent bug FIXED (8.8 SW1) — `getNoteRealFrequencyEstimation` fall-through
 
-`Osc::getNoteRealFrequencyEstimation` (Osc.cpp ~L220) has **no `break`**
-between the `OSC_FT_KEYBOARD`, `OSC_FT_FIXE`, and `OSC_FT_KEYHZ` cases. All
-three fall through to the KEYHZ formula; the KEYBOARD and FIXE results are
-computed then immediately overwritten. Asserted as the CURRENT golden:
-
-- `OscFreqEstimationFallThrough.AllFrequencyTypesYieldKeyHzFormula` — all
-  three frequencyTypes return the SAME (KEYHZ-formula) value for identical
-  inputs. A future fix that adds the breaks flips this test.
-- `OscFreqEstimationFallThrough.NewNoteDifferentiatesByFrequencyType` —
-  contrast proof: `Osc::newNote`'s switch DOES have breaks, so it yields three
-  DISTINCT `mainFrequency` values. This pins the bug as estimation-specific
-  (not a property of the enum or inputs) and documents the intended behavior a
-  fix should restore.
-
-NOT fixed here — flagged for a separate firmware change, exactly as Target #2
-did for the `transposeMultiply` dead branch.
+`Osc::getNoteRealFrequencyEstimation` (Osc.cpp) HAD **no `break`** between
+the `OSC_FT_KEYBOARD`, `OSC_FT_FIXE`, and `OSC_FT_KEYHZ` cases. All three
+fell through to the KEYHZ formula; the KEYBOARD and FIXE results were
+computed then immediately overwritten. History: the bug was first locked as
+a preserved-as-golden characterization
+(`OscFreqEstimationFallThrough.AllFrequencyTypesYieldKeyHzFormula` — all
+three types returning the same KEYHZ value) alongside the contrast proof
+that `Osc::newNote`'s switched DID differentiate. Phase 8.8 SW1 added the
+missing breaks (red→green: the locked golden flipped to
+`OscFreqEstimation.EstimationDifferentiatesByFrequencyTypeLikeNewNote`,
+asserting each type's own `newNote`-mirrored formula; the clamp test now
+exercises all three arms). The other three 8.8 SW1 real defects fixed in the
+same change: the MPE global-channel CC→PITCH_BEND stomp (MidiDecoder), the
+MIDI-controller LOW/HIGH encoder coupling (FMDisplayMidiController), and the
+`-Werror=implicit-fallthrough` promotion that keeps the class closed.
 
 ### Signal-fidelity note — host goldens guard the shared source, not -Ofast
 

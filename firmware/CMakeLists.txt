@@ -57,6 +57,14 @@ target_compile_options(preenfm3 PRIVATE -Wall -Wextra)
 # -Wmaybe-uninitialized, ...) stay visible. Per the static-analysis spike.
 target_compile_options(preenfm3 PRIVATE
     -Wno-unused-parameter -Wno-missing-field-initializers)
+# 8.8 SW1 blocking promotion: the four real fall-through defects are fixed
+# and the seven intentional sites carry __attribute__((fallthrough)), so the
+# class is CLOSED — any new unmarked fall-through must break the build
+# instead of scrolling by in the -Wextra noise. Project code only: the
+# vendor C trees (suppressed below for cast-align) currently emit zero
+# fall-through warnings; if a vendor update ever trips this, use the same
+# per-file -Wno-implicit-fallthrough escape hatch as -Wno-cast-align below.
+target_compile_options(preenfm3 PRIVATE -Werror=implicit-fallthrough)
 # 7.6 regression guard (PR #35 follow-up): flag every cast that increases the
 # required alignment of the target type — the class that HardFaulted on device
 # (TftAlgo::highlightOperator's int32/int16 cast-stores into the uint8_t algo

@@ -95,7 +95,10 @@ void FMDisplayMenu::refreshMenuByStep(int currentTimbre, int refreshStatus) {
                             tft_->drawSimpleButton(">", 270, 29, button, COLOR_GRAY, COLOR_DARK_RED);
                             return;
                     }
-                    // Then draw Load button 0 => so no break
+                    // Every button arm above returns (button = 6-refreshStatus
+                    // is always 0..5), so control can never reach the file-
+                    // select cases below — plain break, no fall-through.
+                    break;
                 case MENUTYPE_FILESELECT_LOAD:
                 case MENUTYPE_FILESELECT_SAVE:
                     if (button == 0) {

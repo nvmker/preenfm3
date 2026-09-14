@@ -403,6 +403,10 @@ void MidiDecoder::midiEventForInstrument1MPE(MidiEvent& midiEvent) {
 		switch (midiEvent.eventType) {
 	    case MIDI_CONTROL_CHANGE: {
 			controlChange(0, midiEvent);
+			// 8.8 SW1: no fall-through — a CC's (number, value) bytes must not
+			// be reinterpreted as a pitch-bend pair (stomped the PITCHBEND
+			// matrix source on every global-channel CC).
+			break;
 	    }
 		case MIDI_PITCH_BEND: {
 			int pb = ((int) midiEvent.value[1] << 7) + (int) midiEvent.value[0] - 8192;

@@ -79,7 +79,7 @@
 #include "Sequencer.h"
 #include "FMDisplaySequencer.h"
 
-#include <new>
+#include <new>  // IWYU pragma: keep — placement new in SeqFixture (L~828)
 
 #include <gtest/gtest.h>
 
@@ -1013,11 +1013,13 @@ TEST_F(MidiDecoderPhase2, MpeNotesOnUpperChannelsRouteToTimbre0) {
 
 TEST_F(MidiDecoderPhase2, MpeChannelZeroNotesAreDropped) {
     // CHARACTERIZATION: with MPE on, channel-0 events go through the MPE
-    // global branch, whose switch handles ONLY CONTROL_CHANGE (which falls
-    // through to PITCH_BEND), PITCH_BEND and AFTER_TOUCH — and the branch
-    // RETURNS, so a channel-0 NoteOn never reaches the normal routing and is
-    // silently DROPPED. Locked as golden; a fix that lets ch0 notes route
-    // normally flips this test.
+    // global branch, whose switch handles ONLY CONTROL_CHANGE, PITCH_BEND
+    // and AFTER_TOUCH — and the branch RETURNS, so a channel-0 NoteOn never
+    // reaches the normal routing and is silently DROPPED. Locked as golden;
+    // a fix that lets ch0 notes route normally flips this test.
+    // (8.8 SW1 removed the CC arm's fall-through into PITCH_BEND — the CC
+    // event no longer also writes the pitch-bend source; see
+    // MpeGlobalChannelCcDoesNotTouchPitchBend.)
     ss_->mixerState.MPE_inst1_ = 1;
     Feed({0xE0, 0x00, 0x40});  // pitch bend ch0: MPE branch + normal branch
     Feed({0xD0, 40});          // after-touch ch0: both branches
@@ -1055,6 +1057,27 @@ TEST_F(MidiDecoderPhase2, MpeCc74OnMemberChannelIsPerChannelSlide) {
 // ---------------------------------------------------------------------------
 // Channel fan-out (global channel / current channel / omni).
 // ---------------------------------------------------------------------------
+
+TEST_F(MidiDecoderPhase2, MpeGlobalChannelCcDoesNotTouchPitchBend) {
+    // 8.8 SW1 defect 1 (red→green): the channel-0 MPE switch's
+    // MIDI_CONTROL_CHANGE arm was missing its break, so every global-channel
+    // CC ALSO executed the MIDI_PITCH_BEND arm — reinterpreting
+    // (ccNumber, ccValue) as a 14-bit bend pair and stomping
+    // MATRIX_SOURCE_PITCHBEND (CC number 127 / value 127 read as pb=8191,
+    // a near-full-scale bend). With the break, CC terminates after
+    // controlChange() and only a real pitch-bend event writes the source.
+    ss_->mixerState.MPE_inst1_ = 1;
+    Feed({0x91, 60, 100});      // member-channel note: timbre 0 voice exists
+    Feed({0xE0, 0x00, 0x40});   // center the bend: pb = 0
+    EXPECT_FLOAT_EQ(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_PITCHBEND), 0.0f);
+    Feed({0xB0, 127, 127});     // CC on the global channel
+    EXPECT_FLOAT_EQ(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_PITCHBEND), 0.0f)
+        << "global-channel CC must not be reinterpreted as pitch bend";
+    Feed({0xE0, 0x7F, 0x7F});   // real bend, full up: pb = 8191
+    EXPECT_NEAR(synth_.getTimbre(0)->hostMaxMatrixSource(MATRIX_SOURCE_PITCHBEND),
+                8191 * .00012207031250000000f, 1e-6f)
+        << "real pitch-bend events still write the source";
+}
 
 TEST_F(MidiDecoderPhase2, GlobalChannelCcReachesAllTimbres) {
     // globalChannel_=1 => event channel 0 is the global channel: the event
