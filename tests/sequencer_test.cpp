@@ -1703,6 +1703,17 @@ protected:
         bank_->saveSequence(&file, 0, file.name);
         return file;
     }
+    // Copilot review (PR #46): the heap objects SaveSlot allocates must be
+    // released — the base SequencerPhase2 fixture deliberately placement-
+    // news into member backings (no teardown by design), but these two are
+    // plain heap allocations LeakSanitizer would flag. Mirrors the
+    // new-in-SetUp / delete-in-TearDown pattern of SequenceBankTest.
+    void TearDown() override {
+        delete bank_;
+        delete fsu_;
+        bank_ = nullptr;
+        fsu_ = nullptr;
+    }
     int blocks_ = 0;
     FileSystemUtils* fsu_ = nullptr;
     SequenceBank* bank_ = nullptr;
