@@ -4,8 +4,11 @@ Host-side C++ unit tests for preenfm3 firmware, built with **GoogleTest** and
 run with **CTest**. No hardware, no cross-compiler — these compile on your dev
 machine (or CI) with the system `g++`/`clang++`.
 
-> This directory is **scaffolding**: it wires GoogleTest + CTest + a smoke test.
-> Coverage of real firmware units lands in a follow-up. See *Roadmap* below.
+> **Status:** a full regression suite — 33 test files, 680 tests, golden-master
+> full-render fixtures, ASAN+UBSAN clean, ~89% measured line coverage of
+> `firmware/Src` (ratcheted floor: 89%, see `scripts/coverage-floor.txt`). It
+> grew out of the original scaffolding while landing the four coverage targets
+> below, and now guards every change to the host-testable firmware logic.
 
 ## Why host-side, and the compiler rule
 
@@ -64,9 +67,10 @@ make test-cov
 
 Builds the suite with clang + `-fprofile-instr-generate -fcoverage-mapping`,
 runs ctest, merges the per-test `.profraw`, and prints an `llvm-cov report`
-scoped to `firmware/Src` (headers excluded, matching the 12.45% baseline in
-`_bmad-output/planning-artifacts/test-coverage-plan.md`). Artifacts land in
-`build/test-cov/` (`pfm3_tests.profdata`, `coverage-report.txt`).
+scoped to `firmware/Src` (headers excluded, same methodology as the original
+baseline in `_bmad-output/planning-artifacts/test-coverage-plan.md`). Artifacts
+land in `build/test-cov/` (`pfm3_tests.profdata`, `coverage-report.txt`).
+The current measured total is **89.47% lines** (Phase 5).
 
 The target **forces clang and pins the LLVM tool pair** because LLVM
 source-based coverage requires the compiler and `llvm-cov`/`llvm-profdata` to
@@ -151,24 +155,26 @@ upgrade: bump `GIT_TAG` here **and** the cache key in
   floating drift across hosts. (Flakiness is critical tech debt.)
 - Name tests `<Suite>.<Case>` so `ctest -R` filtering stays ergonomic.
 
-## Roadmap (future coverage sessions)
+## Coverage history
 
-The scaffolding proves the harness runs. The next sessions add coverage, ranked
-by **impact × bug-likelihood**:
+The original plan ranked four coverage targets by **impact × bug-likelihood**;
+all four have landed, each at or above its target:
 
-| Target | File(s) | Guards against | Status |
+| Target | File(s) | Guards against | Outcome |
 | --- | --- | --- | --- |
 | Sequencer serialization | `firmware/Src/midi/Sequencer.cpp` | regression of the `-Ofast` unaligned-float hard-fault | ✅ done (Target #1) |
 | DX7 sysex import | `firmware/Src/utils/Hexter.cpp` | crash/corruption on malformed sysex | ✅ done (Target #2; surfaced + fixed a global-buffer-overflow) |
 | Synth math | `firmware/Src/synth/{Osc,Env,Matrix}.cpp` | silent audio regressions | ✅ done (Target #3) |
 | MIDI decode | `firmware/Src/midi/MidiDecoder.cpp` | stuck notes / wrong CC routing | ✅ done (Target #4; decode state machine + NRPN assembly + routing through the real Synth graph) |
 
-All four roadmap targets are now covered. The host-testability seam is
-backwards-compatible: new coverage sessions can drop in another `*_test.cpp`
-and extend `target_sources` without revisiting the seam decision (see
-[SEAM.md](SEAM.md)).
+Beyond the plan, the suite gained full-render golden-master comparison (see
+[`golden/README.md`](golden/README.md)) and per-unit characterization of the
+filesystem, display, MIDI-controller, mixer, and effect layers.
 
-Each of these currently `#include`s HAL/STM32 headers transitively. The work is
-**extraction**: isolate the pure logic into a host-compilable translation unit
-behind a thin shim (a `PFM3_HOST` define that stubs `HAL_*` and hardware calls),
-then test that. GoogleTest is already waiting for them.
+### Adding new coverage
+
+The host-testability seam is backwards-compatible: drop in another
+`*_test.cpp` and, if it needs new firmware TUs, extend
+`target_sources(pfm3_fw_host …)` (see the build-layout section above) — the
+`PFM3_HOST` shims in [`host_shims/`](host_shims/) already stub the HAL/FatFs/
+TFT boundaries. Design notes for the seam live in [SEAM.md](SEAM.md).
