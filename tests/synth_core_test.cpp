@@ -95,6 +95,63 @@ protected:
 
     uint8_t playCount() { return synth().getNumberOfPlayingVoices(); }
 
+    // B10 (phase 8.4): render up to maxBlocks while watching timbre-0 voice
+    // slot 0 for a phantom recall of phantomNote. Sets *sawPhantom when the
+    // playing voice's note ever equals phantomNote. Returns blocks rendered;
+    // == maxBlocks means silence was NEVER reached (renderUntilSilent
+    // semantics: the block that first falls silent is rendered first).
+    std::size_t RenderWatchingPhantom(int phantomNote, bool* sawPhantom,
+                                      std::size_t maxBlocks) {
+        std::size_t n = 0;
+        *sawPhantom = false;
+        while (n < maxBlocks) {
+            int64_t m = renderBlock();
+            n++;
+            Voice& v = synth().hostVoice(voiceForSlot(0));
+            if (v.isPlaying() &&
+                (int)(uint8_t)v.getNote() == phantomNote) {
+                *sawPhantom = true;
+            }
+            if (m <= kSilenceThreshold && n > 4) return n;
+        }
+        return n;
+    }
+
+    // B10 (phase 8.4): stage MONO timbre 0 with the held-note stack [60, 67]
+    // and the single legato voice sounding 67. The renders between the
+    // presses promote each legato target through the quick-dead tail
+    // (ENV_STATE_ON_QUICK_R table is size-1 — promotion completes within
+    // ~2 blocks); the bounded wait below makes the fixture self-verifying
+    // rather than assuming the second press is an established note.
+    void HoldMonoPairB10() {
+        auto* p = synth().getTimbre(0)->getParamRaw();
+        p->engine1.playMode = PLAY_MODE_MONO;
+        synth().noteOn(0, 60, 100);
+        renderBlocks(3);
+        synth().noteOn(0, 67, 100);
+        renderBlocks(3);
+        // Bounded promotion wait: render up to 8 extra blocks until the
+        // second press's pending legato target is promoted, then PROVE the
+        // fixture ends on an established sounding note.
+        for (int i = 0;
+             i < 8 && synth().hostVoice(voiceForSlot(0)).isNewNotePending();
+             i++) {
+            renderBlock();
+        }
+        ASSERT_FALSE(synth().hostVoice(voiceForSlot(0)).isNewNotePending())
+            << "fixture: second press must be an established sounding note, "
+               "not a pending target";
+        // Prove the promotion actually established note 67 (a canceled or
+        // dropped pending with the old note still sounding would also show
+        // pending==false + one playing voice + a two-entry stack).
+        ASSERT_EQ((int)(uint8_t)synth().hostVoice(voiceForSlot(0)).getNote(),
+                  67)
+            << "fixture: the sounding voice must be the promoted 67";
+        ASSERT_EQ(playCount(), 1) << "fixture: MONO must hold a single voice";
+        ASSERT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 2)
+            << "fixture: stack must hold both presses";
+    }
+
     int voiceForSlot(int slot) {
         const int8_t voice = synth().getTimbre(0)->voiceNumber_[slot];
         if (voice < 0) {
@@ -325,6 +382,335 @@ TEST_F(SynthCore, MonoModeGlideRecallGlidesBackDown) {
                   synth().hostVoice(voiceForSlot(0)).getNote())), 64)
         << "glide-mode recall must target the LIFO stack top (64), not the "
            "lowest/original note";
+    EXPECT_GT(renderBlocks(4), kSilenceThreshold);
+}
+
+// ===========================================================================
+// 2b. Phase 8.4 B10 — MONO stack invalidation on routing replacement.
+// The four MIXER_VALUE_MIDI_* routing cases in Synth::newMixerValue and the
+// bulk-restoration seam Synth::mixerRoutingReplaced() (rev 2: the dedicated
+// hook fired ONLY at the real load sites — NOT afterNewMixerLoad, which
+// also fires on menu entry/bank preview with no state loaded) must both
+// clear the MONO held-note stack (and cancel pendings): routing replacement
+// severs the note-on/off pairing the stack tracks, so a later release would
+// recall a phantom note. Pre-fix contrast (red): the stack survives and
+// noteOff(0,67) recalls 60 through monoNoteRecall — the voice note flips to
+// 60 and the render never falls silent.
+// ===========================================================================
+
+TEST_F(SynthCore, MonoStackClearedOnEachRoutingChange) {
+    const uint8_t routingValues[4] = {
+        MIXER_VALUE_MIDI_CHANNEL, MIXER_VALUE_MIDI_FIRST_NOTE,
+        MIXER_VALUE_MIDI_LAST_NOTE, MIXER_VALUE_MIDI_SHIFT_NOTE,
+    };
+    for (uint8_t routingValue : routingValues) {
+        SCOPED_TRACE("routing value " + std::to_string((int)routingValue));
+        HoldMonoPairB10();
+
+        // Routing replacement: arp reset + allNoteOff natural release
+        // (existing behavior) + pending cancel + stack clear (B10).
+        synth().newMixerValue(routingValue, 0, 0.0f, 1.0f);
+        EXPECT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 0)
+            << "routing change must invalidate the MONO held-note stack";
+
+        // The later note-off must NOT recall the held 60: the release tail
+        // decays to silence and the voice note never becomes 60.
+        synth().noteOff(0, 67);
+        bool sawPhantom = false;
+        const std::size_t blocks = RenderWatchingPhantom(60, &sawPhantom, 2200);
+        EXPECT_LT(blocks, 2200) << "release must finish (no endless recall)";
+        EXPECT_FALSE(sawPhantom)
+            << "stale stack entry recalled phantom note 60 after routing "
+               "change";
+        EXPECT_TRUE(renderIsSilent(8));
+
+        // ... and the timbre recovers on a fresh press.
+        synth().noteOn(0, 72, 100);
+        renderBlocks(3);
+        EXPECT_GT(renderBlocks(4), kSilenceThreshold);
+
+        // Clean up so the next routing value starts from a silent synth.
+        synth().noteOff(0, 72);
+        renderUntilSilent(2200);
+    }
+}
+
+TEST_F(SynthCore, MonoStackClearedAfterMixerLoad) {
+    HoldMonoPairB10();
+
+    // Multi-timbre (BH#5): a bulk replacement rewrites EVERY timbre's
+    // routing, so the invalidation must cover every timbre. Give timbre 1
+    // two voices (the default harness setup gives it none) and hold a MONO
+    // pair there too; scaleFrequencies are wired for every timbre by the
+    // golden harness, so the pair really routes. Production-faithful grant:
+    // FMDisplayMixer writes the mixer-state field FIRST (FMDisplayMixer.cpp
+    // `*((int8_t*)valueP) = newValue`) and only then propagates old->new
+    // (0 -> 2 here) — mirror that order.
+    harness_->synthState()->mixerState.instrumentState_[1].numberOfVoices = 2;
+    synth().newMixerValue(MIXER_VALUE_NUMBER_OF_VOICES, 1, 0.0f, 2.0f);
+    // Keep the slots SIGNED: voiceNumber_ holds int8_t with -1 meaning
+    // unassigned — casting through uint8_t first would turn -1 into 255
+    // and make the range checks vacuously pass (review round 3, F5).
+    const int t1Slot0 =
+        (int)synth().getTimbre(1)->voiceNumber_[0];
+    const int t1Slot1 =
+        (int)synth().getTimbre(1)->voiceNumber_[1];
+    ASSERT_GE(t1Slot0, 0) << "production-faithful two-voice timbre";
+    ASSERT_LE(t1Slot0, MAX_NUMBER_OF_VOICES - 1)
+        << "production-faithful two-voice timbre";
+    ASSERT_GE(t1Slot1, 0) << "production-faithful two-voice timbre";
+    ASSERT_LE(t1Slot1, MAX_NUMBER_OF_VOICES - 1)
+        << "production-faithful two-voice timbre";
+    ASSERT_NE(t1Slot0, t1Slot1) << "production-faithful two-voice timbre";
+    auto* p1 = synth().getTimbre(1)->getParamRaw();
+    p1->engine1.playMode = PLAY_MODE_MONO;
+    synth().noteOn(1, 60, 100);
+    renderBlocks(3);
+    synth().noteOn(1, 67, 100);
+    ASSERT_EQ(synth().getTimbre(1)->getMonoStackSizeForTest(), 2)
+        << "fixture: timbre 1 must hold both presses";
+
+    // Bulk mixer replacement seam — SD mixer-bank load, default-mixer
+    // restore and boot default all funnel into mixerRoutingReplaced() (rev
+    // 2: the dedicated load-site hook; NOT afterNewMixerLoad, which menu
+    // entry/bank preview fire with no state loaded). It does NOT release
+    // voices: the sounding voice keeps playing, only the runtime note
+    // state is invalidated — and the cancel runs while the pre-load voice
+    // mapping is intact, so pendings really reach their voices.
+    synth().mixerRoutingReplaced();
+    EXPECT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 0)
+        << "bulk mixer load must invalidate the MONO held-note stack";
+    EXPECT_EQ(synth().getTimbre(1)->getMonoStackSizeForTest(), 0)
+        << "bulk mixer load must invalidate EVERY timbre's stack";
+    EXPECT_TRUE(synth().hostVoice(voiceForSlot(0)).isPlaying())
+        << "mixer load keeps the sounding voice (only the stack is cleared)";
+    EXPECT_EQ((int)(uint8_t)synth().hostVoice(voiceForSlot(0)).getNote(), 67);
+
+    // Later release recalls nothing on either timbre: both stacks are
+    // empty, so the releases just decay (a phantom recall would flip the
+    // timbre-0 voice note to 60 and never fall silent).
+    synth().noteOff(1, 67);
+    synth().noteOff(1, 60);
+    synth().noteOff(0, 67);
+    bool sawPhantom = false;
+    const std::size_t blocks = RenderWatchingPhantom(60, &sawPhantom, 2200);
+    EXPECT_LT(blocks, 2200) << "release after mixer load must finish";
+    EXPECT_FALSE(sawPhantom)
+        << "stale stack entry recalled phantom note 60 after mixer load";
+    EXPECT_TRUE(renderIsSilent(8));
+    EXPECT_EQ(playCount(), 0);
+
+    // The timbre recovers on a fresh press.
+    synth().noteOn(0, 72, 100);
+    renderBlocks(3);
+    EXPECT_GT(renderBlocks(4), kSilenceThreshold);
+    synth().noteOff(0, 72);
+    renderUntilSilent(2200);
+
+    // Pending-at-load: a legato target staged PENDING at the moment of the
+    // bulk replacement (noteOn+noteOn without a render between, per the
+    // phase 8.2 SeqLoadCleanup recipe) must be canceled while the pre-load
+    // voice mapping still resolves it — otherwise the target re-fires as a
+    // start-and-finish blip after the load (iteration-1 defect: a cancel
+    // placed inside afterNewMixerLoad ran after numberOfVoicesChanged(0)
+    // zeroed numberOfVoices_, a no-op).
+    synth().noteOn(0, 60, 100);
+    synth().noteOn(0, 64, 100);
+    Voice& v = synth().hostVoice(voiceForSlot(0));
+    ASSERT_TRUE(v.isNewNotePending())
+        << "fixture: legato target 64 must be pending at the mixer load";
+    ASSERT_EQ((int)(uint8_t)v.getNextPendingNote(), 64)
+        << "fixture: the pending target must be note 64";
+
+    synth().mixerRoutingReplaced();
+
+    EXPECT_FALSE(v.isNewNotePending())
+        << "bulk mixer load must cancel the orphaned pending retrigger";
+    EXPECT_EQ((int)(uint8_t)v.getNextPendingNote(), 0)
+        << "no note-off-flagged pending target may survive the load";
+    EXPECT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 0);
+
+    // Drive the quick-dead tail to completion: the canceled target never
+    // re-fires (no promotion path once the pending is dropped).
+    EXPECT_LT(renderUntilSilent(2200), 2200)
+        << "release must decay to silence";
+    EXPECT_TRUE(renderIsSilent(64))
+        << "the canceled target must not re-fire (no start-and-finish "
+           "blip) after the load";
+    EXPECT_EQ(playCount(), 0);
+}
+
+TEST_F(SynthCore, MonoStackClearedThroughSynthStatePropagate) {
+    // B10 glue/integration: pins the production wiring
+    // SynthState::propagateMixerRoutingReplaced() -> param listener ->
+    // Synth::mixerRoutingReplaced() override. Unlike the direct
+    // synth().mixerRoutingReplaced() seams above, this drives the ACTUAL
+    // propagate path the three load sites call (SynthState.cpp loadMixer,
+    // FMDisplayMenu default-load, preenfm3.cpp boot) — if the listener
+    // registration were dropped (golden_harness.cpp
+    // ss_->insertParamListener(synth_)), the propagate fans out to nothing
+    // and both asserts below fail.
+    HoldMonoPairB10();
+
+    // Stage a pending legato target on top of the held pair (no render
+    // between the presses — same staging recipe as the pending-at-load
+    // section above).
+    synth().noteOn(0, 60, 100);
+    synth().noteOn(0, 64, 100);
+    Voice& v = synth().hostVoice(voiceForSlot(0));
+    ASSERT_TRUE(v.isNewNotePending())
+        << "fixture: legato target must be pending at the propagate";
+
+    harness_->synthState()->propagateMixerRoutingReplaced();
+
+    EXPECT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 0)
+        << "the production propagate path must clear the MONO held-note stack";
+    EXPECT_FALSE(v.isNewNotePending())
+        << "the production propagate path must cancel the pending retrigger";
+
+    // The canceled target never re-fires and the timbre ends silent.
+    EXPECT_LT(renderUntilSilent(2200), 2200);
+    EXPECT_TRUE(renderIsSilent(8));
+    EXPECT_EQ(playCount(), 0);
+}
+
+TEST_F(SynthCore, MonoStackSurvivesMenuBrowseAfterNewMixerLoad) {
+    // Rev-2 menu-browse invariant (BH#2): mixer-menu entry and bank-preview
+    // turns fire propagateAfterNewMixerLoad() with NO state loaded
+    // (FMDisplayMenu.cpp:226/:730). The B10 invalidation must NOT live on
+    // that path — this test calls that seam DIRECTLY (exactly what menu
+    // browsing triggers) and pins that a held MONO interval SURVIVES it.
+    // Would FAIL on iteration-1 code, whose afterNewMixerLoad loop cleared
+    // the stack unconditionally; pins the (correct) baseline behavior.
+    HoldMonoPairB10();
+
+    synth().afterNewMixerLoad();  // menu entry / bank preview seam: no load
+
+    EXPECT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 2)
+        << "menu browse (no state loaded) must NOT clear the held-note stack";
+    EXPECT_TRUE(synth().hostVoice(voiceForSlot(0)).isPlaying())
+        << "the held interval keeps sounding through menu browse";
+    EXPECT_EQ((int)(uint8_t)synth().hostVoice(voiceForSlot(0)).getNote(), 67);
+
+    // Recall still works on release: noteOff(67) recalls the held 60.
+    synth().noteOff(0, 67);
+    renderBlocks(3);
+    EXPECT_EQ((int)(uint8_t)synth().hostVoice(voiceForSlot(0)).getNote(), 60)
+        << "releasing the upper key must still recall the held lower note";
+    EXPECT_GT(renderBlocks(4), kSilenceThreshold)
+        << "the recalled note keeps sounding";
+
+    // Releasing the recalled note ends silent, and a fresh press sounds.
+    synth().noteOff(0, 60);
+    renderUntilSilent(2200);
+    EXPECT_TRUE(renderIsSilent(8));
+    synth().noteOn(0, 72, 100);
+    renderBlocks(3);
+    EXPECT_GT(renderBlocks(4), kSilenceThreshold);
+}
+
+TEST_F(SynthCore, MonoRoutingChangeCancelsPendingRetrigger) {
+    // Legato target staged PENDING on the mono voice (no render between the
+    // presses: 64 is queued behind the sounding 60 — the same state the
+    // SeqLoadCleanup fixture of phase 8.2 pins at load time). NOTE: the
+    // voice's note field ALREADY reads 64 while the target is pending —
+    // Voice::noteOnWithoutPop updates `note` immediately ("so that the
+    // noteOff is triggered by the new note") and quick-deads the envelopes;
+    // endNoteOrBeginNextOne then promotes the pending target when the
+    // quick-dead tail ends. That promotion is the only re-fire mechanism,
+    // so pinning the pending state (flag + content) pins the re-fire.
+    auto* p = synth().getTimbre(0)->getParamRaw();
+    p->engine1.playMode = PLAY_MODE_MONO;
+    synth().noteOn(0, 60, 100);
+    synth().noteOn(0, 64, 100);
+    ASSERT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 2);
+    Voice& v = synth().hostVoice(voiceForSlot(0));
+    ASSERT_TRUE(v.isNewNotePending())
+        << "fixture: legato target 64 must be pending at the routing change";
+    ASSERT_EQ((int)(uint8_t)v.getNextPendingNote(), 64)
+        << "fixture: the pending target must be note 64";
+    ASSERT_TRUE(v.isPlaying());
+
+    synth().newMixerValue(MIXER_VALUE_MIDI_CHANNEL, 0, 0.0f, 1.0f);
+
+    // B10: the pending retrigger must be canceled. Pre-fix it survives the
+    // allNoteOff as a note-off-flagged pending (Voice::noteOff does
+    // pendingNote += 128, i.e. 64+128 wrapped into a signed char) and
+    // endNoteOrBeginNextOne then re-fires 64 as a start-and-finish blip
+    // once the quick-dead tail reaches the envelope end.
+    EXPECT_FALSE(v.isNewNotePending())
+        << "routing change must cancel the orphaned pending retrigger";
+    EXPECT_EQ((int)(uint8_t)v.getNextPendingNote(), 0)
+        << "no note-off-flagged pending target may survive the routing "
+           "change";
+    EXPECT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 0);
+
+    // Drive the release to completion: the orphaned target never re-fires
+    // (with the pending canceled there is no promotion path), silence
+    // holds once reached and the timbre ends with no playing voice.
+    EXPECT_LT(renderUntilSilent(2200), 2200)
+        << "release must decay to silence";
+    EXPECT_TRUE(renderIsSilent(64))
+        << "the canceled target must not re-fire (no start-and-finish "
+           "blip) after the tail decays";
+    EXPECT_EQ(playCount(), 0);
+}
+
+TEST_F(SynthCore, PolyModeSurvivesRoutingChangesAndMixerLoad) {
+    // POLY never uses the held-note stack; the B10 invalidation must be
+    // inert-but-correct here: no crash, no stuck voices, fresh notes still
+    // sound. Rev 2: the bulk-load seam is mixerRoutingReplaced() (not
+    // afterNewMixerLoad — that is the menu-browse hook, which must NOT
+    // invalidate; its POLY inertness is pinned by MonoStackSurvives-
+    // MenuBrowseAfterNewMixerLoad). BH#6: the pending-retrigger cancel is
+    // deterministic in ALL modes — staged below via same-note retrigger
+    // (Timbre::preenNoteOn's same-note branch calls noteOnWithoutPop,
+    // whose POLY path — POLY never glides — stages newNotePending on the
+    // SAME voice) and canceled by the routing edit.
+    auto* p = synth().getTimbre(0)->getParamRaw();
+    p->engine1.playMode = PLAY_MODE_POLY;
+    synth().noteOn(0, 60, 100);
+    renderBlocks(3);
+    synth().noteOn(0, 67, 100);
+    renderBlocks(3);
+    EXPECT_EQ(playCount(), 2);
+
+    synth().mixerRoutingReplaced();  // mid-hold bulk load (rev-2 seam)
+    EXPECT_EQ(synth().getTimbre(0)->getMonoStackSizeForTest(), 0)
+        << "stack is unused in POLY";
+    EXPECT_EQ(playCount(), 2)
+        << "the load seam must not release POLY voices";
+
+    // Stage the POLY pending: same-note retrigger without a render.
+    synth().noteOn(0, 60, 100);
+    Voice& pending = synth().hostVoice(voiceForSlot(0));
+    ASSERT_TRUE(pending.isNewNotePending())
+        << "fixture: same-note retrigger must stage a POLY pending (60 "
+           "landed on slot 0)";
+
+    synth().newMixerValue(MIXER_VALUE_MIDI_CHANNEL, 0, 0.0f, 1.0f);
+
+    EXPECT_FALSE(pending.isNewNotePending())
+        << "BH#6: pendings cancel deterministically in ALL play modes";
+    EXPECT_EQ((int)(uint8_t)pending.getNextPendingNote(), 0);
+
+    const uint8_t routingValues[4] = {
+        MIXER_VALUE_MIDI_CHANNEL, MIXER_VALUE_MIDI_FIRST_NOTE,
+        MIXER_VALUE_MIDI_LAST_NOTE, MIXER_VALUE_MIDI_SHIFT_NOTE,
+    };
+    for (uint8_t routingValue : routingValues) {
+        synth().newMixerValue(routingValue, 0, 0.0f, 1.0f);
+        renderBlocks(2);  // must not crash or wedge the audio path
+    }
+
+    // The allNoteOff releases finish: nothing is stuck sounding and the
+    // canceled POLY pending never re-fires.
+    EXPECT_LT(renderUntilSilent(2200), 2200);
+    EXPECT_TRUE(renderIsSilent(8));
+    EXPECT_EQ(playCount(), 0);
+
+    synth().noteOn(0, 72, 100);
+    renderBlocks(3);
     EXPECT_GT(renderBlocks(4), kSilenceThreshold);
 }
 

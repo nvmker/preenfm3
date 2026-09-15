@@ -635,7 +635,13 @@ void FMDisplayMenu::buttonPressed(int currentTimbre, int button) {
                 synthState_->getStorage()->getMixerBank()->removeDefaultMixer();
                 break;
             case MENU_DEFAULT_MIXER_LOAD:
-                synthState_->getStorage()->getMixerBank()->loadDefaultMixer();
+                if (synthState_->getStorage()->getMixerBank()->loadDefaultMixer()) {
+                    // B10 (phase 8.4): real bulk replacement — invalidate
+                    // routing-paired note state before the generic propagate.
+                    // Only a real replacement invalidates — a failed load
+                    // returns false with the mixer state untouched.
+                    synthState_->propagateMixerRoutingReplaced();
+                }
                 synthState_->propagateAfterNewMixerLoad();
                 break;
             case MENU_DEFAULT_SEQUENCER_SAVE:

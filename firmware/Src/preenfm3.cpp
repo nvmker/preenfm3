@@ -474,7 +474,14 @@ void dependencyInjection() {
     // the dx7bank/dx7preset keys; stays 0 on an old Settings.txt without them).
     synthState.fullState.dx7BankNumber = sdCard.getDX7SysexFile()->getLastBank();
     synthState.fullState.dx7PresetNumber = sdCard.getDX7SysexFile()->getLastPreset();
-    sdCard.getMixerBank()->loadDefaultMixer();
+    if (sdCard.getMixerBank()->loadDefaultMixer()) {
+        // B10 (phase 8.4): real bulk replacement — invalidate routing-paired
+        // note state (no-op on the empty stacks at boot) before the generic
+        // propagate, keeping every bulk-replacement site uniform. Only a
+        // real replacement invalidates — a failed load returns false with
+        // the mixer state untouched.
+        synthState.propagateMixerRoutingReplaced();
+    }
     sdCard.getSequenceBank()->loadDefaultSequence();
     sdCard.getUserWaveform()->loadUserWaveforms();
     sdCard.getUserEnvCurve()->loadUserEnvCurves();

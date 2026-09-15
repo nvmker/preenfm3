@@ -35,6 +35,12 @@ public:
     virtual void afterNewParamsLoad(int timbre) = 0;
     virtual void afterNewMixerLoad() = 0;
 
+    // B10 (phase 8.4): fired ONLY after real bulk mixer replacements (bank
+    // load, default-mixer restore, boot default) — NOT on the generic
+    // afterNewMixerLoad paths (menu entry/bank preview fire that with no
+    // state loaded). Synth invalidates routing-paired runtime note state.
+    virtual void mixerRoutingReplaced() {}
+
     virtual void playNote(int timbre, char note, char velocity) = 0;
     virtual void stopNote(int timbre, char note) = 0;
 
