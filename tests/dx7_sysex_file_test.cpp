@@ -19,16 +19,42 @@ public:
     const char* folder() { return getFolderName(); }
 };
 
-static std::string MakeSyx(int patchToStamp) {
+// Phase 8.5 (A2): stamp a complete, valid Yamaha DX7 32-voice bulk framing
+// onto a 4104-byte buffer: F0 43 0n 09 20 00 | 4096 data bytes | checksum | F7.
+// The channel nibble defaults to 0x0C (the common real-world dump); the
+// checksum is recomputed over the final data bytes, so tests mutate data
+// first and stamp last.
+static void StampDx7Framing(std::string& s) {
+    ASSERT_EQ(s.size(), 4104u);
+    s[0] = (char)0xF0;   // SysEx start
+    s[1] = (char)0x43;   // Yamaha manufacturer ID
+    s[2] = (char)0x0C;   // sub-status 0 + channel 12 (any nibble is legal)
+    s[3] = (char)0x09;   // format: 32-voice bulk dump
+    s[4] = (char)0x20;   // byte count MSB
+    s[5] = (char)0x00;   // byte count LSB (0x2000 = 4096)
+    s[4103] = (char)0xF7;  // SysEx end
+    uint32_t sum = 0;
+    for (int k = 6; k < 4102; k++) {
+        sum += (uint8_t)s[k];
+    }
+    s[4102] = (char)((-sum) & 0x7F);
+}
+
+static std::string MakeSyx(int patchToStamp, bool stampFraming = true) {
     // 4104 bytes: 6-byte header + 32 * 128-byte packed patches + checksum tail
     std::string s(4104, '\0');
-    s[0] = (char)0xF0;
     for (int p = 0; p < 32; p++) {
         s[6 + p * 128 + 0] = (char)('A' + p);
-        s[6 + p * 128 + 127] = (char)('a' + p);
+        // End marker clamped to 7 bits: 'a'+p reaches 0x80 at p=31, which is
+        // not a legal SysEx data byte (and the checksum is blind to bit 7 —
+        // only the independent 7-bit rule rejects such a file).
+        s[6 + p * 128 + 127] = (char)(('a' + p) & 0x7F);
     }
     if (patchToStamp >= 0) {
         s[6 + patchToStamp * 128 + 10] = 'X';  // marker inside the patch
+    }
+    if (stampFraming) {
+        StampDx7Framing(s);
     }
     return s;
 }
@@ -110,6 +136,112 @@ TEST_F(DX7SysexFileTest, Dx7LoadPatchFailsOnShortBank) {
     bank.fileType = FILE_OK;
     EXPECT_EQ(dx7_.dx7LoadPatch(&bank, 23), nullptr);
     EXPECT_NE(dx7_.dx7LoadPatch(&bank, 0), nullptr);  // patch 0 fits
+}
+
+// --- Phase 8.5 (A2): DX7 bulk framing/checksum validation ------------------
+
+TEST_F(DX7SysexFileTest, ValidatorAcceptsWellFormedBulkBanks) {
+    std::string s = MakeSyx(0);
+    EXPECT_TRUE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)s.data(), 4104));
+    // Any channel nibble 0-15 is valid framing (real dumps vary; 0x0C common).
+    for (int ch = 0; ch < 16; ch++) {
+        s[2] = (char)ch;
+        EXPECT_TRUE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)s.data(), 4104)) << "ch=" << ch;
+    }
+    // Wrong size / null rejected.
+    EXPECT_FALSE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)s.data(), 4103));
+    EXPECT_FALSE(DX7SysexFile::isValidDx7BulkBank(nullptr, 4104));
+}
+
+TEST_F(DX7SysexFileTest, ValidatorRejectsEachFramingDefect) {
+    struct Case { const char* what; int idx; char value; };
+    const Case cases[] = {
+        {"not SysEx start", 0, (char)0xF1},
+        {"not Yamaha ID", 1, (char)0x42},
+        {"sub-status high nibble", 2, (char)0x10},
+        {"wrong format (single voice)", 3, (char)0x00},
+        {"byte count MSB", 4, (char)0x21},
+        {"byte count LSB", 5, (char)0x01},
+        {"missing F7 tail", 4103, (char)0x00},
+    };
+    for (const auto& c : cases) {
+        std::string s = MakeSyx(0);
+        s[c.idx] = c.value;
+        EXPECT_FALSE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)s.data(), 4104)) << c.what;
+    }
+    // Bit-flipped data byte with the original checksum → checksum mismatch.
+    std::string flipped = MakeSyx(0);
+    flipped[6 + 5 * 128 + 40] ^= 0x01;
+    EXPECT_FALSE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)flipped.data(), 4104));
+    // Direct checksum corruption.
+    std::string badSum = MakeSyx(0);
+    badSum[4102] = (char)(badSum[4102] ^ 0x01);
+    EXPECT_FALSE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)badSum.data(), 4104));
+    // 8-bit data byte with a still-matching checksum: (-sum)&0x7F is blind
+    // to bit 7, so the independent 7-bit data check must reject it.
+    std::string eightBit = MakeSyx(0);
+    eightBit[6 + 9 * 128 + 3] = (char)((uint8_t)eightBit[6 + 9 * 128 + 3] | 0x80);
+    EXPECT_FALSE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)eightBit.data(), 4104));
+}
+
+TEST_F(DX7SysexFileTest, AllZeroDataWithZeroChecksumIsValidAndLoads) {
+    // Plan §8.5 boundary: all-zero data (checksum 0) is VALID DX7 data.
+    std::string s(4104, '\0');
+    StampDx7Framing(s);
+    EXPECT_EQ((uint8_t)s[4102], 0);
+    EXPECT_TRUE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)s.data(), 4104));
+
+    fatfsShimInjectBytes("0:/pfm3/dx7/zeros.syx", s.data(), s.size());
+    const PFM3File* f0 = dx7_.getFile(0);
+    EXPECT_STREQ(f0->name, "zeros.syx");
+    PFM3File bank;
+    strcpy(bank.name, "zeros.syx");
+    bank.fileType = FILE_OK;
+    uint8_t* patch = dx7_.dx7LoadPatch(&bank, 0);
+    ASSERT_NE(patch, nullptr);
+    EXPECT_EQ(patch[0], 0);
+}
+
+TEST_F(DX7SysexFileTest, EnumerationHidesContentInvalidBanks) {
+    std::string good = MakeSyx(0);
+    std::string badChecksum = MakeSyx(0);
+    badChecksum[4102] = (char)(badChecksum[4102] ^ 0x01);
+    std::string eightBit = MakeSyx(0);
+    eightBit[500] = (char)((uint8_t)eightBit[500] | 0x80);  // checksum still matches
+    std::string wrongFormat = MakeSyx(0);
+    wrongFormat[3] = (char)0x00;  // single-voice format, not 32-voice bulk
+    std::string noTail = MakeSyx(0);
+    noTail[4103] = 0;
+    std::string noFraming = MakeSyx(0, false);  // legacy fixture: no framing at all
+
+    fatfsShimInjectBytes("0:/pfm3/dx7/valid.syx", good.data(), good.size());
+    fatfsShimInjectBytes("0:/pfm3/dx7/badsum.syx", badChecksum.data(), badChecksum.size());
+    fatfsShimInjectBytes("0:/pfm3/dx7/bit8.syx", eightBit.data(), eightBit.size());
+    fatfsShimInjectBytes("0:/pfm3/dx7/format.syx", wrongFormat.data(), wrongFormat.size());
+    fatfsShimInjectBytes("0:/pfm3/dx7/notail.syx", noTail.data(), noTail.size());
+    fatfsShimInjectBytes("0:/pfm3/dx7/raw.syx", noFraming.data(), noFraming.size());
+
+    // Only the well-formed bank is listed; invalid ones are invisible,
+    // exactly like a wrong extension or truncated file.
+    EXPECT_EQ(dx7_.getFile(1)->fileType, FILE_EMPTY);
+    EXPECT_STREQ(dx7_.getFile(0)->name, "valid.syx");
+    EXPECT_EQ(dx7_.getFileIndex("valid.syx"), 0);
+    EXPECT_EQ(dx7_.getFileIndex("badsum.syx"), -1);
+
+    // And the surviving bank actually loads.
+    PFM3File bank;
+    strcpy(bank.name, "valid.syx");
+    bank.fileType = FILE_OK;
+    EXPECT_NE(dx7_.dx7LoadPatch(&bank, 0), nullptr);
+}
+
+TEST_F(DX7SysexFileTest, EnumerationUnreadableBankIsInvisible) {
+    // A file whose validation read fails (I/O error) is treated as invalid.
+    fatfsShimInjectBytes("0:/pfm3/dx7/valid.syx", MakeSyx(0).data(), 4104);
+    fatfsShimInjectBytes("0:/pfm3/dx7/wedged.syx", MakeSyx(0).data(), 4104);
+    fatfsShimFailNextNth("f_open", FR_DISK_ERR, 2);  // first f_open per file is the validation read
+    EXPECT_STREQ(dx7_.getFile(0)->name, "valid.syx");
+    EXPECT_EQ(dx7_.getFile(1)->fileType, FILE_EMPTY);
 }
 
 // --- folder picker (E-picker beta) -----------------------------------------

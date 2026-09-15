@@ -190,6 +190,21 @@ protected:
     virtual const char* getFolderName() = 0;
     virtual bool isCorrectFile(char *name, int size) = 0;
 
+    // Phase 8.5 (A2): content-level validation seam. initFiles() calls this
+    // for every directory entry that passed isCorrectFile(); a false return
+    // excludes the file from the listing with the same invisibility as a
+    // wrong name/size (truncated-file refusal). The default trusts name and
+    // size; file types whose bytes are verifiable (DX7 .syx bulk
+    // framing/checksum) override. `fileName` is the bare directory-entry
+    // name — build the load path with getFullName(). Called only from the
+    // single-threaded UI/menu enumeration context (initFiles caller), so a
+    // full-file read into storageBuffer is safe there.
+    virtual bool contentIsValid(const char *fileName, int size) {
+        (void) fileName;
+        (void) size;
+        return true;
+    }
+
     int remove(FILE_ENUM file);
     const char* getFileName(FILE_ENUM file);
     const char* getFullName(const char *fileName);

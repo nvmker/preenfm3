@@ -28,6 +28,12 @@ public:
 
 	uint8_t* dx7LoadPatch(const struct PFM3File* bank, int patchNumber);
 
+	// Phase 8.5 (A2): validate a complete 4104-byte Yamaha DX7 32-voice bulk
+	// dump: F0 43 0n 09 20 00 | 4096 7-bit data bytes | checksum | F7. The
+	// channel nibble n is unrestricted ((b[2] & 0xF0) == 0); the checksum is
+	// (-sum(data)) & 0x7F. All-zero data (checksum 0) is valid DX7 data.
+	static bool isValidDx7BulkBank(const uint8_t* bytes, int size);
+
 	// --- DX7 folder picker (E-picker β) -----------------------------------
 	// Root is the top of the DX7 library (configurable via dx7bankdir, default
 	// DX7_DIR). The picker lists the root's immediate subfolders; the chosen
@@ -58,6 +64,9 @@ public:
 protected:
 	const char* getFolderName();
 	bool isCorrectFile(char *name, int size);
+	// Phase 8.5 (A2): full-file framing/checksum check during enumeration —
+	// invalid banks become invisible, exactly like truncated files.
+	bool contentIsValid(const char* fileName, int size);
 	struct PFM3File *dx7Bank;
 
 private:
