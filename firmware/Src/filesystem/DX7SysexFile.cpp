@@ -116,7 +116,7 @@ bool DX7SysexFile::isValidDx7BulkBank(const uint8_t* bytes, int size) {
 		return false;			// format: 32-voice bulk dump
 	}
 	if (bytes[4] != 0x20 || bytes[5] != 0x00) {
-		return false;			// byte count 0x2000 = 4096
+		return false;			// byte count (0x20<<7)|0x00 = 4096 (7-bit MSB/LSB pair)
 	}
 	if (bytes[4103] != 0xF7) {
 		return false;			// SysEx end

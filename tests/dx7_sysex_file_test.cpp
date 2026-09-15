@@ -31,7 +31,7 @@ static void StampDx7Framing(std::string& s) {
     s[2] = (char)0x0C;   // sub-status 0 + channel 12 (any nibble is legal)
     s[3] = (char)0x09;   // format: 32-voice bulk dump
     s[4] = (char)0x20;   // byte count MSB
-    s[5] = (char)0x00;   // byte count LSB (0x2000 = 4096)
+    s[5] = (char)0x00;   // byte count LSB ((0x20<<7)|0x00 = 4096, 7-bit MSB/LSB pair)
     s[4103] = (char)0xF7;  // SysEx end
     uint32_t sum = 0;
     for (int k = 6; k < 4102; k++) {
@@ -182,6 +182,29 @@ TEST_F(DX7SysexFileTest, ValidatorRejectsEachFramingDefect) {
     std::string eightBit = MakeSyx(0);
     eightBit[6 + 9 * 128 + 3] = (char)((uint8_t)eightBit[6 + 9 * 128 + 3] | 0x80);
     EXPECT_FALSE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)eightBit.data(), 4104));
+    // Checksum byte with bit 7 set but correct low seven bits: the compare
+    // is unmasked — pin that it stays that way (a masked &0x7F compare here
+    // would accept a non-conforming framing byte).
+    std::string bit7Checksum = MakeSyx(0);
+    bit7Checksum[4102] = (char)((uint8_t)bit7Checksum[4102] | 0x80);
+    EXPECT_FALSE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)bit7Checksum.data(), 4104));
+}
+
+TEST_F(DX7SysexFileTest, ValidatorCoversTheFinalDataByte) {
+    // Off-by-one guard: the fixture's last data byte (index 4101) is normally
+    // zero, so a checksum loop ending one byte early would sum identically.
+    // Make the final byte non-zero and prove it is inside both the sum and
+    // the 7-bit check.
+    std::string s = MakeSyx(0);
+    s[4101] = 0x55;
+    StampDx7Framing(s);  // recompute checksum over the mutated data
+    EXPECT_TRUE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)s.data(), 4104));
+    // Same mutation WITHOUT restamping: checksum now stale -> rejected.
+    // (An off-by-one loop excluding 4101 would compute the OLD sum and
+    // wrongly accept this file.)
+    std::string stale = MakeSyx(0);
+    stale[4101] = 0x55;
+    EXPECT_FALSE(DX7SysexFile::isValidDx7BulkBank((const uint8_t*)stale.data(), 4104));
 }
 
 TEST_F(DX7SysexFileTest, AllZeroDataWithZeroChecksumIsValidAndLoads) {
@@ -194,10 +217,9 @@ TEST_F(DX7SysexFileTest, AllZeroDataWithZeroChecksumIsValidAndLoads) {
     fatfsShimInjectBytes("0:/pfm3/dx7/zeros.syx", s.data(), s.size());
     const PFM3File* f0 = dx7_.getFile(0);
     EXPECT_STREQ(f0->name, "zeros.syx");
-    PFM3File bank;
-    strcpy(bank.name, "zeros.syx");
-    bank.fileType = FILE_OK;
-    uint8_t* patch = dx7_.dx7LoadPatch(&bank, 0);
+    // Load through the ENUMERATED entry, not a manufactured PFM3File — pins
+    // that the stored name round-trips through getFullName on the load path.
+    uint8_t* patch = dx7_.dx7LoadPatch(f0, 0);
     ASSERT_NE(patch, nullptr);
     EXPECT_EQ(patch[0], 0);
 }
@@ -228,20 +250,35 @@ TEST_F(DX7SysexFileTest, EnumerationHidesContentInvalidBanks) {
     EXPECT_EQ(dx7_.getFileIndex("valid.syx"), 0);
     EXPECT_EQ(dx7_.getFileIndex("badsum.syx"), -1);
 
-    // And the surviving bank actually loads.
-    PFM3File bank;
-    strcpy(bank.name, "valid.syx");
-    bank.fileType = FILE_OK;
-    EXPECT_NE(dx7_.dx7LoadPatch(&bank, 0), nullptr);
+    // And the surviving bank actually loads — via the enumerated entry.
+    EXPECT_NE(dx7_.dx7LoadPatch(dx7_.getFile(0), 0), nullptr);
 }
 
 TEST_F(DX7SysexFileTest, EnumerationUnreadableBankIsInvisible) {
-    // A file whose validation read fails (I/O error) is treated as invalid.
-    fatfsShimInjectBytes("0:/pfm3/dx7/valid.syx", MakeSyx(0).data(), 4104);
-    fatfsShimInjectBytes("0:/pfm3/dx7/wedged.syx", MakeSyx(0).data(), 4104);
-    fatfsShimFailNextNth("f_open", FR_DISK_ERR, 2);  // first f_open per file is the validation read
-    EXPECT_STREQ(dx7_.getFile(0)->name, "valid.syx");
-    EXPECT_EQ(dx7_.getFile(1)->fileType, FILE_EMPTY);
+    // A file whose validation read fails is treated as invalid — for every
+    // distinct failure path through PreenFMFileType::load(): f_open error,
+    // f_read error, successful-but-short read, and f_close error.
+    struct Case { const char* what; const char* fn; FRESULT err; int shortRead; };
+    const Case cases[] = {
+        {"f_open error", "f_open", FR_DISK_ERR, 0},
+        {"f_read error", "f_read", FR_DISK_ERR, 0},
+        {"short read", "f_read", FR_OK, 100},
+        {"f_close error", "f_close", FR_DISK_ERR, 0},
+    };
+    for (const auto& c : cases) {
+        fatfsShimReset();
+        fatfsShimMkdir("0:/pfm3/dx7");
+        dx7_.setFileSystemUtils(fsu_);  // reattach: reset cleared shim state only
+        fatfsShimInjectBytes("0:/pfm3/dx7/valid.syx", MakeSyx(0).data(), 4104);
+        fatfsShimInjectBytes("0:/pfm3/dx7/wedged.syx", MakeSyx(0).data(), 4104);
+        if (c.shortRead > 0) {
+            fatfsShimShortReadNextNth(c.fn, c.shortRead, 2);
+        } else {
+            fatfsShimFailNextNth(c.fn, c.err, 2);
+        }
+        EXPECT_STREQ(dx7_.getFile(0)->name, "valid.syx") << c.what;
+        EXPECT_EQ(dx7_.getFile(1)->fileType, FILE_EMPTY) << c.what;
+    }
 }
 
 // --- folder picker (E-picker beta) -----------------------------------------
@@ -253,6 +290,26 @@ TEST_F(DX7SysexFileTest, SetRootRebuildsCurrentAndInvalidatesListing) {
     EXPECT_STREQ(dx7_.getRoot(), "0:/pfm3/dx7lib");
     EXPECT_STREQ(dx7_.folder(), "0:/pfm3/dx7lib");
     EXPECT_STREQ(dx7_.getFile(0)->name, "a.syx");
+}
+
+TEST_F(DX7SysexFileTest, SubFolderBankEnumeratesValidatesAndLoads) {
+    // Review round 1: pin the E-picker integration — a bank inside a selected
+    // subfolder of a custom root is content-validated (read via currentDir_)
+    // and loadable through the enumerated entry. Path stays within
+    // getFullName's 24-char folder budget (see deferred-work: longer
+    // currentDir_ paths truncate).
+    fatfsShimMkdir("0:/pfm3/dx7lib/subA");
+    fatfsShimInjectBytes("0:/pfm3/dx7lib/subA/good.syx", MakeSyx(0).data(), 4104);
+    std::string bad = MakeSyx(0);
+    bad[4102] = (char)(bad[4102] ^ 0x01);  // stale checksum
+    fatfsShimInjectBytes("0:/pfm3/dx7lib/subA/bad.syx", bad.data(), bad.size());
+    dx7_.setRoot("0:/pfm3/dx7lib");
+    ASSERT_EQ(dx7_.initSubDirs(), 1);
+    ASSERT_TRUE(dx7_.selectSubDir(0));
+    EXPECT_STREQ(dx7_.folder(), "0:/pfm3/dx7lib/subA");
+    EXPECT_STREQ(dx7_.getFile(0)->name, "good.syx");
+    EXPECT_EQ(dx7_.getFile(1)->fileType, FILE_EMPTY);  // bad.syx invisible
+    EXPECT_NE(dx7_.dx7LoadPatch(dx7_.getFile(0), 0), nullptr);
 }
 
 TEST_F(DX7SysexFileTest, SetRootRejectsEmptyAndNull) {
