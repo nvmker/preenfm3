@@ -207,6 +207,11 @@ int PreenFMFileType::initFiles() {
             }
             if (!(fno.fattrib & AM_DIR)) {
                 if (isCorrectFile((char*) fno.fname, fno.fsize)) {
+                    // Phase 8.5 (A2): content-invalid files are skipped with
+                    // the same invisibility as a wrong extension or size.
+                    if (!contentIsValid((const char*) fno.fname, (int) fno.fsize)) {
+                        continue;
+                    }
                     bool terminated = false;
                     for (int k = 0; k < 12; k++) {
                         if (terminated) {

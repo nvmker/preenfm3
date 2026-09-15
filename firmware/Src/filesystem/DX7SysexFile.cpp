@@ -98,6 +98,57 @@ bool DX7SysexFile::isCorrectFile(char *name, int size)  {
     return true;
 }
 
+// Phase 8.5 (A2): a 4104-byte file with a .syx extension used to load as a
+// random-but-valid patch bank (no framing/checksum check). A real Yamaha
+// DX7 32-voice bulk dump is F0 43 0n 09 20 00 + 4096 data bytes + checksum
+// + F7; anything else is not DX7 bulk data and must not reach the picker.
+bool DX7SysexFile::isValidDx7BulkBank(const uint8_t* bytes, int size) {
+	if (bytes == 0 || size != 4104) {
+		return false;
+	}
+	if (bytes[0] != 0xF0 || bytes[1] != 0x43) {
+		return false;			// SysEx start + Yamaha manufacturer ID
+	}
+	if ((bytes[2] & 0xF0) != 0) {
+		return false;			// sub-status 0 (voice data), any channel nibble
+	}
+	if (bytes[3] != 0x09) {
+		return false;			// format: 32-voice bulk dump
+	}
+	if (bytes[4] != 0x20 || bytes[5] != 0x00) {
+		return false;			// byte count (0x20<<7)|0x00 = 4096 (7-bit MSB/LSB pair)
+	}
+	if (bytes[4103] != 0xF7) {
+		return false;			// SysEx end
+	}
+	uint32_t sum = 0;
+	for (int k = 6; k < 4102; k++) {
+		if (bytes[k] > 0x7F) {
+			// SysEx data bytes must be 7-bit. Independent of the checksum:
+		// (-sum) & 0x7F is blind to bit 7, so a checksum-clean 8-bit file
+		// is still not valid Yamaha framing (strict interop policy).
+			return false;
+		}
+		sum += bytes[k];
+	}
+	return (uint8_t) ((-sum) & 0x7F) == bytes[4102];
+}
+
+bool DX7SysexFile::contentIsValid(const char* fileName, int size) {
+	if (size != 4104) {
+		// Defensive: isCorrectFile already filtered on exact size.
+		return false;
+	}
+	// Full-file read into the shared scratch buffer. Enumeration runs in the
+	// single-threaded UI/menu context (the same constraint as every other
+	// storageBuffer user) and PROPERTY_FILE_SIZE (8192) covers the dump.
+	const char* fullBankName = getFullName(fileName);
+	if (load(fullBankName, 0, (void*) storageBuffer, 4104) != 4104) {
+		return false;			// unreadable == invalid == invisible
+	}
+	return isValidDx7BulkBank((const uint8_t*) storageBuffer, 4104);
+}
+
 
 // --- DX7 folder picker (E-picker β) ---------------------------------------
 

@@ -17,6 +17,8 @@
 
 #include "PatchBank.h"
 
+#include <string.h>
+
 #ifndef PFM3_HOST
 __attribute__((section(".ram_d2b")))
 #endif
@@ -78,7 +80,11 @@ void PatchBank::createPatchBank(const char *name) {
         storageBuffer[s] = 0;
     }
     convertParamsToFlash(&preenMainPreset, (struct FlashSynthParams*) storageBuffer, *arpeggiatorPartOfThePreset_ > 0);
-    *(uint32_t*) (&storageBuffer[ALIGNED_PATCH_SIZE - 5]) = PRESET_CURRENT_VERSION;
+    // Phase 8.6a (B11): offset ALIGNED_PATCH_SIZE-5 (1019 ≡ 3 mod 4) is not
+    // uint32-aligned — memcpy the stamp instead of a typed store (same 4
+    // bytes at the same offset, layout unchanged).
+    uint32_t presetVersion = PRESET_CURRENT_VERSION;
+    memcpy(&storageBuffer[ALIGNED_PATCH_SIZE - 5], &presetVersion, sizeof(presetVersion));
 
     for (int k = 0; k < 128; k++) {
         f_write(&bankFile, storageBuffer, ALIGNED_PATCH_SIZE, &byteWritten);
@@ -92,7 +98,10 @@ void PatchBank::loadPatch(const struct PFM3File *bank, int patchNumber, struct O
     int result = load(fullBankName, patchNumber * ALIGNED_PATCH_SIZE, (void*) storageBuffer, ALIGNED_PATCH_SIZE);
 
     if (result == ALIGNED_PATCH_SIZE) {
-        uint32_t version = *(uint32_t*) (&storageBuffer[ALIGNED_PATCH_SIZE - 5]);
+        // Phase 8.6a (B11): unaligned uint32_t load at offset 1019 → memcpy
+        // (bit-identical to the typed load on target and host).
+        uint32_t version = 0;
+        memcpy(&version, &storageBuffer[ALIGNED_PATCH_SIZE - 5], sizeof(version));
         switch (version) {
             default:
                 // VERSION1 Needs a conversion. Unknown versions (including
@@ -136,7 +145,9 @@ void PatchBank::savePatch(const struct PFM3File *bank, int patchNumber, const st
         storageBuffer[p] = 0;
     }
     convertParamsToFlash(params, (struct FlashSynthParams*) storageBuffer, *arpeggiatorPartOfThePreset_ > 0);
-    *(uint32_t*) (&storageBuffer[ALIGNED_PATCH_SIZE - 5]) = PRESET_CURRENT_VERSION;
+    // Phase 8.6a (B11): same unaligned-stamp fix as createPatchBank above.
+    uint32_t presetVersion = PRESET_CURRENT_VERSION;
+    memcpy(&storageBuffer[ALIGNED_PATCH_SIZE - 5], &presetVersion, sizeof(presetVersion));
 
     // Save patch
     save(fullBankName, patchNumber * ALIGNED_PATCH_SIZE, storageBuffer, ALIGNED_PATCH_SIZE);
