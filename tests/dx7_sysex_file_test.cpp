@@ -268,16 +268,22 @@ TEST_F(DX7SysexFileTest, EnumerationUnreadableBankIsInvisible) {
     for (const auto& c : cases) {
         fatfsShimReset();
         fatfsShimMkdir("0:/pfm3/dx7");
-        dx7_.setFileSystemUtils(fsu_);  // reattach: reset cleared shim state only
         fatfsShimInjectBytes("0:/pfm3/dx7/valid.syx", MakeSyx(0).data(), 4104);
         fatfsShimInjectBytes("0:/pfm3/dx7/wedged.syx", MakeSyx(0).data(), 4104);
+        // Fresh instance per case (PR #48 Copilot finding): the gtest fixture
+        // builds dx7_ once per TEST, and reattaching fsu_ does NOT clear
+        // isInitialized_ — reusing dx7_ would keep iteration 1's cached
+        // listing and silently skip re-enumeration, leaving the armed
+        // failure injections unconsumed (assertions pass vacuously).
+        TestDX7SysexFile fresh;
+        fresh.setFileSystemUtils(fsu_);
         if (c.shortRead > 0) {
             fatfsShimShortReadNextNth(c.fn, c.shortRead, 2);
         } else {
             fatfsShimFailNextNth(c.fn, c.err, 2);
         }
-        EXPECT_STREQ(dx7_.getFile(0)->name, "valid.syx") << c.what;
-        EXPECT_EQ(dx7_.getFile(1)->fileType, FILE_EMPTY) << c.what;
+        EXPECT_STREQ(fresh.getFile(0)->name, "valid.syx") << c.what;
+        EXPECT_EQ(fresh.getFile(1)->fileType, FILE_EMPTY) << c.what;
     }
 }
 
