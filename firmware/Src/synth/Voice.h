@@ -404,6 +404,11 @@ public:
     float hostMatrixSource(SourceEnum source) {
         return matrix.getSource(source);
     }
+
+    // Phase 8.7 (A1) regression probes: the BP recompute sentinel written by
+    // Voice::setNewEffectParam's BP/BP2 arm — lets the host suite prove the
+    // Timbre::setNewEffecParam fan-out reached a voice (skip-not-abort).
+    float hostFxParam1PlusMatrix() const { return fxParam1PlusMatrix; }
 #endif
 
 private:

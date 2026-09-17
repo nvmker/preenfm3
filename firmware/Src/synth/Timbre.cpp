@@ -2705,8 +2705,12 @@ void Timbre::afterNewParamsLoad() {
     env5_.applyCurves();
     env6_.applyCurves();
 
-    for (int k = 0; k < numberOfVoices_; k++) {
-        voices_[voiceNumber_[k]]->afterNewParamsLoad();
+    // Phase 8.7 hardening (review round 1: same class as the setNewEffecParam
+    // guard below) — skip ungranted (-1) slots in the counted range.
+    for (int k = 0; k < numberOfVoices_ && k < MAX_NUMBER_OF_VOICES; k++) {
+        if (voiceNumber_[k] >= 0) {
+            voices_[voiceNumber_[k]]->afterNewParamsLoad();
+        }
     }
 
     for (int j = 0; j < NUMBER_OF_ENCODERS_PFM2; j++) {
@@ -2775,8 +2779,17 @@ void Timbre::setSeqStepValue(int whichStepSeq, int step, int value) {
 
 void Timbre::setNewEffecParam(int encoder) {
 
-    for (int k = 0; k < numberOfVoices_; k++) {
-        voices_[voiceNumber_[k]]->setNewEffectParam(encoder);
+    // Phase 8.7 hardening, same class as the 8.4 Synth::getFreeVoice guard:
+    // a slot can hold -1 while numberOfVoices_ still counts it (the
+    // FMDisplayMixer writes-mixer-state-before-propagate window and the
+    // voice-count shrink window — see the 8.4 review residue,
+    // preenNoteOff/monoNoteRecall siblings), and a corrupted serialized
+    // mixer count can push the loop past the array. Review round 1 added the
+    // upper bounds: index the slot only when it names a real voice.
+    for (int k = 0; k < numberOfVoices_ && k < MAX_NUMBER_OF_VOICES; k++) {
+        if (voiceNumber_[k] >= 0 && voiceNumber_[k] < MAX_NUMBER_OF_VOICES) {
+            voices_[voiceNumber_[k]]->setNewEffectParam(encoder);
+        }
     }
 
 }
