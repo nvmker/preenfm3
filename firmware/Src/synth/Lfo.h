@@ -34,6 +34,21 @@ class Lfo {
 public:
 	Lfo();
 	virtual ~Lfo() {}
+	/*
+	 * LFO init() overload family (8.8 SW3 decision, recorded 2026-09-17):
+	 * the derived classes (LfoOsc/LfoEnv/LfoEnv2/LfoStepSeq) each declare an
+	 * `init` with their own params-struct signature. Those overloads are NOT
+	 * overrides — they deliberately name-hide this base overload — and no
+	 * production code dispatches init() through a base Lfo pointer or
+	 * reference: the only
+	 * initializer call site is Voice::setCurrentTimbre, which calls the
+	 * concrete objects directly; each derived init explicitly calls
+	 * Lfo::init(...) for the shared matrix-row setup. The derived headers
+	 * re-expose this base overload via `using Lfo::init;` so both signatures
+	 * participate in derived-name lookup (documenting the family instead of
+	 * leaving the hiding implicit). This is a style/name-visibility record,
+	 * NOT a virtual-dispatch repair: nothing overrides this virtual today.
+	 */
 	virtual void init(Matrix* matrix, SourceEnum source, DestinationEnum dest);
 
 	/*

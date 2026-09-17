@@ -27,6 +27,11 @@ class LfoOsc: public Lfo {
 public:
     virtual ~LfoOsc() {};
 
+    // 8.8 SW3: deliberate overload family, NOT an override — see the base
+    // init() contract comment in Lfo.h. Re-expose the base overload so both
+    // signatures participate in derived-name lookup.
+    using Lfo::init;
+
 	void init(struct LfoParams *lfoParams, float* lfoPhase, Matrix* matrix, SourceEnum source, DestinationEnum dest);
 
 	void valueChanged(int encoder) {
