@@ -26,6 +26,10 @@ class LfoEnv: public Lfo {
 public:
     LfoEnv();
 
+    // 8.8 SW3: deliberate overload family, NOT an override — see the base
+    // init() contract comment in Lfo.h.
+    using Lfo::init;
+
 	void init(struct EnvelopeLfoParams * envParams, Matrix* matrix, SourceEnum source, DestinationEnum dest);
 
 	void valueChanged(int encoder) {

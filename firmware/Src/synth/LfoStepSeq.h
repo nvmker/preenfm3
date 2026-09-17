@@ -24,6 +24,10 @@
 
 class LfoStepSeq: public Lfo {
 public:
+    // 8.8 SW3: deliberate overload family, NOT an override — see the base
+    // init() contract comment in Lfo.h.
+    using Lfo::init;
+
 	void init(struct StepSequencerParams* stepSeqParam, struct StepSequencerSteps* stepSeqSteps, Matrix* matrix, SourceEnum source, DestinationEnum dest);
 	void valueChanged(int encoder);
 	void nextValueInMatrix();

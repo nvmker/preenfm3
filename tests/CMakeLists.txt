@@ -255,6 +255,13 @@ target_sources(pfm3_fw_host PRIVATE
     "${PFM3_FW_ROOT}/Src/filesystem/PatchBank.cpp"
     "${PFM3_FW_ROOT}/Src/filesystem/SequenceBank.cpp"
     "${PFM3_FW_ROOT}/Src/filesystem/PPMImage.cpp"
+    # --- Phase 8.8 SW2: menu-table tier -------------------------------------
+    # The REAL allMenus[] table + the bounded MenuItemUtil lookups, split from
+    # hardware/Menu.cpp into their own pure-data TU so the host tests run
+    # against the real menu table (Menu.cpp itself stays unhosted — it also
+    # defines midiConfig, whose host twin is the fixture table in
+    # stubs/tft_display_stub.cpp). See tests/menu_lookup_test.cpp.
+    "${PFM3_FW_ROOT}/Src/hardware/MenuTable.cpp"
     # --- Phase 5: MIDI controller state + persistence -----------------------
     # Real firmware TUs. MidiControllerState keeps ring-buffer writes intact
     # and gates only the UART register kick; MidiControllerFile reuses the

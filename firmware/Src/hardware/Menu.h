@@ -195,37 +195,18 @@ extern const struct MidiConfig midiConfig[];
 
 class MenuItemUtil {
 public:
-    static const MenuItem* getMenuItem(MenuState ms) {
-        const MenuItem *item = &allMenus[0];
-        int cpt = 0;
-        while (item->menuState != LAST_MENU) {
-            if (item->menuState == ms) {
-                return item;
-            }
-            cpt++;
-            item = &allMenus[cpt];
-        }
-        return 0;
-    }
-
-    static const MenuItem* getParentMenuItem(MenuState ms) {
-        // MENU_DONE exception -> return itself to block back button
-        if (ms == MENU_DONE || ms == MENU_CANCEL || ms == MENU_ERROR) {
-            return getMenuItem(ms);
-        }
-        const MenuItem *item = &allMenus[0];
-        int cpt = 0;
-        while (item->menuState != LAST_MENU) {
-            for (int k = 0; k < 6; k++) {
-                if (item->subMenu[k] == ms) {
-                    return item;
-                }
-            }
-            cpt++;
-            item = &allMenus[cpt];
-        }
-        return 0;
-    }
+    /*
+     * Phase 8.8 SW2: both lookups are defined in MenuTable.cpp next to
+     * allMenus[], bounded by the real array length (ARRAY_SIZE) — a state
+     * absent from the table returns 0 WITHOUT reading past the array (the
+     * former scan probed for a LAST_MENU sentinel entry that never existed
+     * in allMenus[]). Callers that cannot prove the key is a table entry
+     * must handle the null return.
+     */
+    static const MenuItem* getMenuItem(MenuState ms);
+    static const MenuItem* getParentMenuItem(MenuState ms);
+    // Number of entries in allMenus[] (test/inspection seam; bounded walks).
+    static int menuCount();
 };
 
 #endif /* MENU_H_ */
