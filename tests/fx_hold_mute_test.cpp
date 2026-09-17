@@ -342,7 +342,92 @@ TEST(FxHoldMute, TypeWriteThenFreshNoteIsAudible) {
     }
 }
 
-// Phase 8.7 hardening red->green pin: Timbre::setNewEffecParam must skip
+// Copilot review round (PR #49): the fan-out must be proven to CONTINUE past
+// a revoked slot, not merely survive it. The timbre-param readback above
+// cannot distinguish skip from abort (the param field is written before the
+// fan-out). This test uses the BP recompute sentinel as per-voice evidence:
+//   1. bed = FILTER_BP, note held, rendered — the BP per-block guard CONSUMES
+//      the ctor's -1 sentinel into the clamped param value (0.6): every
+//      playing voice's fxParam1PlusMatrix is now measurably NOT -1.
+//   2. revoke slot 0 (documented mid-window state),
+//   3. FX1 PARAM1 write 0.6 -> 0.7 (dispatches; BP arm re-trips the sentinel
+//      on every voice the fan-out reaches).
+// Two-sided assert: slot 1's voice got the sentinel (fan-out continued past
+// the revoked slot); slot 0's voice did NOT (the guard skipped exactly the
+// ungranted slot — a blanket re-set or an abort both fail).
+TEST(FxHoldMute, FxParamFanOutContinuesPastRevokedSlot) {
+    golden::GoldenHarness h(PFM3_GOLDEN_DIR);
+    h.setTimbreFx(0, FILTER_BP, kVectors[0].p1, kVectors[0].p2, kVectors[0].p3);
+    // The default preset leaves playMode = 0 (MONO — one voice per note
+    // stack); this test needs TWO simultaneous voices so that slot 1's voice
+    // also plays and consumes its ctor sentinel during the render. The stub's
+    // zeroed dummy row would clamp a setNewValueFromMidi play-mode write to 0
+    // (the documented stub trap — only the ARP/EFFECT rows are permissive),
+    // so write the param field directly, exactly as the harness's own
+    // setTimbreFx/setTimbreAlgo helpers do. Read live at noteOn
+    // (Timbre::preenNoteOn).
+    h.synth().getTimbre(0)->getParamRaw()->engine1.playMode = PLAY_MODE_POLY;
+    golden::RenderScript script;
+    script.events = {
+        golden::RenderEvent::noteOn(0, 0, 69, 100),
+        golden::RenderEvent::noteOn(0, 0, 76, 100),
+    };
+    std::vector<int32_t> r(kWindowStart * kSamplesPerBlock);
+    h.renderScript(script, kWindowStart, r.data());  // consume the sentinel
+
+    // Sentinel consumed by the per-block recompute guard: no voice carries
+    // the ctor's -1 anymore (also validates the render reached the voices).
+    ASSERT_NE(-1.0f, h.synth().hostVoice(1).hostFxParam1PlusMatrix())
+        << "precondition: BP per-block guard did not consume the sentinel — "
+           "the post-write assertion below would be vacuous";
+
+    h.synth().getTimbre(0)->setVoiceNumber(0, -1);  // documented mid-window state
+    h.synth().setNewValueFromMidi(0, ROW_EFFECT1, ENCODER_EFFECT_PARAM1, 0.7f);
+
+    EXPECT_EQ(-1.0f, h.synth().hostVoice(1).hostFxParam1PlusMatrix())
+        << "fan-out aborted at the revoked slot 0 — slot 1's voice never got "
+           "the param write";
+    EXPECT_NE(-1.0f, h.synth().hostVoice(0).hostFxParam1PlusMatrix())
+        << "the revoked slot's voice was updated — the guard did not skip "
+           "exactly the ungranted slot";
+}
+
+// Copilot review round (PR #49): the afterNewParamsLoad sibling loop got the
+// same guard but no test — removing it would go unnoticed. Same manufacturing
+// pattern as FxDispatchSkipsUngrantedVoiceSlots, driving the production
+// reload entry (Synth::afterNewParamsLoad — public, idempotent; the setTimbreFx
+// helper's path) directly after revocation. Pre-guard this is a
+// voices_[-1]->afterNewParamsLoad() crash.
+TEST(FxHoldMute, AfterNewParamsLoadSkipsUngrantedVoiceSlots) {
+    golden::GoldenHarness h(PFM3_GOLDEN_DIR);
+    h.setTimbreFx(0, FILTER_OFF, kVectors[0].p1, kVectors[0].p2,
+                  kVectors[0].p3);
+    h.synth().getTimbre(0)->setVoiceNumber(0, -1);
+
+    // Must not crash (pre-guard: voices_[-1] dereference inside
+    // Voice::afterNewParamsLoad via the sibling loop).
+    h.synth().afterNewParamsLoad(0);
+
+    // Close the manufactured window before rendering (the real window closes
+    // when propagation completes): rendering with a revoked slot trips the
+    // PRE-EXISTING systemic -1 window in the render/allocation loops
+    // (Timbre::voicesNextBlock & friends — 8.4 review residue, deliberately
+    // out of scope here). With the slot restored, the timbre must still be
+    // fully playable — the reload completed cleanly around the skip.
+    h.synth().getTimbre(0)->setVoiceNumber(0, 0);
+    golden::RenderScript script;
+    script.events = {golden::RenderEvent::noteOn(0, 0, 69, 100)};
+    std::vector<int32_t> r(kWindowStart * kSamplesPerBlock);
+    h.renderScript(script, kWindowStart, r.data());
+    int64_t spotMax = 0;
+    for (std::size_t b = 0; b < kWindowStart; ++b) {
+        const int64_t v = blockMaxAbs(r, b);
+        if (v > spotMax) spotMax = v;
+    }
+    EXPECT_GT(spotMax, kSilenceFloor)
+        << "timbre unplayable after a param reload that skipped the ungranted "
+           "slot";
+}
 // ungranted (-1) voice slots. Manufactures the documented mid-transition
 // state (a counted slot holding -1 — the FMDisplayMixer
 // writes-mixer-state-before-propagate window; same manufacturing approach
