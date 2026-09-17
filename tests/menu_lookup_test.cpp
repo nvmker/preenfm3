@@ -109,4 +109,17 @@ TEST(MenuLookup, ParentLookupSemanticsPreserved) {
               MenuItemUtil::getMenuItem(MAIN_MENU));
 }
 
+TEST(MenuLookup, EveryTableStateHasAParent) {
+    // Reverse closure: getMenuBack/newMenuState (FMDisplayMenu.cpp:856/:909)
+    // dereference getParentMenuItem(currentState) directly — every state that
+    // can BE current (i.e. every table entry) must resolve to a parent entry
+    // (or itself via the zero-padding / terminal special cases). This pins
+    // the totality the display-side guards fall back from.
+    for (int i = 0; i < MenuItemUtil::menuCount(); i++) {
+        const MenuState ms = allMenus[i].menuState;
+        EXPECT_NE(MenuItemUtil::getParentMenuItem(ms), nullptr)
+            << "state " << static_cast<int>(ms) << " has no parent entry";
+    }
+}
+
 }  // namespace
