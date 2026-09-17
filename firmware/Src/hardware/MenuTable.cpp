@@ -26,9 +26,10 @@
  * MenuItemUtil::getMenuItem/getParentMenuItem are defined here, next to the
  * array, where its type is complete: both walks are bounded by ARRAY_SIZE —
  * the original scan terminated on a LAST_MENU sentinel entry that never
- * existed in this table, reading one entry past its end on every miss (and
- * on the terminator probe of every call). No sentinel entry is added; the
- * ARRAY_SIZE bound cannot drift from the initializer.
+ * existed in this table, so every MISS read one entry past the array end
+ * (the terminator probe after the last real entry; a hit returns in-bounds
+ * at the matching entry). No sentinel entry is added; the ARRAY_SIZE bound
+ * cannot drift from the initializer.
  */
 
 const struct MenuItem allMenus[]  = {

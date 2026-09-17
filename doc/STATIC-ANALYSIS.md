@@ -124,10 +124,13 @@ beyond 10) is new code in the 7.6 class — triage before merge.
 
 The escalated-warning sweep (phase 8.8, gcc 15.3.1 arm-none-eabi, see the
 recipe below) reports 8 `-Wstrict-overflow=2` warnings on the Synth output
-loops: the zero-fill, the `out` dispatch cases 0/2/3/5/6/8, the two
-`mixAndPan` fast paths, and the clip/×256 pass — all inside
-`Synth::buildNewSampleBlock` (plus its `mixAndPan` helper). They are benign
-**by construction**, not by placement luck:
+loops, all of the form `assuming pointer wraparound does not occur when
+comparing P +- C1 with P +- C2` (line refs as of 2026-09-17): the zero-fill
+(`Synth.cpp:357`), the six `out` dispatch pointer-pair loops — cases
+0/2/3/5/6/8 (`:446/:458/:467/:479/:488/:500`) — and the clip/×256 loop
+(`:516`). The `mixAndPan` fast paths (cases 1/4/7) advance by index, not
+pointer comparison, and raise no warning. All are benign **by
+construction**, not by placement luck:
 
 - The two SAI DMA callbacks (`preenfm3.cpp`) pass **64-element halves of
   the 128-element** `waveform1/2/3` arrays — `TxHalfCplt` the base pointers,

@@ -289,11 +289,13 @@ void Synth::mixAndPan(int32_t *dest, float *source, float &pan, float sampleMult
  * benignly on the loops below): the two SAI DMA callbacks in preenfm3.cpp
  * pass 64-element HALVES of the 128-element waveform1/2/3 arrays
  * (TxHalfCplt passes the base pointers, TxCplt the +64 offsets), and the
- * end pointers are computed once as bufferN + 64. Every output loop — the
+ * end pointers are computed once as bufferN + 64. The warned loops — the
  * zero-fill, the dispatch cases 0/2/3/5/6/8 (two increments per
- * iteration), the mixAndPan() helper (2 dest increments x BLOCK_SIZE=32
- * = 64 elements), and the clip/x256 pass — advances monotonically and
- * stops at or before endcbN. All pointer arithmetic stays within
+ * iteration), and the clip/x256 pass — compare a monotonically advancing
+ * pointer against the fixed end pointer; mixAndPan() (cases 1/4/7) advances
+ * by index (2 dest increments x BLOCK_SIZE=32 = 64 elements) and raises no
+ * warning. Every loop stops at or before endcbN. All pointer arithmetic
+ * stays within
  * [bufferN, bufferN + 64], a half of the SAME array object, so C++
  * same-array bounds hold by construction: no pointer can overflow or
  * wrap. The warning fires because the same-array relation is invisible

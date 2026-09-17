@@ -4,8 +4,9 @@
  * Red→green contract: hardware/MenuTable.cpp carries the REAL allMenus[]
  * table. The ORIGINAL lookup implementation (moved verbatim from Menu.h)
  * terminated its scan on a LAST_MENU sentinel entry that does not exist in
- * the table — every miss (and the terminator probe of every call) read one
- * entry past the array end. The absent-key tests below trip ASAN
+ * the table — every MISS (and only a miss: a hit returns in-bounds at the
+ * matching entry) read one entry past the array end. The absent-key tests
+ * below trip ASAN
  * global-buffer-overflow against that implementation (verify via
  * `make test-asan` with the sentinel bodies restored) and pass against the
  * ARRAY_SIZE-bounded walks.
@@ -45,10 +46,14 @@ TEST(MenuLookup, AbsentStateReturnsNullWithinBounds) {
     // LAST_MENU is the enum terminator: it is (and must remain) absent from
     // the table — the former sentinel walk ran past the array reading for it.
     EXPECT_EQ(MenuItemUtil::getMenuItem(LAST_MENU), nullptr);
-    // Out-of-enum-range keys must also miss cleanly, not walk off the end.
+    // Valid-but-unenumerated keys must also miss cleanly. NOTE: cast values
+    // must stay INSIDE MenuState's valid value range (0..63 — the smallest
+    // bit-field covering enumerators 0..LAST_MENU). 0x7f/127 is OUT of range
+    // and merely forming/comparing it is UB (UBSan "not a valid value for
+    // type MenuState", review round finding); 63 is the max in-range probe.
     EXPECT_EQ(MenuItemUtil::getMenuItem(static_cast<MenuState>(LAST_MENU + 1)),
               nullptr);
-    EXPECT_EQ(MenuItemUtil::getMenuItem(static_cast<MenuState>(0x7f)), nullptr);
+    EXPECT_EQ(MenuItemUtil::getMenuItem(static_cast<MenuState>(63)), nullptr);
     EXPECT_EQ(MenuItemUtil::getParentMenuItem(LAST_MENU), nullptr);
 }
 
