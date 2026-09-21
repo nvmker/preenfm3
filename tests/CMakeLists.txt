@@ -204,6 +204,14 @@ target_sources(pfm3_fw_host PRIVATE
     # See tests/SEAM.md Target #4 appendix for the GO/NO-GO gate result + the
     # full new seam surface.
     "${PFM3_FW_ROOT}/Src/midi/MidiDecoder.cpp"
+    # 8.8 SW5 (restores the parked 8.1 wiring): MidiDecoder.cpp references
+    # the diag hooks (CC#119/SysEx command entry via pfm3DiagCcHook /
+    # pfm3DiagSysexHook), so the host test target needs the real TU. It is
+    # written to compile inert under PFM3_HOST (no DWT/SCB/LED access;
+    # counters + state exist so the decode-path gates are exercised, and the
+    # replay engine is host-testable — see tests/pfm3_diag_test.cpp). Same
+    # "real TU over stub" precedent as Presets.cpp above.
+    "${PFM3_FW_ROOT}/Src/pfm3_diag.cpp"
     "${PFM3_FW_ROOT}/Src/synth/Synth.cpp"
     "${PFM3_FW_ROOT}/Src/synth/Timbre.cpp"
     "${PFM3_FW_ROOT}/Src/synth/Voice.cpp"

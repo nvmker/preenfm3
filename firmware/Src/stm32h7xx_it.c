@@ -59,6 +59,19 @@ extern uint8_t midiControllerMode;
 /* USER CODE BEGIN PFP */
 void preenfm3Tic();
 void preenfm3MidiControllerTic();
+#ifdef PFM3_DIAG_ENABLED
+/* 8.1 diagnostics (8.8 SW5, gated): C-linkage entries defined in
+ * pfm3_diag.cpp (see pfm3_diag.h). SysTick enter is called before
+ * HAL_IncTick so a stall is visible even if preenfm3Tic early-returns.
+ * Fault-hook ABI (8.8 SW5 review round): r0=faultId, r1=stacked-frame
+ * pointer, r2=EXC_RETURN (LR) — matches pfm3DiagFaultHook's C signature
+ * exactly. The old asm passed SP in r0 / faultId in r1 (the parked-code
+ * bug this signature now pins down; the make ubsan-trap objdump guard
+ * asserts it on every diagnostic build). */
+void pfm3DiagSysTickEnter(void);
+void pfm3DiagFaultHook(unsigned int faultId, unsigned int *stackedFrame,
+                       unsigned int excReturn);
+#endif /* PFM3_DIAG_ENABLED */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -81,6 +94,93 @@ extern UART_HandleTypeDef huart1;
 /******************************************************************************/
 /*           Cortex Processor Interruption and Exception Handlers          */ 
 /******************************************************************************/
+/* 8.8 SW5 review round — REGENERATION HAZARD (read before regenerating).
+ *
+ * The five fault handlers below (NMI/Hard/MemManage/Bus/Usage) each have
+ * EXACTLY ONE definition in this file:
+ *   - PFM3_DIAG_ENABLED  -> a __attribute__((naked, noreturn)) shim whose body
+ *     is ASM ONLY: select MSP/PSP into r1 via EXC_RETURN bit 2, faultId in
+ *     r0, EXC_RETURN in r2, tail-branch to pfm3DiagFaultHook. `naked` is what
+ *     makes this CORRECT, not an optimization: without it correctness would
+ *     silently depend on -Ofast emitting no prologue (any push/stack-frame
+ *     setup would relocate the stacked exception frame before the hook reads
+ *     it). The `make ubsan-trap` self-verification disassembles each handler
+ *     and fails the build if the first instructions are not exactly the shim
+ *     sequence (no prologue, r0/r1/r2 ABI).
+ *   - otherwise          -> the stock CubeMX handler (empty body / while(1)).
+ *
+ * The #ifdef/#ifndef wrappers live OUTSIDE the CubeMX USER CODE markers, so
+ * re-running STM32CubeMX code generation WILL DISCARD them and restore the
+ * stock handlers. After any regeneration, re-apply this block (git diff of
+ * stm32h7xx_it.c against the branch shows the expected shape) — the ubsan-trap
+ * objdump guard then proves the shims are back before any diagnostic flash.
+ */
+#ifdef PFM3_DIAG_ENABLED
+
+/* Common shim sequence. Uses r0-r2 only (an AAPCS-compatible scratch set):
+ *   r1 <- MSP or PSP per EXC_RETURN bit 2 (which stack the frame is on)
+ *   r0 <- <faultId literal>, r2 <- EXC_RETURN, then tail-branch (the hook
+ *   never returns). No other register is touched: the hook reads the stacked
+ *   r0-r3/r12/lr/pc/psr from the frame pointer, never from live registers.
+ * (The %0 substitution carries NO '#' — the assembler printer adds the
+ * immediate prefix itself.) */
+#define PFM3_DIAG_FAULT_SHIM(faultIdLit)                                    \
+  __asm volatile (                                                          \
+      "tst lr, #4         \n"  /* EXC_RETURN bit 2: 1=frame on PSP */        \
+      "ite eq             \n"                                               \
+      "mrseq r1, msp      \n"  /* r1 = stacked-frame pointer (basic)  */   \
+      "mrsne r1, psp      \n"                                               \
+      "mov r0, %0         \n"  /* r0 = faultId (1..5, see pfm3_diag.h) */  \
+      "mov r2, lr         \n"  /* r2 = EXC_RETURN (extended-frame bit 4) */\
+      "b pfm3DiagFaultHook\n"  /* never returns: capture + soft reset */   \
+      : : "i" (faultIdLit))
+
+/**
+  * @brief This function handles Non maskable interrupt (faultId 5: the
+  *        capture contract and h8_crashwatch.py reserve it for NMI).
+  */
+__attribute__((naked, noreturn)) void NMI_Handler(void)
+{
+  PFM3_DIAG_FAULT_SHIM(5);
+}
+
+/**
+  * @brief This function handles Hard fault interrupt (faultId 1).
+  */
+__attribute__((naked, noreturn)) void HardFault_Handler(void)
+{
+  PFM3_DIAG_FAULT_SHIM(1);
+}
+
+/**
+  * @brief This function handles Memory management fault (faultId 2).
+  */
+__attribute__((naked, noreturn)) void MemManage_Handler(void)
+{
+  PFM3_DIAG_FAULT_SHIM(2);
+}
+
+/**
+  * @brief This function handles Pre-fetch fault, memory access fault
+  *        (faultId 3).
+  */
+__attribute__((naked, noreturn)) void BusFault_Handler(void)
+{
+  PFM3_DIAG_FAULT_SHIM(3);
+}
+
+/**
+  * @brief This function handles Undefined instruction or illegal state
+  *        (faultId 4; a trap-mode UBSan UDF lands here when USGFAULTENA
+  *        is set by pfm3DiagInit).
+  */
+__attribute__((naked, noreturn)) void UsageFault_Handler(void)
+{
+  PFM3_DIAG_FAULT_SHIM(4);
+}
+
+#else /* !PFM3_DIAG_ENABLED — stock CubeMX handlers (byte-identical release) */
+
 /**
   * @brief This function handles Non maskable interrupt.
   */
@@ -154,6 +254,8 @@ void UsageFault_Handler(void)
   }
 }
 
+#endif /* PFM3_DIAG_ENABLED */
+
 /**
   * @brief This function handles System service call via SWI instruction.
   */
@@ -203,6 +305,9 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
+#ifdef PFM3_DIAG_ENABLED
+  pfm3DiagSysTickEnter();
+#endif /* PFM3_DIAG_ENABLED */
   switch (midiControllerMode) {
   case 0:
       preenfm3Tic();

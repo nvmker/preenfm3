@@ -177,6 +177,14 @@ while read -r sec sz _; do
 		dtcmram=$((dtcmram + sz))
 		seen="$seen dtcmram"
 		;;
+	# 8.8 SW5: .noinit (NOLOAD, DTCMRAM) — diagnostic fault-capture struct.
+	# Present unconditionally (empty when nothing populates it); counted as
+	# DTCMRAM like .bss — it occupies RAM at runtime even though it carries
+	# no load image.
+	.noinit)
+		dtcmram=$((dtcmram + sz))
+		seen="$seen dtcmram"
+		;;
 	.ram_d1)
 		ram_d1=$((ram_d1 + sz))
 		seen="$seen ram_d1"

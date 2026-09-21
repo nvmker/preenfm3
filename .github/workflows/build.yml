@@ -86,6 +86,25 @@ jobs:
           scripts/ci/size-gate.sh build/release/firmware/preenfm3.elf \
             scripts/size-budget.txt 2>&1 | tee -a "$GITHUB_STEP_SUMMARY"
 
+      # Release purity (8.8 SW5 spec invariant): the diagnostic module
+      # (pfm3_diag) is compile-gated out of release builds — the .bin must be
+      # byte-identical to an un-instrumented build. A leaked symbol (a hook
+      # compiled without the inline no-op path, a stray PFM3_DIAG_ENABLED)
+      # would grow the image and shift behavior, so fail loudly on the FIRST
+      # pfm3Diag symbol found. This is NOT a ubsan-trap gate (that build is
+      # diagnostic-only, like test-asan) — it guards the release artifact.
+      - name: Release purity (no diag symbols)
+        run: |
+          set -euo pipefail
+          syms="$(nm build/release/firmware/preenfm3.elf \
+            | grep pfm3Diag || true)"
+          if [ -n "$syms" ]; then
+            echo "FAIL: diag leak into release build:" >&2
+            echo "$syms" >&2
+            exit 1
+          fi
+          echo "OK: release elf references zero pfm3Diag symbols"
+
       - name: Parse versions from headers
         id: versions
         run: |

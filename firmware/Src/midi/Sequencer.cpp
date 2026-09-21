@@ -21,6 +21,7 @@
 #include <string.h>  // memset for the B7 load-window owner scratch
 #include "Synth.h"
 #include "FMDisplaySequencer.h"
+#include "pfm3_diag.h"
 
 // Unaligned-safe serialization helpers for the sequencer state format.
 // The format packs float/uint16 fields into a uint8_t buffer at offsets that
@@ -253,7 +254,9 @@ void Sequencer::onMidiContinue(int songPosition) {
     if (externalClock_) {
         if (!extMidiRunning_) {
             extMidiRunning_ = true;
-            displaySequencer_->refresh(17, 17);
+            if (!pfm3DiagSeqTftGate()) {
+                displaySequencer_->refresh(17, 17);
+            }
         }
     }
 }
@@ -263,7 +266,9 @@ void Sequencer::onMidiStart() {
         if (!extMidiRunning_) {
             rewind();
             extMidiRunning_ = true;
-            displaySequencer_->refresh(17, 17);
+            if (!pfm3DiagSeqTftGate()) {
+                displaySequencer_->refresh(17, 17);
+            }
         }
     }
 }
@@ -276,7 +281,9 @@ void Sequencer::onMidiStop() {
                 synth_->stopArpegiator(i);
                 synth_->allNoteOff(i);
             }
-            displaySequencer_->refresh(17, 17);
+            if (!pfm3DiagSeqTftGate()) {
+                displaySequencer_->refresh(17, 17);
+            }
         }
     }
 }
@@ -1049,7 +1056,9 @@ void Sequencer::insertNote(uint8_t instrument, uint8_t note, uint8_t velocity) {
             // Can be < 0 when we swap between normal and step mode while playuing
             stepNumberOfNotesOn_ --;
             if (stepNumberOfNotesOn_ == 0) {
-                displaySequencer_->newNoteEntered(instrument);
+                if (!pfm3DiagSeqTftGate()) {
+                    displaySequencer_->newNoteEntered(instrument);
+                }
             }
             if (stepNumberOfNotesOn_ < 0) {
                 stepNumberOfNotesOn_ = 0;
