@@ -252,13 +252,14 @@ void MidiDecoder::newMessageType(unsigned char byte) {
 
 
 void MidiDecoder::midiEventReceived(MidiEvent& midiEvent) {
-    // 8.1 diagnostics control (gated): CC#119 on ANY channel, consumed
-    // before routing/timbre fan-out (works whatever the unit's global /
-    // current / omni channel config is; codes 1..6, see pfm3_diag.h).
-    // pfm3DiagCcHook folds to a constant 0 in non-diagnostic builds, so the
-    // event is never swallowed and the site compiles away.
+    // 8.1 diagnostics control (gated): CC#119 on MIDI channel 16 ONLY
+    // (0-based 15), consumed before routing/timbre fan-out — the same
+    // private channel the report/replay traffic uses, so a legit CC#119 on
+    // any user channel routes normally and is never swallowed. Codes 1..6,
+    // see pfm3_diag.h. pfm3DiagCcHook folds to a constant 0 in
+    // non-diagnostic builds, so the site compiles away.
     if (unlikely(midiEvent.eventType == MIDI_CONTROL_CHANGE
-            && pfm3DiagCcHook(midiEvent.value[0], midiEvent.value[1]))) {
+            && pfm3DiagCcHook(midiEvent.channel, midiEvent.value[0], midiEvent.value[1]))) {
         return;
     }
     int timbreIndex = 0;
@@ -1441,9 +1442,11 @@ uint8_t MidiDecoder::analyseSysexBuffer(uint8_t *sysexBuffer, uint16_t size) {
     // accepted from ANY channel. The match + dispatch live in
     // pfm3DiagSysexHook (pfm3_diag.cpp) so this site folds away in
     // non-diagnostic builds (constant 0 — the buffer is never swallowed).
-    // Secondary transport: CC#119 (see midiEventReceived) is the reliable
-    // path — USB-MIDI sysex reassembly can drop the terminating F7
-    // depending on host packet batching. Same command codes.
+    // The hook accepts BOTH the 6-byte payload delivered here (F0/F7 are
+    // framing, stripped by newByte) and the full 8-byte wire form.
+    // Secondary transport: CC#119 on channel 16 (see midiEventReceived) is
+    // the reliable path — USB-MIDI sysex reassembly can drop the terminating
+    // F7 depending on host packet batching. Same command codes.
     if (pfm3DiagSysexHook(sysexBuffer, size)) {
         return 1;
     }

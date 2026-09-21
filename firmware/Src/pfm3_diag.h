@@ -81,8 +81,13 @@ extern volatile uint8_t pfm3DiagAckPending;
 
 #define PFM3_DIAG_FAULT_MAGIC 0x8C1FA01u
 
-/* Host command CC (see pfm3DiagCommand / pfm3DiagCcHook). */
+/* Host command CC (see pfm3DiagCommand / pfm3DiagCcHook). CC#119 commands
+ * are accepted ONLY on MIDI channel 16 (0-based 15; status byte 0xBF) —
+ * the same private channel the report/replay traffic uses — so a legit
+ * CC#119 value 1..6 on any user channel can never force-reset the unit
+ * (8.8 SW5 review round). */
 #define PFM3_DIAG_CC 119
+#define PFM3_DIAG_CC_CHANNEL 15u   /* 0-based; MIDI channel 16 */
 
 typedef struct {
     uint32_t magic;      /* PFM3_DIAG_FAULT_MAGIC when the capture is valid   */
@@ -94,15 +99,53 @@ typedef struct {
     uint32_t mainLoopSeenAlive;  /* 1 = a watchdog cycle completed pre-fault  */
 } Pfm3DiagFaultInfo;
 
+/* Frozen-layout lock (8.8 SW5 review round): the decoder contract is the
+ * 19x uint32 LE field order below (h8_crashwatch.py FIELDS), NOT the bytes
+ * of whatever struct this compiler lays out. These compile-time asserts pin
+ * both: total size 76 and every field at its documented word offset. Any
+ * reorder/retype fails EVERY build that includes this header, not just the
+ * diagnostic one. */
+#include <stddef.h>   /* offsetof */
+#define PFM3_DIAG_ASSERT_CONCAT_(a, b) a##b
+#define PFM3_DIAG_ASSERT_CONCAT(a, b) PFM3_DIAG_ASSERT_CONCAT_(a, b)
+#define PFM3_DIAG_STATIC_ASSERT(cond, msg) \
+    typedef char PFM3_DIAG_ASSERT_CONCAT(pf3diag_assert_, __LINE__)[(cond) ? 1 : -1]
+PFM3_DIAG_STATIC_ASSERT(sizeof(Pfm3DiagFaultInfo) == 76,
+                         "frozen decoder contract: 19 x uint32 = 76 bytes");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, magic) == 4 * 0, "word 0");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, faultId) == 4 * 1, "word 1");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, cfsr) == 4 * 2, "word 2");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, hfsr) == 4 * 3, "word 3");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, dfsr) == 4 * 4, "word 4");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, mmfar) == 4 * 5, "word 5");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, bfar) == 4 * 6, "word 6");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, afsr) == 4 * 7, "word 7");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, r0) == 4 * 8, "word 8");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, r1) == 4 * 9, "word 9");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, r2) == 4 * 10, "word 10");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, r3) == 4 * 11, "word 11");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, r12) == 4 * 12, "word 12");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, lr) == 4 * 13, "word 13");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, psr) == 4 * 14, "word 14");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, pc) == 4 * 15, "word 15");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, sysTickCtrl) == 4 * 16, "word 16");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, sysTickAliveCpt) == 4 * 17, "word 17");
+PFM3_DIAG_STATIC_ASSERT(offsetof(Pfm3DiagFaultInfo, mainLoopSeenAlive) == 4 * 18, "word 18");
+
 /* Lives in .noinit (survives a soft reset for SWD post-mortem; a power cycle
  * naturally clears it — magic gates validity). */
 extern Pfm3DiagFaultInfo pfm3DiagFault;
 
 /* Called (as extern "C") from the naked shims in stm32h7xx_it.c with the
- * stacked frame. Never returns: fills pfm3DiagFault, delays ~50 ms (let any
- * in-flight USB TX drain), then NVIC_SystemReset(); boot replays the capture
- * over USB MIDI (see pfm3DiagWatchdogMainLoop). */
-extern "C" void pfm3DiagFaultHook(uint32_t faultId, uint32_t *stackedFrame);
+ * fault id, the stacked BASIC frame pointer (already advanced past the FP
+ * context when EXC_RETURN bit 4 == 0) and EXC_RETURN itself. Never returns:
+ * fills pfm3DiagFault, delays ~50 ms (let any in-flight USB TX drain), then
+ * NVIC_SystemReset(); boot replays the capture over USB MIDI (see
+ * pfm3DiagWatchdogMainLoop). If CFSR reports a stacking error the frame is
+ * NOT dereferenced — sentinel constants are written instead (fault-in-fault
+ * guard, see the .cpp). */
+extern "C" void pfm3DiagFaultHook(uint32_t faultId, uint32_t *stackedFrame,
+                                   uint32_t excReturn);
 
 /* ++ at the very top of SysTick_Handler (called from stm32h7xx_it.c, plain-C
  * prototype there). Also drives the tri-state LED triage blink when the
@@ -133,15 +176,18 @@ void pfm3DiagInit();
 void pfm3DiagTicSections(uint32_t encCycles, uint32_t seqCycles, uint32_t tftCycles, uint32_t totalCycles);
 
 /* Host command entry (idempotent, IRQ-context-safe: sets state only, the
- * main loop does the TX). Codes (CC#119 on ANY channel, or the magic SysEx):
+ * main loop does the TX). Codes (CC#119 on channel 16 ONLY, or the magic
+ * SysEx):
  *   1 = send one report now      2 = defer decode-TFT ON   3 = defer OFF
  *   4 = watchdog ON              5 = watchdog OFF
  *   6 = forced alignment trap (8.8 SW5 device gate): a volatile uint32 load
  *       from a deliberately misaligned address. In the ubsan-trap build the
  *       alignment sanitizer turns it into a UDF -> UsageFault (faultId 4,
  *       UFSR UNDEFINSTR in CFSR) -> capture -> self-reset -> boot replay.
- *       Inert in a non-sanitized diag build (ARMv7-M tolerates the unaligned
- *       word load) and compiled out on host (no-op). */
+ *       IGNORED while a valid capture is pending replay (a reboot would
+ *       overwrite it / loop the unit; clear or replay first). Inert in a
+ *       non-sanitized diag build (ARMv7-M tolerates the unaligned word
+ *       load) and compiled out on host (no-op). */
 void pfm3DiagCommand(uint8_t code);
 
 /* Foldable MidiDecoder hooks (8.8 SW5). The parked build inlined the CC/SysEx
@@ -150,12 +196,15 @@ void pfm3DiagCommand(uint8_t code);
  * an inline-constant `return 0` leaves zero code AND zero behavior (a no-op
  * pfm3DiagCommand alone would still swallow the CC#119 event at the site).
  *
- *   pfm3DiagCcHook(cc, value): 1 when (cc == PFM3_DIAG_CC && 1 <= value <= 6)
- *       after dispatching pfm3DiagCommand(value) — caller consumes the event.
- *   pfm3DiagSysexHook(buf, size): 1 when the 7-byte magic SysEx
+ *   pfm3DiagCcHook(channel, cc, value): 1 when (channel == 15 &&
+ *       cc == PFM3_DIAG_CC && 1 <= value <= 6) after dispatching
+ *       pfm3DiagCommand(value) — caller consumes the event.
+ *   pfm3DiagSysexHook(buf, size): 1 when the magic SysEx
  *       F0 7D 'P' '3' 'D' <cmd> <arg> F7 was recognized and dispatched
- *       (D=defer arm, W=watchdog, R=report) — caller consumes the buffer. */
-int pfm3DiagCcHook(uint8_t cc, uint8_t value);
+ *       (D=defer arm, W=watchdog, R=report) — caller consumes the buffer.
+ *       Accepted BOTH as the 6-byte payload analyseSysexBuffer actually
+ *       delivers (F0/F7 stripped) and as the full 8-byte wire form. */
+int pfm3DiagCcHook(uint8_t channel, uint8_t cc, uint8_t value);
 int pfm3DiagSysexHook(const uint8_t *sysexBuffer, uint16_t size);
 
 /* Audio-IRQ-context SysTick watchdog (target only). Called from both SAI
@@ -201,7 +250,10 @@ static inline void pfm3DiagCommand(uint8_t code) { (void)code; }
 /* Foldable decode-path hooks: constant 0 = never a diag event, so the
  * MidiDecoder sites (`if (pfm3DiagCcHook(...)) return;`) compile to nothing
  * and events are never swallowed in a non-diagnostic build. */
-static inline int pfm3DiagCcHook(uint8_t cc, uint8_t value) { (void)cc; (void)value; return 0; }
+static inline int pfm3DiagCcHook(uint8_t channel, uint8_t cc, uint8_t value) {
+    (void)channel; (void)cc; (void)value;
+    return 0;
+}
 static inline int pfm3DiagSysexHook(const uint8_t *sysexBuffer, uint16_t size) {
     (void)sysexBuffer; (void)size;
     return 0;

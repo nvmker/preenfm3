@@ -21,6 +21,8 @@
 
 #if defined(PFM3_DIAG_ENABLED) || defined(PFM3_HOST)
 
+#include <string.h>   /* memset for the fully-initialized capture locals */
+
 #ifndef PFM3_HOST
 
 #include "main.h"
@@ -28,8 +30,21 @@
 #include "preenfm3.h"
 #include "MidiDecoder.h"
 
-// Global MIDI decoder instance owned by preenfm3.cpp (report/replay TX path).
+// USB device stack for the diag-owned replay writer (P10): the MIDI class
+// header carries MIDI_IN_EP + the USBD types. Same extern-"C" include
+// pattern as MidiDecoder.cpp (the chain has no host build; guarded).
+extern "C" {
+#include "../../Middlewares/ST/STM32_USB_Device_Library/Class/MIDI/Inc/usbd_midi.h"
+}
+
+// Global MIDI decoder instance owned by preenfm3.cpp (report TX path).
 extern MidiDecoder midiDecoder;
+
+// USB device + PCD handles (defined in usbd_conf.c / usbd_core / usb_device.c).
+extern "C" {
+extern USBD_HandleTypeDef hUsbDeviceFS;
+extern PCD_HandleTypeDef hpcd_USB_OTG_FS;
+}
 
 // Globals owned by preenfm3.cpp / main.c that the snapshot reports.
 extern "C" {
@@ -75,6 +90,44 @@ Pfm3DiagFaultInfo pfm3DiagFault __attribute__((section(".noinit")));
 
 // Set to 1 by every completed watchdog sample (read by the fault hook).
 static volatile uint32_t diagWatchdogCycled = 0;
+
+// Capture-publication reentry guard (8.8 SW5 review round): set by BOTH
+// capture paths before they touch .noinit. A fault landing inside the fault
+// hook (fault-in-fault) or a stall window closing during a publication must
+// never half-overwrite a capture — the early-exit paths just delay+reset and
+// let the already-published (or absent) capture stand.
+static volatile uint32_t diagCaptureActive = 0;
+
+// Snapshot of RCC->RSR.SFTRSTF taken exactly once in pfm3DiagInit (P16).
+// The reset-cause flags survive until RMVF is written — nothing in this
+// firmware writes it — but they are latched at init so no later consumer
+// can race a (hypothetical future) flag clear. Host: always 1 (tests plant
+// captures directly; there is no reset controller on host).
+static uint8_t diagResetWasSoftware = 1;
+
+// ~50 ms drain delay then soft reset — shared by all capture paths. TARGET
+// ONLY (host has no NVIC): the host paths never capture-and-reset.
+#ifndef PFM3_HOST
+static void pfm3DiagDelayAndReset() {
+    for (volatile uint32_t d = 0; d < 24000000; d++) {
+    }   // ~50 ms: let any in-flight USB TX drain
+    NVIC_SystemReset();
+}
+
+// Publication discipline (8.8 SW5 review round): callers build a FULLY
+// initialized capture in a local (memset 0 first — no stale dfsr/mmfar/
+// afsr/r12 word from a previous capture can leak into a STALL frame) with
+// magic == 0, then this copies it to .noinit, barriers, and writes the
+// magic LAST. A partial payload is therefore never observable behind a
+// valid magic, on any path. TARGET ONLY (barriers are CMSIS intrinsics).
+static void pfm3DiagPublishCapture(const Pfm3DiagFaultInfo *cap) {
+    pfm3DiagFault = *cap;          // 76-byte struct copy, magic == 0
+    __DSB();
+    __ISB();
+    pfm3DiagFault.magic = PFM3_DIAG_FAULT_MAGIC;
+    __DSB();
+}
+#endif /* !PFM3_HOST */
 
 // --- Duty-cycle accumulator state (build #7; functions below) --------------
 
@@ -166,17 +219,30 @@ static void pfm3DiagDutyWindow(uint32_t now) {
     if (w < 1000u) {
         w = 1000u;   // degenerate guard
     }
-    uint32_t a = (audioWinCycles * 100u + w / 2) / w;
-    uint32_t s = (systickWinCycles * 100u + w / 2) / w;
+    // Snapshot + reset the accumulators under a brief critical section
+    // (P13): audioWinCycles is written from the audio IRQ (we are in it, but
+    // a HIGHER-priority preemption could re-enter), systickWinCycles and
+    // dutyTickCount from the SysTick IRQ. Without the guard, cycles landing
+    // between the latch-read and the reset are silently dropped (or, worse,
+    // double-counted into the next window). Percentages in uint64 (P11):
+    // audioWinCycles * 100 overflows u32 above ~8.95% duty at 480 MHz.
+    uint32_t aCyc, sCyc, ticks;
+    __disable_irq();
+    aCyc = audioWinCycles;
+    sCyc = systickWinCycles;
+    ticks = dutyTickCount;
+    audioWinCycles = 0;
+    systickWinCycles = 0;
+    dutyTickCount = 0;
+    __enable_irq();
+    uint32_t a = (uint32_t)(((uint64_t)aCyc * 100u + w / 2) / w);
+    uint32_t s = (uint32_t)(((uint64_t)sCyc * 100u + w / 2) / w);
     latchAudioPct = a > 127 ? 127 : (uint8_t)a;
     latchSystickPct = s > 127 ? 127 : (uint8_t)s;
     uint32_t resid = 100u - (a > 100 ? 100 : a) - (s > 100 ? 100 : s);
     latchResidualPct = resid > 100 ? 0 : (uint8_t)resid;
-    latchTicks = (uint16_t)dutyTickCount;
+    latchTicks = (uint16_t)ticks;
     latchDwtMhz8 = (uint8_t)((w >> 22) & 0x7F);
-    audioWinCycles = 0;
-    systickWinCycles = 0;
-    dutyTickCount = 0;
     dutyCallbacks = 0;
     dutyWindowStart = now ? now : 1;
 }
@@ -204,81 +270,31 @@ extern "C" void pfm3DiagSysTickEnter() {
     }
 }
 
-// --- audio-IRQ-context SysTick watchdog + VECTACTIVE histogram -------------
+// --- audio-IRQ-context SysTick watchdog -----------------------------------
 // Runs from both SAI callbacks (the only context guaranteed alive in the
 // H1-type hang: main loop AND SysTick dead, audio alive). DWT-timed sample
-// window = SystemCoreClock/5 (~0.2 s); five consecutive windows without
-// SysTickAlive movement (>=1 s) while audio keeps running => capture a
-// faultId 6 STALL snapshot and soft-reset. GPIO/register only — no queue,
-// no USB, safe from IRQ context.
-//
-// HISTOGRAM (8.1 famine, build #5): each audio callback samples SCB->ICSR
-// VECTACTIVE (0=thread, 15=SysTick, 27=SAI1_A/self, else=other exception).
-// Over a 10 s window (~1875 samples) it latches thread%/systick%/self%/
-// other% + top-other id/%. Audio (pri 3) and SPI1-TX DMA (pri 2) outrank
-// SysTick (TICK_INT_PRIORITY 4) — an eater there shows as other%/topOther.
-
-static uint32_t vaThread = 0, vaSysTick = 0, vaSelf = 0, vaOther = 0;
-static uint32_t vaTopOtherId = 0, vaTopOtherCount = 0;
-static uint32_t vaWindowCount = 0;
-static uint32_t vaWindowStartCycles = 0;
-// Latched report values (7-bit percentages).
-static volatile uint8_t vaLatchThread = 0, vaLatchSysTick = 0, vaLatchSelf = 0, vaLatchOther = 0;
-static volatile uint8_t vaLatchTopId = 0, vaLatchTopPct = 0;
-
-#define VA_WINDOW_CYCLES (SystemCoreClock * 10u)   // 10 s
-#define VA_SYSTICK_VECT 15u
-#define VA_SELF_VECT 27u                            // 16 + DMA1_Stream0_IRQn(11)
-
-static void pfm3DiagVaSample() {
-    uint32_t va = SCB->ICSR & 0x1FF;
-    vaWindowCount++;
-    if (va == 0) {
-        vaThread++;
-    } else if (va == VA_SYSTICK_VECT) {
-        vaSysTick++;
-    } else if (va == VA_SELF_VECT) {
-        vaSelf++;
-    } else {
-        vaOther++;
-        // cheap top-tracker: exact only when few distinct ids (true here).
-        if (vaTopOtherId == 0) {
-            vaTopOtherId = va;
-            vaTopOtherCount = 1;
-        } else if (va == vaTopOtherId) {
-            vaTopOtherCount++;
-        }
-    }
-    uint32_t now = DWT->CYCCNT;
-    if (vaWindowStartCycles == 0) {
-        vaWindowStartCycles = now ? now : 1;
-    } else if ((uint32_t)(now - vaWindowStartCycles) >= (uint32_t)VA_WINDOW_CYCLES) {
-        uint32_t n = vaWindowCount ? vaWindowCount : 1;
-        vaLatchThread = (uint8_t)((vaThread * 100u + n / 2) / n);
-        vaLatchSysTick = (uint8_t)((vaSysTick * 100u + n / 2) / n);
-        vaLatchSelf = (uint8_t)((vaSelf * 100u + n / 2) / n);
-        vaLatchOther = (uint8_t)((vaOther * 100u + n / 2) / n);
-        vaLatchTopId = (uint8_t)(vaTopOtherId & 0xFF);
-        vaLatchTopPct = (uint8_t)((vaTopOtherCount * 100u + n / 2) / n);
-        vaThread = vaSysTick = vaSelf = vaOther = 0;
-        vaTopOtherId = 0;
-        vaTopOtherCount = 0;
-        vaWindowCount = 0;
-        vaWindowStartCycles = now ? now : 1;
-    }
-}
+// window = SystemCoreClock/5 (~0.2 s). A STALL is declared when the SysTick
+// alive counter has been silent for at least five consecutive sample
+// windows AND >= 1.0 s of DWT time since the first silent sample (P14: the
+// documented contract is a >= 1 s stall — five 0.2 s windows alone can span
+// as little as ~0.8 s). BY DESIGN the unit is captured+reset even when only
+// SysTick is dead and the main loop is still alive: the capture's
+// mainLoopSeenAlive word disambiguates the two cases post-mortem, and a
+// frozen SysTick alone is already an unrecoverable state for this firmware
+// (all encode/tft/sequencer work lives in preenfm3Tic). GPIO/register only
+// — no queue, no USB, safe from IRQ context.
 
 static uint32_t audioEntryCycles = 0;
 
 extern "C" void pfm3DiagAudioWatchdog() {
     pfm3DiagAudioCpt++;
     audioEntryCycles = DWT->CYCCNT;
-    pfm3DiagVaSample();
     pfm3DiagDutyWindow(DWT->CYCCNT);
 
     static uint32_t lastSampleCycles = 0;
     static uint32_t aliveAtLastSample = 0;
-    static uint8_t stalledWindows = 0;
+    static uint32_t stalledWindows = 0;
+    static uint32_t stallStartCycles = 0;
 
     uint32_t now = DWT->CYCCNT;
     if ((uint32_t)(now - lastSampleCycles) < (uint32_t)(SystemCoreClock / 5)) {
@@ -293,33 +309,47 @@ extern "C" void pfm3DiagAudioWatchdog() {
     }
 
     // A full window with zero SysTick movement.
-    if (stalledWindows < 5) {
-        stalledWindows++;
+    // P14(b): a watchdog disabled via CC#119 code 5 must NEVER reset the
+    // unit from here either — reset the accumulator and stay silent.
+    if (!pfm3DiagEnabled) {
+        stalledWindows = 0;
         return;
     }
-    // 5 consecutive ~0.2 s windows (1 s) with the SysTick alive counter
-    // frozen while audio keeps running: SysTick AND main loop dead.
-    // (Famine states always show sub-second burst movement; 1 s of total
-    // silence is a true stall.) Capture a stall snapshot and soft-reset:
-    // boot replays it over USB MIDI (.noinit survives NVIC reset).
-    pfm3DiagFault.magic = PFM3_DIAG_FAULT_MAGIC;
-    pfm3DiagFault.faultId = 6;   // STALL (1..5 = real faults)
-    pfm3DiagFault.cfsr = SCB->CFSR;
-    pfm3DiagFault.hfsr = SCB->HFSR;
-    pfm3DiagFault.bfar = SCB->BFAR;
-    pfm3DiagFault.pc = 0;
-    pfm3DiagFault.lr = 0;
-    pfm3DiagFault.psr = 0;
-    pfm3DiagFault.sysTickCtrl = SysTick->CTRL;
-    pfm3DiagFault.sysTickAliveCpt = pfm3DiagSysTickAliveCpt;
-    pfm3DiagFault.mainLoopSeenAlive = diagWatchdogCycled;
-    pfm3DiagFault.r0 = NVIC->ISPR[0];
-    pfm3DiagFault.r1 = NVIC->ISPR[1];
-    pfm3DiagFault.r2 = SCB->ICSR;
-    pfm3DiagFault.r3 = SCB->SHCSR;
-    for (volatile uint32_t d = 0; d < 24000000; d++) {
-    }   // ~50 ms: let any in-flight USB TX drain
-    NVIC_SystemReset();
+    if (stalledWindows == 0) {
+        stallStartCycles = now;
+    }
+    stalledWindows++;
+    // P14(a): >= 5 consecutive silent windows AND >= 1.0 s DWT-elapsed —
+    // fires 1.0-1.2 s into the stall (contract: ">= 1 s", h8_crashwatch.py).
+    if (stalledWindows < 5u || (uint32_t)(now - stallStartCycles) < SystemCoreClock) {
+        return;
+    }
+    // SysTick AND main loop dead while audio keeps running (main-loop-only
+    // death is distinguished post-mortem by mainLoopSeenAlive). Capture a
+    // stall snapshot and soft-reset: boot replays it over USB MIDI (.noinit
+    // survives NVIC reset).
+    if (!diagCaptureActive) {
+        diagCaptureActive = 1;
+        Pfm3DiagFaultInfo cap;
+        memset(&cap, 0, sizeof cap);   // no stale dfsr/mmfar/afsr/r12 words
+        cap.faultId = 6;               // STALL (1..5 = real faults)
+        cap.cfsr = SCB->CFSR;
+        cap.hfsr = SCB->HFSR;
+        cap.dfsr = SCB->DFSR;
+        cap.mmfar = SCB->MMFAR;
+        cap.bfar = SCB->BFAR;
+        cap.afsr = SCB->AFSR;
+        cap.psr = __get_IPSR();
+        cap.sysTickCtrl = SysTick->CTRL;
+        cap.sysTickAliveCpt = pfm3DiagSysTickAliveCpt;
+        cap.mainLoopSeenAlive = diagWatchdogCycled;
+        cap.r0 = NVIC->ISPR[0];
+        cap.r1 = NVIC->ISPR[1];
+        cap.r2 = SCB->ICSR;
+        cap.r3 = SCB->SHCSR;
+        pfm3DiagPublishCapture(&cap);
+    }
+    pfm3DiagDelayAndReset();
 }
 
 // Call at the END of each SAI callback (both half and full).
@@ -368,6 +398,14 @@ void pfm3DiagCommand(uint8_t code) {
         pfm3DiagEnabled = 0;
         break;
     case 6:
+        // P15(b): IGNORED while a valid capture is pending replay — the
+        // reboot would overwrite the .noinit capture (and a stuck host
+        // sending the CC repeatedly would reboot-loop the unit). The pending
+        // capture replays first; re-send code 6 after it drains. (Checked on
+        // host too so the gate is unit-tested.)
+        if (pfm3DiagFault.magic == PFM3_DIAG_FAULT_MAGIC) {
+            break;
+        }
 #ifndef PFM3_HOST
         // 8.8 SW5 device gate: forced alignment trap. A volatile uint32 load
         // from a deliberately misaligned DTCMRAM address. In the ubsan-trap
@@ -393,10 +431,13 @@ void pfm3DiagCommand(uint8_t code) {
 // Matching lives here (not at the call sites) so the header's disabled path
 // can fold the sites away entirely — see pfm3_diag.h.
 
-int pfm3DiagCcHook(uint8_t cc, uint8_t value) {
-    // CC#119 on ANY channel, consumed before routing/timbre fan-out (works
-    // whatever the unit's global/current/omni channel config is).
-    if (cc == PFM3_DIAG_CC && value >= 1 && value <= 6) {
+int pfm3DiagCcHook(uint8_t channel, uint8_t cc, uint8_t value) {
+    // P15(a): CC#119 commands are accepted ONLY on MIDI channel 16
+    // (0-based 15) — the private channel the report/replay traffic already
+    // uses. The parked code accepted ANY channel, so a legitimate CC#119
+    // value 6 routed to a user channel force-reset the unit.
+    if (channel == PFM3_DIAG_CC_CHANNEL && cc == PFM3_DIAG_CC
+            && value >= 1 && value <= 6) {
         pfm3DiagCommand(value);
         return 1;
     }
@@ -409,17 +450,30 @@ int pfm3DiagSysexHook(const uint8_t *sysexBuffer, uint16_t size) {
     // context but consumed by the main loop (report TX and acks never run in
     // IRQ context). Cmds: 'D'=defer bisect arm, 'W'=watchdog enable,
     // 'R'=request one report. Ack comes back as CC#47 on MIDI channel 16.
-    if (size == 7 && sysexBuffer[0] == 0x7d && sysexBuffer[1] == 'P' && sysexBuffer[2] == '3'
-            && sysexBuffer[3] == 'D') {
-        // Secondary transport: CC#119 (see pfm3DiagCcHook) is the reliable
-        // path — USB-MIDI sysex reassembly can drop the terminating F7
-        // depending on host packet batching. Same command codes.
-        switch (sysexBuffer[4]) {
+    //
+    // P15(c): MidiDecoder::analyseSysexBuffer delivers the payload WITHOUT
+    // the F0/F7 framing — the documented 8-byte wire form arrives here as 6
+    // bytes. Accept BOTH forms (strip a leading F0 / trailing F7 when
+    // present); the old `size == 7` test could never match real traffic.
+    // Secondary transport: CC#119 (see pfm3DiagCcHook) is the reliable path —
+    // USB-MIDI sysex reassembly can drop the terminating F7 depending on
+    // host packet batching. Same command codes.
+    const uint8_t *p = sysexBuffer;
+    if (size >= 1 && p[0] == 0xF0) {
+        p++;
+        size--;
+    }
+    if (size >= 1 && p[size - 1] == 0xF7) {
+        size--;
+    }
+    if (size == 6 && p[0] == 0x7d && p[1] == 'P' && p[2] == '3'
+            && p[3] == 'D') {
+        switch (p[4]) {
         case 'D':
-            pfm3DiagCommand(sysexBuffer[5] != 0 ? 2 : 3);
+            pfm3DiagCommand(p[5] != 0 ? 2 : 3);
             return 1;
         case 'W':
-            pfm3DiagCommand(sysexBuffer[5] != 0 ? 4 : 5);
+            pfm3DiagCommand(p[5] != 0 ? 4 : 5);
             return 1;
         case 'R':
             pfm3DiagCommand(1);
@@ -446,6 +500,13 @@ void pfm3DiagInit() {
     CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
     DWT->CYCCNT = 0;
     DWT->CTRL |= DWT_CTRL_CYCCNTENA_Msk;
+
+    // P16: latch the reset cause EXACTLY ONCE, before anything downstream
+    // could (now or ever) clear it. RCC->RSR reset flags survive until RMVF
+    // is written; nothing in this firmware writes RMVF, so an init-time
+    // read is safe — and the boot-validity gate (pfm3DiagReplayPoll phase
+    // 0) uses this latched copy, never the register.
+    diagResetWasSoftware = (RCC->RSR & RCC_RSR_SFTRSTF) ? 1 : 0;
 
     // 8.8 SW5: enable Usage/MemManage/Bus faults. Stock firmware leaves them
     // disabled, so a trap-mode UDF (or any configurable fault) escalates to
@@ -481,12 +542,17 @@ static void pfm3DiagSendReport() {
     payload[8] = (uint8_t)(ledCpt & 0x7F);
     payload[9] = (uint8_t)((latchTicks >> 7) & 0x7F);              // SysTicks in window, bits 7-14
     payload[10] = readyForTFT ? 1 : 0;                            // preenfm3Tic gate
-    payload[11] = vaLatchTopId;                                    // top other vector id (7-bit)
+    // Slots 11/13 carried the VECTACTIVE top-other histogram (build #5).
+    // REMOVED (8.8 SW5 review round): sampling ICSR.VECTACTIVE from inside
+    // the SAI callback can structurally only observe the SAI vector itself,
+    // and its 10 s DWT window overflowed u32 at 480 MHz. The slot LAYOUT is
+    // frozen (rig scripts address by slot), so the slots stay, always 0.
+    payload[11] = 0;                                               // (was top-other vector id)
     payload[12] = (uint8_t)((__get_PRIMASK() & 0x1)
             | ((SCB->VTOR != 0x08000000u) ? 2 : 0)
             | (pfm3DiagDeferSeqTft ? 4 : 0)
             | (pfm3DiagEnabled ? 8 : 0));
-    payload[13] = vaLatchTopPct;                                   // top other %
+    payload[13] = 0;                                               // (was top-other %)
     payload[14] = (uint8_t)(pfm3DiagSeqTftDeferredCpt & 0x7F);
     payload[15] = (uint8_t)(pfm3DiagAudioCpt & 0x7F);
 
@@ -535,86 +601,149 @@ static uint8_t replaySinkFrames[PFM3_DIAG_REPLAY_FRAMES_MAX][PFM3_DIAG_REPLAY_SL
 static int replaySinkCount = 0;
 #endif
 
-// Encodes replay frame `frameIdx` of pfm3DiagFault into cc[0..n-1] (the CC
+// Encodes replay frame `frameIdx` of pfm3DiagFault into cc[0..15] (the CC
 // values for CC#48+slot). frameIdx == frame count emits the trailer. Pure
 // function of the struct + index: no hardware, no TX — host-testable.
-static int pfm3DiagReplayEncodeFrame(int frameIdx, uint8_t cc[PFM3_DIAG_REPLAY_SLOTS]) {
+//
+// P7 (CRITICAL): the frozen decoder (h8_crashwatch.py) commits a frame ONLY
+// when its slot-15 CC arrives — every frame, data AND trailer, therefore
+// emits ALL 16 slots, with unused payload slots padded to 0. The parked
+// encoder stopped at slot 13/2, so the last data frame and the trailer were
+// never committed and the burst unpacked at 70 bytes. Padding bytes land
+// above byte 76 in the decoder's buffer and are ignored by data[:76].
+static void pfm3DiagReplayEncodeFrame(int frameIdx, uint8_t cc[PFM3_DIAG_REPLAY_SLOTS]) {
     const uint8_t *raw = (const uint8_t *) &pfm3DiagFault;
     const int total = (int) sizeof(Pfm3DiagFaultInfo);
     const int frames = (total + 6) / 7;   // 7 bytes per frame
 
-    int slot = 0;
+    for (int i = 0; i < PFM3_DIAG_REPLAY_SLOTS; i++) {
+        cc[i] = 0;
+    }
+    cc[0] = PFM3_DIAG_REPLAY_MAGIC;
     if (frameIdx >= frames) {
-        // trailer
-        cc[slot++] = PFM3_DIAG_REPLAY_MAGIC;
-        cc[slot++] = 0xFF;
-        cc[slot++] = (uint8_t)pfm3DiagFault.faultId;
+        cc[1] = 0xFF;                              // trailer marker
+        cc[2] = (uint8_t)pfm3DiagFault.faultId;
     } else {
-        cc[slot++] = PFM3_DIAG_REPLAY_MAGIC;
-        cc[slot++] = (uint8_t)frameIdx;
+        cc[1] = (uint8_t)frameIdx;
         for (int i = frameIdx * 7; i < frameIdx * 7 + 7 && i < total; i++) {
-            cc[slot++] = (uint8_t)(raw[i] >> 1);
-            cc[slot++] = (uint8_t)(raw[i] & 1);
+            cc[2 + 2 * (i - frameIdx * 7)] = (uint8_t)(raw[i] >> 1);
+            cc[3 + 2 * (i - frameIdx * 7)] = (uint8_t)(raw[i] & 1);
         }
     }
-    return slot;
 }
 
-// Emits one encoded frame: USB MIDI on target, recorded on host.
-static void pfm3DiagReplayEmitFrame(int frameIdx) {
-    uint8_t cc[PFM3_DIAG_REPLAY_SLOTS];
-    int n = pfm3DiagReplayEncodeFrame(frameIdx, cc);
-
 #ifndef PFM3_HOST
-    struct MidiEvent ev;
-    ev.eventType = MIDI_CONTROL_CHANGE;
-    ev.channel = 15;
-    for (int i = 0; i < n; i++) {
-        ev.value[0] = 48 + i;
-        ev.value[1] = cc[i];
-        midiDecoder.writeMidiCCOut(&ev);
-        midiDecoder.sendMidiUsbOutIfBufferFull();
+
+// P10 — diag-owned replay writer (diagnostic builds only). The parked path
+// reused MidiDecoder's TX stack, which (a) honors the user's MIDICONFIG_USB
+// routing (crash replay would be silently dropped when USB-out is off) and
+// (b) never checked endpoint/device state, so the capture was consumed even
+// when ZERO frames reached the host. This writer instead:
+//   (a) waits for USBD_STATE_CONFIGURED (USB enumerated),
+//   (b) bypasses the routing config — crash replay is diagnostic traffic,
+//   (c) refuses while the MIDI IN endpoint still has a transfer in flight
+//       (PCD IN_ep xfer_len counts down to 0 once drained) — the poll
+//       retries the SAME frame on the next pass,
+//   (d) reports acceptance so the capture is consumed ONLY after the
+//       trailer frame really went out. If USB never comes up, the capture
+//       persists in .noinit and the next boot retries it.
+// One frame = 16 CC events = exactly one 64-byte USB-MIDI bulk packet. The
+// CC encoding itself (slot/value pairs on ch16) is FROZEN — unchanged.
+static uint8_t diagReplayUsbPacket[64];
+
+static int pfm3DiagUsbReady() {
+    return hUsbDeviceFS.dev_state == USBD_STATE_CONFIGURED;
+}
+
+static int pfm3DiagReplayTxFrames(const uint8_t cc[PFM3_DIAG_REPLAY_SLOTS]) {
+    if (!pfm3DiagUsbReady()) {
+        return 0;
     }
-    midiDecoder.sendMidiDin5Out();
-    midiDecoder.sendMidiUsbOut();
-#else
+    if (hpcd_USB_OTG_FS.IN_ep[MIDI_IN_EP & 0x0Fu].xfer_len != 0u) {
+        return 0;   // endpoint busy: retry the same frame next pass
+    }
+    for (int i = 0; i < PFM3_DIAG_REPLAY_SLOTS; i++) {
+        diagReplayUsbPacket[i * 4 + 0] = 0x0B;                        // cable 0, CC
+        diagReplayUsbPacket[i * 4 + 1] = 0xB0 | PFM3_DIAG_CC_CHANNEL; // CC ch16
+        diagReplayUsbPacket[i * 4 + 2] = (uint8_t)(48 + i);           // slot CC#
+        diagReplayUsbPacket[i * 4 + 3] = cc[i];
+    }
+    return USBD_LL_Transmit(&hUsbDeviceFS, MIDI_IN_EP, diagReplayUsbPacket,
+                            sizeof diagReplayUsbPacket) == USBD_OK;
+}
+
+// Emits one encoded frame; returns 1 when the frame was ACCEPTED by the
+// transport (USB transmit queued). 0 = refused (unconfigured/busy) — the
+// caller keeps the frame index and retries.
+static int pfm3DiagReplayEmitFrame(int frameIdx) {
+    uint8_t cc[PFM3_DIAG_REPLAY_SLOTS];
+    pfm3DiagReplayEncodeFrame(frameIdx, cc);
+    return pfm3DiagReplayTxFrames(cc);
+}
+
+#else  // PFM3_HOST
+
+// Host seam: always accepted, recorded for the tests.
+static int pfm3DiagReplayEmitFrame(int frameIdx) {
+    uint8_t cc[PFM3_DIAG_REPLAY_SLOTS];
+    pfm3DiagReplayEncodeFrame(frameIdx, cc);
     if (frameIdx >= 0 && frameIdx < PFM3_DIAG_REPLAY_FRAMES_MAX) {
         for (int i = 0; i < PFM3_DIAG_REPLAY_SLOTS; i++) {
             replaySinkFrames[frameIdx][i] = cc[i];
         }
     }
     replaySinkCount++;
-    (void)n;
-#endif
+    return 1;
 }
 
+#endif // PFM3_HOST
+
 // Drives the replay state machine with a millisecond clock. Returns 1 when a
-// frame was emitted THIS call (caller yields its loop pass — one USB transmit
-// per pass on target); 0 otherwise. Phase 0 checks the magic exactly once;
-// phase 1 waits 3 s for USB to come up; phase 2 streams one frame per >=5 ms;
-// the trailer frame consumes the capture (magic = 0) so it never replays
-// twice. Shared target/host (host tests drive it with synthetic times).
+// frame was ACCEPTED this call (caller yields its loop pass — one USB
+// transmit per pass on target); 0 otherwise. Phase 0 checks validity exactly
+// once — valid magic AND software-reset cause AND faultId 1..6 (P16: guards
+// cold-boot SRAM coincidentally holding the magic, and garbage faultIds);
+// phase 1 waits 3 s AND USB CONFIGURED (P10: no settle-count guess — if USB
+// never comes up, the capture persists and retries next boot); phase 2
+// attempts one frame per >=5 ms (refused frames retry immediately — the
+// busy/configured checks are the real gate); the capture is consumed ONLY
+// after the trailer frame was accepted. Shared target/host (host tests drive
+// it with synthetic times; the host transport always accepts).
 static int pfm3DiagReplayPoll(uint32_t nowMs) {
     if (replayPhase == 0) {
-        replayPhase = (pfm3DiagFault.magic == PFM3_DIAG_FAULT_MAGIC) ? 1 : 3;
+        replayPhase = (pfm3DiagFault.magic == PFM3_DIAG_FAULT_MAGIC
+                       && diagResetWasSoftware
+                       && pfm3DiagFault.faultId >= 1u
+                       && pfm3DiagFault.faultId <= 6u) ? 1 : 3;
     }
     if (replayPhase == 1) {
-        if (nowMs > 3000) {
+#ifndef PFM3_HOST
+        if (nowMs > 3000 && pfm3DiagUsbReady())
+#else
+        if (nowMs > 3000)
+#endif
+        {
             replayPhase = 2;
             replayFrame = 0;
             replayLastFrameMs = nowMs;
         }
     } else if (replayPhase == 2) {
         if (nowMs - replayLastFrameMs >= 5) {
-            replayLastFrameMs = nowMs;
             const int frames = ((int) sizeof(Pfm3DiagFaultInfo) + 6) / 7;
-            pfm3DiagReplayEmitFrame(replayFrame);
-            replayFrame++;
-            if (replayFrame > frames) {
-                pfm3DiagFault.magic = 0;   // consume: never replay twice
-                replayPhase = 3;
+            if (pfm3DiagReplayEmitFrame(replayFrame)) {
+                replayLastFrameMs = nowMs;
+                if (replayFrame >= frames) {
+                    // Trailer ACCEPTED: consume now — never replay twice.
+                    // (Consumed only here: a refused trailer leaves the
+                    // capture intact for the retry / next boot.)
+                    pfm3DiagFault.magic = 0;
+                    replayPhase = 3;
+                } else {
+                    replayFrame++;
+                }
+                return 1;
             }
-            return 1;
+            // Refused (USB down / endpoint busy): same frame next pass.
         }
     }
     return 0;
@@ -672,6 +801,9 @@ void pfm3DiagWatchdogMainLoop() {
 #else  // PFM3_HOST
 
 void pfm3DiagInit() {
+    // Host: no DWT/SCB/RCC — but keep the P16 reset-cause latch at its
+    // host default ("was software reset") so the replay path is testable.
+    diagResetWasSoftware = 1;
 }
 
 void pfm3DiagWatchdogMainLoop() {
@@ -685,42 +817,84 @@ void pfm3DiagWatchdogMainLoop() {
 
 #ifndef PFM3_HOST
 
-extern "C" void pfm3DiagFaultHook(uint32_t faultId, uint32_t *frame) {
-    pfm3DiagFault.magic = PFM3_DIAG_FAULT_MAGIC;
-    pfm3DiagFault.faultId = faultId;
-    pfm3DiagFault.cfsr = SCB->CFSR;
-    pfm3DiagFault.hfsr = SCB->HFSR;
-    pfm3DiagFault.dfsr = SCB->DFSR;
-    pfm3DiagFault.mmfar = SCB->MMFAR;
-    pfm3DiagFault.bfar = SCB->BFAR;
-    pfm3DiagFault.afsr = SCB->AFSR;
-    pfm3DiagFault.r0 = frame[0];
-    pfm3DiagFault.r1 = frame[1];
-    pfm3DiagFault.r2 = frame[2];
-    pfm3DiagFault.r3 = frame[3];
-    pfm3DiagFault.r12 = frame[4];
-    pfm3DiagFault.lr = frame[5];
-    pfm3DiagFault.psr = frame[7];
-    pfm3DiagFault.pc = frame[6];
-    pfm3DiagFault.sysTickCtrl = SysTick->CTRL;
-    pfm3DiagFault.sysTickAliveCpt = pfm3DiagSysTickAliveCpt;
-    pfm3DiagFault.mainLoopSeenAlive = diagWatchdogCycled;
+// CFSR stacking-error bits (P4): when exception entry itself failed to stack
+// the frame, the frame pointer does NOT point at a stacked r0..psr —
+// dereferencing it in the hook would fault again (fault-in-fault, capture
+// lost). Those fields get distinct sentinel constants instead; addr2line on
+// a sentinel immediately says "stacking error", not "random garbage PC".
+#define PFM3_DIAG_CFSR_MSTKERR (1u << 4)    /* MMFSR: mem-manager stacking  */
+#define PFM3_DIAG_CFSR_MLSPERR (1u << 5)    /* MMFSR: mem-manager lazy FP   */
+#define PFM3_DIAG_CFSR_STKERR  (1u << 12)   /* BFSR: bus stacking           */
+#define PFM3_DIAG_CFSR_LSPERR  (1u << 13)   /* BFSR: bus lazy FP            */
+#define PFM3_DIAG_CFSR_STACKING_ERRS \
+    (PFM3_DIAG_CFSR_MSTKERR | PFM3_DIAG_CFSR_MLSPERR \
+     | PFM3_DIAG_CFSR_STKERR | PFM3_DIAG_CFSR_LSPERR)
+#define PFM3_DIAG_FRAME_SENTINEL(i) (0xFA110000u | (uint32_t)(i))  /* FAIL-i */
 
-    // Self-postmortem (build #8): capture is complete — soft-reset now.
-    // .noinit survives NVIC_SystemReset; boot code replays the capture over
-    // USB MIDI (see pfm3DiagReplayPoll). LED strobe was invisible in the
-    // case anyway; the reset makes the unit heal itself into a state
-    // that can report.
-    for (volatile uint32_t d = 0; d < 24000000; d++) {
-    }   // ~50 ms: let any in-flight USB TX drain
-    NVIC_SystemReset();
+extern "C" void pfm3DiagFaultHook(uint32_t faultId, uint32_t *frame, uint32_t excReturn) {
+    if (diagCaptureActive) {
+        // Fault INSIDE a capture (fault-in-fault): the in-flight publication
+        // stands (or nothing was published); never touch .noinit again.
+        pfm3DiagDelayAndReset();
+    }
+    diagCaptureActive = 1;
+
+    Pfm3DiagFaultInfo cap;
+    memset(&cap, 0, sizeof cap);   // FULLY initialized — no stale words
+    cap.faultId = faultId;
+    cap.cfsr = SCB->CFSR;
+    cap.hfsr = SCB->HFSR;
+    cap.dfsr = SCB->DFSR;
+    cap.mmfar = SCB->MMFAR;
+    cap.bfar = SCB->BFAR;
+    cap.afsr = SCB->AFSR;
+    cap.sysTickCtrl = SysTick->CTRL;
+    cap.sysTickAliveCpt = pfm3DiagSysTickAliveCpt;
+    cap.mainLoopSeenAlive = diagWatchdogCycled;
+
+    if (cap.cfsr & PFM3_DIAG_CFSR_STACKING_ERRS) {
+        // P4: exception stacking faulted — the frame pointer is not a valid
+        // stacked frame. Sentinels, never a dereference.
+        cap.r0 = PFM3_DIAG_FRAME_SENTINEL(0);
+        cap.r1 = PFM3_DIAG_FRAME_SENTINEL(1);
+        cap.r2 = PFM3_DIAG_FRAME_SENTINEL(2);
+        cap.r3 = PFM3_DIAG_FRAME_SENTINEL(3);
+        cap.r12 = PFM3_DIAG_FRAME_SENTINEL(4);
+        cap.lr = PFM3_DIAG_FRAME_SENTINEL(5);
+        cap.pc = PFM3_DIAG_FRAME_SENTINEL(6);
+        cap.psr = PFM3_DIAG_FRAME_SENTINEL(7);
+    } else {
+        // P3: EXC_RETURN bit 4 == 0 => extended frame: the hardware pushed
+        // 18 words of FP context (S0-S15, FPSCR, reserved) BELOW the basic
+        // frame, so r0..psr sit 18 words up. Without this, every frame read
+        // from FP-context code (any -mfpu build with lazy stacking!) would
+        // report S-register garbage as PC/LR/PSR.
+        if ((excReturn & (1u << 4)) == 0u) {
+            frame += 18;
+        }
+        cap.r0 = frame[0];
+        cap.r1 = frame[1];
+        cap.r2 = frame[2];
+        cap.r3 = frame[3];
+        cap.r12 = frame[4];
+        cap.lr = frame[5];
+        cap.pc = frame[6];
+        cap.psr = frame[7];
+    }
+
+    // Publication (P6): copy + barriers + magic LAST, then self-reset.
+    // .noinit survives NVIC_SystemReset; boot replays the capture over
+    // USB MIDI (see pfm3DiagReplayPoll).
+    pfm3DiagPublishCapture(&cap);
+    pfm3DiagDelayAndReset();
 }
 
 #else  // PFM3_HOST
 
-extern "C" void pfm3DiagFaultHook(uint32_t faultId, uint32_t *frame) {
+extern "C" void pfm3DiagFaultHook(uint32_t faultId, uint32_t *frame, uint32_t excReturn) {
     (void)faultId;
     (void)frame;
+    (void)excReturn;
 }
 
 // --- host test hooks (tests/pfm3_diag_test.cpp only; NOT target API) --------
@@ -744,6 +918,8 @@ void pfm3DiagTestReset(void) {
         ((uint32_t *)&pfm3DiagFault)[i] = 0;
     }
     diagWatchdogCycled = 0;
+    diagCaptureActive = 0;
+    diagResetWasSoftware = 1;   // host default: tests plant captures directly
     secCount = 0;
     secEncTotal = 0; secSeqTotal = 0; secTftTotal = 0; secTotalTotal = 0;
     secEncMax = 0; secSeqMax = 0; secTftMax = 0;
@@ -766,6 +942,12 @@ void pfm3DiagTestReset(void) {
 
 int pfm3DiagTestReplayPoll(uint32_t nowMs) {
     return pfm3DiagReplayPoll(nowMs);
+}
+
+// P16 seam: override the latched reset-cause for the boot-validity gate
+// (host default 1 = software reset; tests flip it to 0 to prove the gate).
+void pfm3DiagTestSetResetCause(int wasSoftwareReset) {
+    diagResetWasSoftware = wasSoftwareReset ? 1 : 0;
 }
 
 int pfm3DiagTestReplayFrameCount(void) {

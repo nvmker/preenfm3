@@ -381,10 +381,17 @@ void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai) {
  */
 void HAL_SAI_TxHalfCpltCallback(SAI_HandleTypeDef *hsai) {
     if (hsai == &hsai_BlockA1) {
+        // 8.8 SW5 review round: the half-complete callback lost its diag
+        // pair in the restore — only the full-transfer callback was hooked.
+        // Both callbacks must drive the audio watchdog + duty accounting
+        // (2 callbacks per 64-sample block; the ~1 s duty windows and the
+        // stall sampler both count on BOTH firing).
+        pfm3DiagAudioWatchdog();
         preenfm3DecodeMidiIn();
 
         saturatedOutput |= synth.buildNewSampleBlock(waveform1, waveform2, waveform3);
         tft.oscilloRecord32Samples(timbreSamples);
+        pfm3DiagAudioExit();
     }
 }
 
