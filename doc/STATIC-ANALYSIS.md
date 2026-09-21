@@ -120,6 +120,49 @@ All ten are the bank-serialization **struct-overlay idiom** — casting the
 Any NEW `-Wcast-align` warning outside these ten lines (or a count drift
 beyond 10) is new code in the 7.6 class — triage before merge.
 
+## GCC `-Wstrict-overflow=2` (Synth output loops — documented benign)
+
+The escalated-warning sweep (phase 8.8, gcc 15.3.1 arm-none-eabi, see the
+recipe below) reports 8 `-Wstrict-overflow=2` warnings on the Synth output
+loops, all of the form `assuming pointer wraparound does not occur when
+comparing P +- C1 with P +- C2` (line refs as of 2026-09-17): the zero-fill
+(`Synth.cpp:357`), the six `out` dispatch pointer-pair loops — cases
+0/2/3/5/6/8 (`:446/:458/:467/:479/:488/:500`) — and the clip/×256 loop
+(`:516`). The `mixAndPan` fast paths (cases 1/4/7) advance by index, not
+pointer comparison, and raise no warning. All are benign **by
+construction**, not by placement luck:
+
+- The two SAI DMA callbacks (`preenfm3.cpp`) pass **64-element halves of
+  the 128-element** `waveform1/2/3` arrays — `TxHalfCplt` the base pointers,
+  `TxCplt` the `+64` offsets.
+- `buildNewSampleBlock` computes the end pointers **once** as `bufferN + 64`.
+- Every loop advances monotonically (2 elements per iteration in the fill
+  and dispatch cases; `mixAndPan`: 2 dest increments × `BLOCK_SIZE`(32) = 64
+  elements; the clip pass: 1 element, all three buffers in lockstep) and
+  stops at or before `endcbN`.
+- All pointer arithmetic therefore stays within `[bufferN, bufferN + 64]` —
+  a half of the **same array object** — so C++ same-array bounds hold: no
+  pointer can overflow or wrap.
+
+GCC cannot see the same-array relation across TUs, hence the warning; the
+proof lives beside the code (comment above `Synth::buildNewSampleBlock`,
+same style as the ×256 loop's inline signed-multiply proof) and here. A new
+strict-overflow warning OUTSIDE these loops is not covered by this record.
+
+**Scan recipe** (reproduce the escalated warning set — also the source of
+the 8.8 SW1 fallthrough harvest; kept non-blocking per phase 8.8's CI
+pinning decision; verbatim from the `build/scan-ub` configuration):
+
+```sh
+cmake -B build/scan-ub -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_FLAGS="-mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard -Wno-error=implicit-function-declaration -Wno-error=implicit-int -Wno-error=int-conversion -Wno-error=incompatible-pointer-types -Wno-error=return-mismatch -Wcast-align=strict -Warray-bounds=2 -Wnull-dereference -Wshadow=local" \
+      -DCMAKE_CXX_FLAGS="-mcpu=cortex-m7 -mthumb -mfpu=fpv5-d16 -mfloat-abi=hard -Wcast-align=strict -Warray-bounds=2 -Wnull-dereference -Wduplicated-cond -Wlogical-op -Wshadow=local -Wstrict-overflow=2"
+cmake --build build/scan-ub 2>&1 | grep -E "warning:" | sort | uniq -c | sort -rn
+```
+
+(The C flags carry the vendor `-Wno-error` relaxations for ST's HAL C
+sources; the C++ escalation is the strict set the 8.8 harvest ran.)
+
 ## Resolved findings (triage history)
 
 Real bugs surfaced by the analyzers and fixed (behavior-preserving unless

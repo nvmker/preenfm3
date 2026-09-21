@@ -69,7 +69,14 @@ void FMDisplayMenu::refreshMenuByStep(int currentTimbre, int refreshStatus) {
 
                 case MENUTYPE_WITHSUBMENU:
                     if (button < synthState_->fullState.currentMenuItem->maxValue) {
-                        const char *name = MenuItemUtil::getMenuItem(synthState_->fullState.currentMenuItem->subMenu[button])->name;
+                        // 8.8 SW2: subMenu keys are table data — a missing
+                        // entry must not dereference null here; MENU_ERROR
+                        // keeps the UI alive (existing recovery state).
+                        const MenuItem *subItem = MenuItemUtil::getMenuItem(synthState_->fullState.currentMenuItem->subMenu[button]);
+                        if (subItem == nullptr) {
+                            subItem = MenuItemUtil::getMenuItem(MENU_ERROR);
+                        }
+                        const char *name = subItem->name;
                         tft_->drawButton(name, 270, 29, button, 0, 1, COLOR_DARK_RED);
                         return;
                     }
@@ -142,8 +149,13 @@ void FMDisplayMenu::refreshMenuByStep(int currentTimbre, int refreshStatus) {
                     case MENU_PRESET:
                     case MENU_DEFAULT_SEQUENCER:
                     case MENU_DEFAULT_MIXER: {
-                        const char *name =
-                            MenuItemUtil::getMenuItem(synthState_->fullState.currentMenuItem->subMenu[synthState_->fullState.previousChoice])->name;
+                        // 8.8 SW2: guard as above — previousChoice indexes
+                        // table data, not a proven-present key.
+                        const MenuItem *subItem = MenuItemUtil::getMenuItem(synthState_->fullState.currentMenuItem->subMenu[synthState_->fullState.previousChoice]);
+                        if (subItem == nullptr) {
+                            subItem = MenuItemUtil::getMenuItem(MENU_ERROR);
+                        }
+                        const char *name = subItem->name;
                         tft_->drawSimpleBorderButton(name, 270, 29, button, COLOR_LIGHT_GRAY, COLOR_DARK_RED);
                         break;
                     }
@@ -499,6 +511,12 @@ void FMDisplayMenu::buttonPressed(int currentTimbre, int button) {
     }
 
     const MenuItem *nextMenu = MenuItemUtil::getMenuItem(fullState->currentMenuItem->subMenu[button]);
+    // 8.8 SW2: dynamic subMenu key — never carry a null into the deref below
+    // or the commit at the end of buttonClick; MENU_ERROR is the existing
+    // recovery state (its own presence is pinned by menu_lookup_test.cpp).
+    if (nextMenu == nullptr) {
+        nextMenu = MenuItemUtil::getMenuItem(MENU_ERROR);
+    }
 
     // If Previous state was the following we have some action to do
     if (nextMenu->menuState == MENU_DONE) {
@@ -793,7 +811,9 @@ void FMDisplayMenu::buttonPressed(int currentTimbre, int button) {
             break;
     }
 
-    fullState->currentMenuItem = nextMenu;
+    // 8.8 SW2: the state/display boundary — a null currentMenuItem would
+    // crash every later frame; belt-and-braces alongside the source guard.
+    fullState->currentMenuItem = (nextMenu != nullptr) ? nextMenu : MenuItemUtil::getMenuItem(MENU_ERROR);
     synthState_->propagateNewMenuState();
     synthState_->propagateNewMenuSelect();
 
@@ -854,6 +874,12 @@ const MenuItem* FMDisplayMenu::getMenuBack(int currentTimbre) {
             break;
     }
     rMenuItem = MenuItemUtil::getParentMenuItem(fullState->currentMenuItem->menuState);
+    if (rMenuItem == nullptr) {
+        // 8.8 SW2: not reachable with today's table (pinned by
+        // MenuLookup.EveryTableStateHasAParent) — fall back to the top
+        // instead of committing a null currentMenuItem.
+        rMenuItem = MenuItemUtil::getMenuItem(MAIN_MENU);
+    }
     return rMenuItem;
 }
 
@@ -906,7 +932,11 @@ void FMDisplayMenu::copySynthParams(char *source, char *dest) {
 void FMDisplayMenu::newMenuState(FullState *fullState) {
     tft_->pauseRefresh();
 
-    if (MenuItemUtil::getParentMenuItem(synthState_->fullState.currentMenuItem->menuState)->menuState == MAIN_MENU) {
+    const MenuItem *parentItem = MenuItemUtil::getParentMenuItem(synthState_->fullState.currentMenuItem->menuState);
+    // 8.8 SW2: table-totality guard (see EveryTableStateHasAParent) — a
+    // missing parent defaults to the non-top row layout instead of a null
+    // dereference.
+    if (parentItem != nullptr && parentItem->menuState == MAIN_MENU) {
         menuStateRow_ = 1;
     }
 
