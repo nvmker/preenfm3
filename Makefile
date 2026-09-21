@@ -75,7 +75,7 @@ $(CMAKE_CACHE): CMakeLists.txt $(TOOLCHAIN_FILE) \
         flash-debug flash-firmware-debug flash-bootloader-debug \
         program program-firmware program-bootloader \
         program-debug program-firmware-debug program-bootloader-debug test \
-        test-cov test-asan analyze
+        test-cov test-asan analyze ubsan-trap
 
 # Release: clean rebuild into build/release/ (default BUILD_DIR / BUILD_TYPE=Release).
 # Wipes only build/release/ (build/debug/ is left intact), then reconfigures and
@@ -233,6 +233,33 @@ test-asan:
 	    -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
 	cmake --build $(TEST_ASAN_DIR) --target pfm3_tests -j
 	ctest --test-dir $(TEST_ASAN_DIR) --output-on-failure
+
+# --- UBSan trap-mode diagnostic firmware build (8.8 SW5) --------------------
+# Diagnostic-only ARM build (NOT a CI gate, test-asan precedent): the restored
+# 8.1 fault-capture module (pfm3_diag) behind PFM3_DIAG_ENABLED, plus the
+# selective trap-mode sanitizer set — every instrumented check compiles to a
+# UDF -> UsageFault (pfm3DiagInit enables USG/MEM/BUS faults) -> .noinit capture
+# -> self-reset -> boot replay over USB MIDI (scripts/hardware/h8_crashwatch.py
+# decodes it; scripts/hardware stays local-only).
+#
+# firmware/CMakeLists.txt enforces the IDENTICAL -fsanitize / -fsanitize-trap
+# list rule: any check instrumented but not trapped would reference a
+# __ubsan_handle_* runtime symbol and fail to link (no libubsan for a
+# bare-metal Cortex-M7). Verify after building (must print NOTHING):
+#   arm-none-eabi-nm build/ubsan-trap/firmware/preenfm3.elf | grep __ubsan
+# Release builds are unaffected: pfm3_diag.cpp is excluded unless
+# PFM3_DIAG_ENABLED=ON, and every hook compiles to an inline no-op.
+UBSAN_TRAP_DIR ?= build/ubsan-trap
+
+ubsan-trap:
+	cmake -B $(UBSAN_TRAP_DIR) -DCMAKE_TOOLCHAIN_FILE=$(TOOLCHAIN_FILE) \
+	    -DCMAKE_BUILD_TYPE=Release -DPFM3_UBSAN_TRAP=ON -DPFM3_DIAG_ENABLED=ON
+	cmake --build $(UBSAN_TRAP_DIR) --target preenfm3 -j
+	@arm-none-eabi-nm $(UBSAN_TRAP_DIR)/firmware/preenfm3.elf | grep __ubsan \
+	    && { echo "ERR: __ubsan runtime refs present — trap list mismatch"; exit 1; } \
+	    || echo "OK: zero __ubsan runtime refs (trap-mode clean)"
+	@grep -q __noinit_start__ $(UBSAN_TRAP_DIR)/firmware/preenfm3.map \
+	    && echo "OK: .noinit present: $$(grep __noinit_start__ $(UBSAN_TRAP_DIR)/firmware/preenfm3.map)"
 
 # --- Static analysis (cppcheck + clang-tidy) --------------------------------
 # Runs over the firmware cross-build compile_commands.json. Requires the
