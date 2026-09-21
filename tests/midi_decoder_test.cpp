@@ -79,6 +79,11 @@
 #include "Sequencer.h"
 #include "FMDisplaySequencer.h"
 
+// 8.8 SW5 diag transports (P15 end-to-end tests below): the module state
+// externs (PFM3_HOST branch of the header) + the host test-reset hook.
+#include "pfm3_diag.h"
+extern "C" void pfm3DiagTestReset(void);
+
 #include <new>  // IWYU pragma: keep — placement new in SeqFixture (L~828)
 
 #include <gtest/gtest.h>
@@ -974,6 +979,66 @@ TEST_F(MidiDecoderPhase2, ImmediateF7EarlyAbortsCleanly) {
     // Parser stays responsive: a clean NoteOn right after still routes.
     Feed({0x90, 60, 100});
     EXPECT_EQ(synth_.getLowerNote(0), 60);
+}
+
+// ---------------------------------------------------------------------------
+// 8.8 SW5 diag transports through the REAL decode path (P15): CC#119 must
+// fire only on channel 16, and the magic SysEx must survive the actual
+// F0..F7 framing/reassembly — the unit-level contract the pfm3_diag hook
+// tests cannot see (they call the hooks directly).
+// ---------------------------------------------------------------------------
+
+TEST_F(MidiDecoderPhase2, DiagCc119FiresOnlyOnChannel16) {
+    pfm3DiagTestReset();
+
+    // CC#119 value 1 on channel 16 (status 0xBF): report request dispatched,
+    // event consumed by pfm3DiagCcHook (never routed as a musical CC).
+    Feed({0xBF, 119, 1});
+    EXPECT_EQ(pfm3DiagReportRequest, 1);
+
+    // The SAME CC#119 value on channel 1 (status 0xB0): NOT a diag command —
+    // a legit user-channel CC#119 must never trigger diag state (P15a: the
+    // parked code force-reset the unit on this).
+    pfm3DiagReportRequest = 0;
+    Feed({0xB0, 119, 1});
+    EXPECT_EQ(pfm3DiagReportRequest, 0);
+
+    // Value range guard rides along end-to-end.
+    Feed({0xBF, 119, 0});
+    Feed({0xBF, 119, 7});
+    EXPECT_EQ(pfm3DiagReportRequest, 0);
+
+    pfm3DiagTestReset();
+}
+
+TEST_F(MidiDecoderPhase2, DiagMagicSysexEndToEndThroughF0F7) {
+    // P15c: the REAL wire form F0 7D 'P' '3' 'D' <cmd> <arg> F7, fed byte by
+    // byte through newByte — F0 opens SYSEX state, the 6 payload bytes land
+    // in sysexBuffer, F7 closes and analyseSysexBuffer delivers them to
+    // pfm3DiagSysexHook (without the framing). 'R' -> code 1 (report).
+    pfm3DiagTestReset();
+    Feed({0xF0, 0x7d, 'P', '3', 'D', 'R', 0, 0xF7});
+    EXPECT_EQ(pfm3DiagReportRequest, 1)
+        << "magic SysEx must survive the real F0..F7 reassembly path";
+    EXPECT_EQ(decoder_.currentEventState.eventState, MIDI_EVENT_WAITING);
+
+    // 'W' arg 1 -> watchdog ON; 'W' arg 0 -> watchdog OFF.
+    Feed({0xF0, 0x7d, 'P', '3', 'D', 'W', 1, 0xF7});
+    EXPECT_EQ(pfm3DiagEnabled, 1);
+    Feed({0xF0, 0x7d, 'P', '3', 'D', 'W', 0, 0xF7});
+    EXPECT_EQ(pfm3DiagEnabled, 0);
+
+    // 'D' arg 1 -> defer bisect arm ON.
+    Feed({0xF0, 0x7d, 'P', '3', 'D', 'D', 1, 0xF7});
+    EXPECT_EQ(pfm3DiagDeferSeqTft, 1);
+
+    // An unknown cmd byte is NOT consumed: the payload falls through to the
+    // stock 0x7d channel-set branch (rejected here: not 3 bytes) — parser
+    // still returns cleanly to WAITING.
+    Feed({0xF0, 0x7d, 'P', '3', 'D', 'X', 1, 0xF7});
+    EXPECT_EQ(decoder_.currentEventState.eventState, MIDI_EVENT_WAITING);
+
+    pfm3DiagTestReset();
 }
 
 // ---------------------------------------------------------------------------

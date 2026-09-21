@@ -38,6 +38,7 @@ void pfm3DiagTestReset(void);
 int pfm3DiagTestReplayPoll(uint32_t nowMs);
 int pfm3DiagTestReplayFrameCount(void);
 void pfm3DiagTestReplayFrame(int idx, uint8_t out[16]);
+void pfm3DiagTestSetResetCause(int wasSoftwareReset);
 
 struct Pfm3DiagTestSecStatsMirror {
     uint32_t count;
@@ -53,6 +54,63 @@ namespace {
 // then the 0xFF trailer. Mirrors pfm3DiagReplayPoll's formula.
 constexpr int kReplayDataFrames = (int)(sizeof(Pfm3DiagFaultInfo) + 6) / 7;  // 11
 constexpr int kReplayTotalFrames = kReplayDataFrames + 1;                     // 12
+
+// Faithful transcription of the FROZEN decoder's commit logic
+// (scripts/hardware/h8_crashwatch.py, main loop): a frame begins ONLY when a
+// slot-0 CC carries the 0xC7 replay magic; slots 1..15 accumulate into a
+// pending buffer; a frame is COMMITTED ONLY when its slot-15 CC arrives
+// (frames[fr[1]] = fr). An under-emitted final data frame or trailer is
+// therefore NEVER committed — the P7 defect this mirror exists to catch.
+struct FrozenDecoderMirror {
+    uint8_t pending[16];
+    int pendingLen = 0;
+    uint8_t frames[16][16];   // committed frames by frameIdx (0..10)
+    bool frameSeen[16] = {};
+    bool trailerCommitted = false;
+    int commits = 0;
+
+    void slot(uint8_t s, uint8_t v) {
+        if (s == 0 && v == 0xC7) {
+            pendingLen = 0;
+            pending[pendingLen++] = v;
+        } else if (pendingLen > 0 && 1 <= s && s <= 15) {
+            pending[pendingLen++] = v;
+            if (s == 15) {
+                int idx = pending[1];
+                if (idx == 0xFF) {
+                    trailerCommitted = true;
+                } else if (idx < 16) {
+                    memcpy(frames[idx], pending, 16);
+                    frameSeen[idx] = true;
+                }
+                commits++;
+                pendingLen = 0;
+            }
+        }
+    }
+
+    // decode_frames(): committed data frames in index order, payload pairs
+    // (lo<<1)|hi, then struct.unpack("<19I", data[:76]).
+    bool decode(uint32_t out[19]) {
+        uint8_t data[12 * 7];
+        int n = 0;
+        for (int f = 0; f < 16; f++) {
+            if (!frameSeen[f]) continue;
+            const uint8_t *vals = frames[f] + 2;  // drop magic+idx slots
+            for (int j = 0; j + 1 < 14; j += 2) {
+                data[n++] = (uint8_t)((vals[j] << 1) | vals[j + 1]);
+            }
+        }
+        if (n < 76) return false;
+        for (int w = 0; w < 19; w++) {
+            out[w] = (uint32_t)data[w * 4]
+                | ((uint32_t)data[w * 4 + 1] << 8)
+                | ((uint32_t)data[w * 4 + 2] << 16)
+                | ((uint32_t)data[w * 4 + 3] << 24);
+        }
+        return true;
+    }
+};
 
 // Plants a distinctive capture so byte-level encoding checks catch any
 // field-order drift (the 8.1 decoder is frozen on this exact layout).
@@ -76,6 +134,49 @@ void plantCapture(uint32_t faultId, uint32_t cfsr) {
     pfm3DiagFault.sysTickCtrl = 0x00000007u;
     pfm3DiagFault.sysTickAliveCpt = 0x00ABCDEFu;
     pfm3DiagFault.mainLoopSeenAlive = 1;
+}
+
+// P18 golden fixture: the 76 replay bytes HAND-WRITTEN from the documented
+// field order (19 x uint32 LE: magic, faultId, cfsr, hfsr, dfsr, mmfar, bfar,
+// afsr, r0, r1, r2, r3, r12, lr, psr, pc, sysTickCtrl, sysTickAliveCpt,
+// mainLoopSeenAlive) with plantCapture(4, 0x00010000)'s values — deliberately
+// NOT derived from the live struct, so a struct layout change that dodges the
+// static_asserts still fails here.
+const uint8_t kGoldenUsageFaultFrame[76] = {
+    /* magic 0x08C1FA01   */ 0x01, 0xFA, 0xC1, 0x08,
+    /* faultId 4          */ 0x04, 0x00, 0x00, 0x00,
+    /* cfsr 0x00010000    */ 0x00, 0x00, 0x01, 0x00,
+    /* hfsr 0x40000000    */ 0x00, 0x00, 0x00, 0x40,
+    /* dfsr 0x00000008    */ 0x08, 0x00, 0x00, 0x00,
+    /* mmfar 0x2001ABCD   */ 0xCD, 0xAB, 0x01, 0x20,
+    /* bfar 0x08021ABC    */ 0xBC, 0x1A, 0x02, 0x08,
+    /* afsr 0             */ 0x00, 0x00, 0x00, 0x00,
+    /* r0 0x11111110      */ 0x10, 0x11, 0x11, 0x11,
+    /* r1 0x22222221      */ 0x21, 0x22, 0x22, 0x22,
+    /* r2 0x33333332      */ 0x32, 0x33, 0x33, 0x33,
+    /* r3 0x44444443      */ 0x43, 0x44, 0x44, 0x44,
+    /* r12 0x55555554     */ 0x54, 0x55, 0x55, 0x55,
+    /* lr 0x08001234      */ 0x34, 0x12, 0x00, 0x08,
+    /* psr 0x61000000     */ 0x00, 0x00, 0x00, 0x61,
+    /* pc 0x08021234      */ 0x34, 0x12, 0x02, 0x08,
+    /* sysTickCtrl 7      */ 0x07, 0x00, 0x00, 0x00,
+    /* sysTickAliveCpt    */ 0xEF, 0xCD, 0xAB, 0x00,
+    /* mainLoopSeenAlive 1*/ 0x01, 0x00, 0x00, 0x00,
+};
+
+// Streams the recorded burst through the frozen-decoder mirror: every
+// emitted (slot, value) pair, in emission order (slot 0..15 per frame).
+static int FeedBurstToFrozenDecoder(FrozenDecoderMirror *dec, uint8_t outFrames[13][16]) {
+    const int total = pfm3DiagTestReplayFrameCount();
+    for (int f = 0; f < total; f++) {
+        uint8_t cc[16];
+        pfm3DiagTestReplayFrame(f, cc);
+        memcpy(outFrames[f], cc, 16);
+        for (int s = 0; s < 16; s++) {
+            dec->slot((uint8_t)s, cc[s]);
+        }
+    }
+    return total;
 }
 
 // The decoder-side inverse of the replay encoding (h8_crashwatch.py
@@ -143,12 +244,23 @@ TEST(Pfm3DiagReplay, EncodesFrozenContractAndConsumesOnce) {
         }
     }
 
-    // Trailer: magic, 0xFF marker, faultId.
+    // Trailer: magic, 0xFF marker, faultId, slots 3..15 zero-padded (the
+    // decoder commits ONLY on slot 15 — every frame emits all 16 slots).
     uint8_t trailer[16];
     pfm3DiagTestReplayFrame(kReplayDataFrames, trailer);
     EXPECT_EQ(trailer[0], 0xC7);
     EXPECT_EQ(trailer[1], 0xFF);
     EXPECT_EQ(trailer[2], (uint8_t)planted.faultId);
+    for (int s = 3; s < 16; s++) {
+        EXPECT_EQ(trailer[s], 0u) << "trailer slot " << s << " must be emitted (0-padded)";
+    }
+
+    // EVERY data frame carries slot 15 (P7): the last data frame (index 10,
+    // 6 payload bytes) must still emit through slot 15 with zero padding.
+    uint8_t lastData[16];
+    pfm3DiagTestReplayFrame(kReplayDataFrames - 1, lastData);
+    EXPECT_EQ(lastData[14], (uint8_t)(raw[76 - 1] >> 1));
+    EXPECT_EQ(lastData[15], (uint8_t)(raw[76 - 1] & 1));
 
     // Decoder-side inverse (h8_crashwatch.py): reassemble LE words.
     uint8_t data[76];
@@ -195,6 +307,104 @@ TEST(Pfm3DiagReplay, InvalidMagicNeverStreams) {
     EXPECT_EQ(pfm3DiagFault.magic, 0xDEADBEEFu);  // untouched: not consumed
 }
 
+// --- (b') boot-validity gate (P16) -------------------------------------------
+
+TEST(Pfm3DiagReplay, ColdBootCaptureNeverStreams) {
+    // Valid capture + valid faultId, but the reset cause was NOT a software
+    // reset (cold boot: SRAM coincidence) -> never streams, not consumed
+    // (preserved for SWD inspection).
+    pfm3DiagTestReset();
+    plantCapture(4, 0x00010000u);
+    pfm3DiagTestSetResetCause(0);
+    for (uint32_t t = 0; t <= 5000; t += 100) {
+        pfm3DiagTestReplayPoll(t);
+    }
+    EXPECT_EQ(pfm3DiagTestReplayFrameCount(), 0);
+    EXPECT_EQ(pfm3DiagFault.magic, PFM3_DIAG_FAULT_MAGIC);  // not consumed
+}
+
+TEST(Pfm3DiagReplay, GarbageFaultIdNeverStreams) {
+    // Valid magic + software reset, but faultId outside the documented 1..6
+    // -> never streams (guards a torn write exposing a stale magic).
+    pfm3DiagTestReset();
+    plantCapture(7, 0);        // 7: not a contract faultId
+    for (uint32_t t = 0; t <= 5000; t += 100) {
+        pfm3DiagTestReplayPoll(t);
+    }
+    EXPECT_EQ(pfm3DiagTestReplayFrameCount(), 0);
+    pfm3DiagTestReset();
+    plantCapture(0, 0);        // 0: also invalid
+    for (uint32_t t = 0; t <= 5000; t += 100) {
+        pfm3DiagTestReplayPoll(t);
+    }
+    EXPECT_EQ(pfm3DiagTestReplayFrameCount(), 0);
+}
+
+// --- (a') frozen-decoder fidelity (P7) + golden fixture (P18) -----------------
+
+// The emitted CC stream must survive a FAITHFUL copy of h8_crashwatch.py's
+// commit logic: every frame commits (slot 15 arrives for data frames AND the
+// trailer — the under-emission defect could never pass this), the burst
+// reassembles to >= 76 bytes, and all 19 words unpack to the planted values.
+TEST(Pfm3DiagReplay, EmittedCcStreamDecodesViaFrozenDecoder) {
+    pfm3DiagTestReset();
+    plantCapture(4, 0x00010000u);
+    for (uint32_t t = 3006; pfm3DiagTestReplayFrameCount() < kReplayTotalFrames; t += 6) {
+        pfm3DiagTestReplayPoll(t);
+    }
+    ASSERT_EQ(pfm3DiagTestReplayFrameCount(), kReplayTotalFrames);
+
+    FrozenDecoderMirror dec;
+    uint8_t outFrames[13][16];
+    ASSERT_EQ(FeedBurstToFrozenDecoder(&dec, outFrames), kReplayTotalFrames);
+
+    // ALL frames committed: 11 data + the trailer (the old encoder emitted
+    // the final data frame and trailer without slot 15 -> never committed,
+    // burst unpacked at 70 bytes).
+    EXPECT_EQ(dec.commits, kReplayTotalFrames);
+    EXPECT_TRUE(dec.trailerCommitted) << "trailer never committed: decoder would not terminate the burst";
+    for (int f = 0; f < kReplayDataFrames; f++) {
+        EXPECT_TRUE(dec.frameSeen[f]) << "data frame " << f << " never committed";
+    }
+
+    uint32_t words[19];
+    ASSERT_TRUE(dec.decode(words));
+    EXPECT_EQ(words[0], PFM3_DIAG_FAULT_MAGIC);
+    EXPECT_EQ(words[1], 4u);                    // faultId
+    EXPECT_EQ(words[2], 0x00010000u);           // cfsr
+    EXPECT_EQ(words[3], 0x40000000u);           // hfsr
+    EXPECT_EQ(words[4], 0x00000008u);           // dfsr
+    EXPECT_EQ(words[5], 0x2001ABCDu);           // mmfar
+    EXPECT_EQ(words[6], 0x08021ABCu);           // bfar
+    EXPECT_EQ(words[7], 0u);                    // afsr
+    EXPECT_EQ(words[8], 0x11111110u);           // r0
+    EXPECT_EQ(words[9], 0x22222221u);           // r1
+    EXPECT_EQ(words[10], 0x33333332u);          // r2
+    EXPECT_EQ(words[11], 0x44444443u);          // r3
+    EXPECT_EQ(words[12], 0x55555554u);          // r12
+    EXPECT_EQ(words[13], 0x08001234u);          // lr
+    EXPECT_EQ(words[14], 0x61000000u);          // psr
+    EXPECT_EQ(words[15], 0x08021234u);          // pc
+    EXPECT_EQ(words[16], 0x00000007u);          // sysTickCtrl
+    EXPECT_EQ(words[17], 0x00ABCDEFu);          // sysTickAliveCpt
+    EXPECT_EQ(words[18], 1u);                   // mainLoopSeenAlive
+
+    // P18: the same reconstructed byte stream matches the INDEPENDENT
+    // hand-written golden fixture (documented field order, not struct bytes).
+    // Rebuild the stream via the mirror's byte pairs.
+    uint8_t stream[84];
+    int n = 0;
+    for (int f = 0; f < kReplayDataFrames; f++) {
+        const uint8_t *vals = dec.frames[f] + 2;
+        for (int j = 0; j + 1 < 14; j += 2) {
+            stream[n++] = (uint8_t)((vals[j] << 1) | vals[j + 1]);
+        }
+    }
+    EXPECT_EQ(n, kReplayDataFrames * 7);
+    EXPECT_EQ(memcmp(stream, kGoldenUsageFaultFrame, sizeof kGoldenUsageFaultFrame), 0)
+        << "replay bytes diverge from the documented-layout golden fixture";
+}
+
 // --- (c) command codes + CC/SysEx hook matching -------------------------------
 
 TEST(Pfm3DiagCommand, CodesSetDocumentedState) {
@@ -239,53 +449,86 @@ TEST(Pfm3DiagCommand, CodesSetDocumentedState) {
     EXPECT_EQ(pfm3DiagEnabled, 1);
 }
 
-TEST(Pfm3DiagCommand, CcHookMatchesOnlyCc119Codes1To6) {
+TEST(Pfm3DiagCommand, CcHookMatchesOnlyCh16Cc119Codes1To6) {
     pfm3DiagTestReset();
 
-    EXPECT_EQ(pfm3DiagCcHook(119, 1), 1);   // valid: dispatch + consume
+    // Channel 16 (0-based 15) — the ONLY accepted channel (P15a).
+    EXPECT_EQ(pfm3DiagCcHook(15, 119, 1), 1);   // valid: dispatch + consume
     EXPECT_EQ(pfm3DiagReportRequest, 1);
-    EXPECT_EQ(pfm3DiagCcHook(119, 6), 1);   // forced-trap code accepted
+    EXPECT_EQ(pfm3DiagCcHook(15, 119, 6), 1);   // forced-trap code accepted
 
-    EXPECT_EQ(pfm3DiagCcHook(119, 0), 0);   // value range 1..6 only
-    EXPECT_EQ(pfm3DiagCcHook(119, 7), 0);
-    EXPECT_EQ(pfm3DiagCcHook(118, 1), 0);   // CC number must match
-    EXPECT_EQ(pfm3DiagCcHook(120, 5), 0);
+    EXPECT_EQ(pfm3DiagCcHook(15, 119, 0), 0);   // value range 1..6 only
+    EXPECT_EQ(pfm3DiagCcHook(15, 119, 7), 0);
+    EXPECT_EQ(pfm3DiagCcHook(15, 118, 1), 0);   // CC number must match
+    EXPECT_EQ(pfm3DiagCcHook(15, 120, 5), 0);
 
-    // Non-matching hooks must not have dispatched anything new: only the
-    // two accepted calls above set state; reset the flag they set first.
+    // ANY other channel: never a diag command — a legit CC#119 value 6 on a
+    // user channel must NOT force-reset the unit (the P15a defect).
     pfm3DiagReportRequest = 0;
-    EXPECT_EQ(pfm3DiagCcHook(118, 1), 0);
+    EXPECT_EQ(pfm3DiagCcHook(0, 119, 1), 0);
+    EXPECT_EQ(pfm3DiagCcHook(1, 119, 6), 0);
+    EXPECT_EQ(pfm3DiagCcHook(14, 119, 5), 0);
     EXPECT_EQ(pfm3DiagReportRequest, 0);
+    // Other channels + other CCs: nothing dispatched either.
+    EXPECT_EQ(pfm3DiagCcHook(0, 118, 1), 0);
+    EXPECT_EQ(pfm3DiagReportRequest, 0);
+}
+
+// P15(b): code 6 is ignored while a valid capture is pending replay — the
+// pending capture must survive (a reboot would overwrite it / loop the unit).
+TEST(Pfm3DiagCommand, Code6IgnoredWhileCapturePending) {
+    pfm3DiagTestReset();
+    plantCapture(4, 0x00010000u);
+    pfm3DiagCommand(6);
+    EXPECT_EQ(pfm3DiagFault.magic, PFM3_DIAG_FAULT_MAGIC)
+        << "code 6 must not clear/replace a pending capture";
+
+    // And the pending capture still replays afterwards (nothing consumed it).
+    for (uint32_t t = 0; pfm3DiagTestReplayFrameCount() < kReplayTotalFrames; t += 6) {
+        pfm3DiagTestReplayPoll(t < 3001 ? 3001 : t);
+    }
+    EXPECT_EQ(pfm3DiagTestReplayFrameCount(), kReplayTotalFrames);
 }
 
 TEST(Pfm3DiagCommand, SysexHookMatchesMagicP3D) {
     pfm3DiagTestReset();
-    // F0 7D 'P' '3' 'D' <cmd> <arg> F7 — the F0/F7 framing is stripped by
-    // the time analyseSysexBuffer runs; the 7 payload bytes carry the magic.
-    uint8_t buf[7] = {0x7d, 'P', '3', 'D', 'R', 0, 0x00};
+    // analyseSysexBuffer delivers the payload WITHOUT F0/F7: the documented
+    // wire form F0 7D 'P' '3' 'D' <cmd> <arg> F7 arrives as 6 bytes (P15c).
+    uint8_t buf[6] = {0x7d, 'P', '3', 'D', 'R', 0};
 
-    EXPECT_EQ(pfm3DiagSysexHook(buf, 7), 1);
+    EXPECT_EQ(pfm3DiagSysexHook(buf, 6), 1);
     EXPECT_EQ(pfm3DiagReportRequest, 1);
 
     buf[4] = 'D'; buf[5] = 1;
-    EXPECT_EQ(pfm3DiagSysexHook(buf, 7), 1);
+    EXPECT_EQ(pfm3DiagSysexHook(buf, 6), 1);
     EXPECT_EQ(pfm3DiagDeferSeqTft, 1);
     buf[5] = 0;
-    EXPECT_EQ(pfm3DiagSysexHook(buf, 7), 1);
+    EXPECT_EQ(pfm3DiagSysexHook(buf, 6), 1);
     EXPECT_EQ(pfm3DiagDeferSeqTft, 0);
 
     buf[4] = 'W'; buf[5] = 0;
-    EXPECT_EQ(pfm3DiagSysexHook(buf, 7), 1);
+    EXPECT_EQ(pfm3DiagSysexHook(buf, 6), 1);
     EXPECT_EQ(pfm3DiagEnabled, 0);
     buf[5] = 1;
-    EXPECT_EQ(pfm3DiagSysexHook(buf, 7), 1);
+    EXPECT_EQ(pfm3DiagSysexHook(buf, 6), 1);
     EXPECT_EQ(pfm3DiagEnabled, 1);
 
+    // The full 8-byte wire form (F0/F7 included) is accepted too.
+    uint8_t wire[8] = {0xF0, 0x7d, 'P', '3', 'D', 'R', 1, 0xF7};
+    pfm3DiagReportRequest = 0;
+    EXPECT_EQ(pfm3DiagSysexHook(wire, 8), 1);
+    EXPECT_EQ(pfm3DiagReportRequest, 1);
+
     buf[4] = 'X';  // unknown cmd byte
-    EXPECT_EQ(pfm3DiagSysexHook(buf, 7), 0);
-    EXPECT_EQ(pfm3DiagSysexHook(buf, 6), 0);   // size must be 7
+    EXPECT_EQ(pfm3DiagSysexHook(buf, 6), 0);
+    EXPECT_EQ(pfm3DiagSysexHook(buf, 5), 0);   // size must be 6 (or 8 framed)
+    {   // the old (buggy) matcher's size — 7 bytes, must also be rejected;
+        // a properly sized 7-byte buffer so the hook's F7 peek stays in-bounds.
+        uint8_t seven[7] = {0x7d, 'P', '3', 'D', 'R', 0, 0x00};
+        EXPECT_EQ(pfm3DiagSysexHook(seven, 7), 0);
+    }
     buf[0] = 0x7e;                              // wrong manufacturer byte
-    EXPECT_EQ(pfm3DiagSysexHook(buf, 7), 0);
+    EXPECT_EQ(pfm3DiagSysexHook(buf, 6), 0);
 }
 
 // --- (d) tic-section accumulators ---------------------------------------------

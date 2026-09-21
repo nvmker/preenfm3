@@ -40,13 +40,13 @@ TEST(Pfm3DiagDisabledGate, EveryHookCompilesToAnInlineNoOp) {
     // Value hooks: constant results — the original code always runs and no
     // CC/SysEx event is ever consumed.
     EXPECT_EQ(pfm3DiagSeqTftGate(), 0);
-    EXPECT_EQ(pfm3DiagCcHook(119, 1), 0);   // even the real diag CC + code
-    EXPECT_EQ(pfm3DiagCcHook(119, 6), 0);
-    EXPECT_EQ(pfm3DiagCcHook(0, 0), 0);
+    EXPECT_EQ(pfm3DiagCcHook(15, 119, 1), 0);   // even the real diag ch16+CC+code
+    EXPECT_EQ(pfm3DiagCcHook(15, 119, 6), 0);
+    EXPECT_EQ(pfm3DiagCcHook(0, 0, 0), 0);
 
-    const uint8_t magicP3D[7] = {0x7d, 'P', '3', 'D', 'R', 0, 0x00};
-    EXPECT_EQ(pfm3DiagSysexHook(magicP3D, 7), 0);
+    const uint8_t magicP3D[6] = {0x7d, 'P', '3', 'D', 'R', 0};
     EXPECT_EQ(pfm3DiagSysexHook(magicP3D, 6), 0);
+    EXPECT_EQ(pfm3DiagSysexHook(magicP3D, 5), 0);
 
     SUCCEED() << "disabled-path hooks compile to inline no-ops";
 }
