@@ -59,6 +59,13 @@ extern uint8_t midiControllerMode;
 /* USER CODE BEGIN PFP */
 void preenfm3Tic();
 void preenfm3MidiControllerTic();
+#ifdef PFM3_DIAG_ENABLED
+/* 8.1 diagnostics (8.8 SW5, gated): C-linkage entries defined in
+ * pfm3_diag.cpp (see pfm3_diag.h). SysTick enter is called before
+ * HAL_IncTick so a stall is visible even if preenfm3Tic early-returns. */
+void pfm3DiagSysTickEnter(void);
+void pfm3DiagFaultHook(unsigned int faultId, unsigned int *stackedFrame);
+#endif /* PFM3_DIAG_ENABLED */
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -100,7 +107,21 @@ void NMI_Handler(void)
 void HardFault_Handler(void)
 {
   /* USER CODE BEGIN HardFault_IRQn 0 */
-
+#ifdef PFM3_DIAG_ENABLED
+  /* 8.1 diagnostics: naked shim so the stacked exception frame (r0-r3, r12,
+   * lr, pc, psr) reaches pfm3DiagFaultHook unmodified by any C prologue. The
+   * hook captures fault-status registers + the frame into the .noinit struct
+   * pfm3DiagFault, delays ~50 ms and soft-resets; boot replays the capture
+   * over USB MIDI. NOTE: this replaces the stock CubeMX while(1) body —
+   * re-running code generation needs this re-applied (git diff shows it). */
+  __asm volatile (
+      "tst lr, #4        \n"
+      "ite eq            \n"
+      "mrseq r0, msp     \n"
+      "mrsne r0, psp     \n"
+      "mov r1, #1        \n"
+      "b pfm3DiagFaultHook\n");
+#endif /* PFM3_DIAG_ENABLED */
   /* USER CODE END HardFault_IRQn 0 */
   while (1)
   {
@@ -115,7 +136,15 @@ void HardFault_Handler(void)
 void MemManage_Handler(void)
 {
   /* USER CODE BEGIN MemoryManagement_IRQn 0 */
-
+#ifdef PFM3_DIAG_ENABLED
+  __asm volatile (
+      "tst lr, #4        \n"
+      "ite eq            \n"
+      "mrseq r0, msp     \n"
+      "mrsne r0, psp     \n"
+      "mov r1, #2        \n"
+      "b pfm3DiagFaultHook\n");
+#endif /* PFM3_DIAG_ENABLED */
   /* USER CODE END MemoryManagement_IRQn 0 */
   while (1)
   {
@@ -130,7 +159,15 @@ void MemManage_Handler(void)
 void BusFault_Handler(void)
 {
   /* USER CODE BEGIN BusFault_IRQn 0 */
-
+#ifdef PFM3_DIAG_ENABLED
+  __asm volatile (
+      "tst lr, #4        \n"
+      "ite eq            \n"
+      "mrseq r0, msp     \n"
+      "mrsne r0, psp     \n"
+      "mov r1, #3        \n"
+      "b pfm3DiagFaultHook\n");
+#endif /* PFM3_DIAG_ENABLED */
   /* USER CODE END BusFault_IRQn 0 */
   while (1)
   {
@@ -145,7 +182,15 @@ void BusFault_Handler(void)
 void UsageFault_Handler(void)
 {
   /* USER CODE BEGIN UsageFault_IRQn 0 */
-
+#ifdef PFM3_DIAG_ENABLED
+  __asm volatile (
+      "tst lr, #4        \n"
+      "ite eq            \n"
+      "mrseq r0, msp     \n"
+      "mrsne r0, psp     \n"
+      "mov r1, #4        \n"
+      "b pfm3DiagFaultHook\n");
+#endif /* PFM3_DIAG_ENABLED */
   /* USER CODE END UsageFault_IRQn 0 */
   while (1)
   {
@@ -203,6 +248,9 @@ void SysTick_Handler(void)
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
+#ifdef PFM3_DIAG_ENABLED
+  pfm3DiagSysTickEnter();
+#endif /* PFM3_DIAG_ENABLED */
   switch (midiControllerMode) {
   case 0:
       preenfm3Tic();

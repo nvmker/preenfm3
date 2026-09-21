@@ -9,6 +9,24 @@ file(GLOB_RECURSE FIRMWARE_C CONFIGURE_DEPENDS
 file(GLOB_RECURSE FIRMWARE_CXX CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/Src/*.cpp")
 
+# 8.8 SW5 diagnostics: pfm3_diag.cpp (the restored 8.1 fault-capture /
+# watchdog module) is diagnostic-only. The TU self-gates to an empty
+# translation unit when neither PFM3_DIAG_ENABLED nor PFM3_HOST is defined,
+# but it is kept OUT of non-diagnostic builds entirely so the release object
+# list stays exactly master's. The bootloader target never sees it (its own
+# CMakeLists globs bootloader/Src only).
+option(PFM3_DIAG_ENABLED "Compile the 8.1/8.8 SW5 diagnostic module into the firmware" OFF)
+# UBSan trap-mode diagnostic build (make ubsan-trap): selective sanitizer
+# checks compiled to UDF traps (no libubsan) so a trap lands in UsageFault
+# and the fault hook captures it. Implies PFM3_DIAG_ENABLED.
+option(PFM3_UBSAN_TRAP "UBSan trap-mode diagnostic build: -fsanitize/-fsanitize-trap on the preenfm3 target" OFF)
+if(PFM3_UBSAN_TRAP)
+    set(PFM3_DIAG_ENABLED ON)
+endif()
+if(NOT PFM3_DIAG_ENABLED)
+    list(REMOVE_ITEM FIRMWARE_CXX "${CMAKE_CURRENT_SOURCE_DIR}/Src/pfm3_diag.cpp")
+endif()
+
 add_executable(preenfm3
     ${FIRMWARE_C}
     ${FIRMWARE_CXX}
@@ -35,6 +53,27 @@ target_include_directories(preenfm3 PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../lib/Inc")
 
 target_compile_definitions(preenfm3 PRIVATE USE_HAL_DRIVER STM32H753xx LQFP144)
+
+# 8.8 SW5: activate the real pfm3_diag hooks (stm32h7xx_it.c shims, capture,
+# watchdog, CC#119/SysEx commands). Every other hooked TU needs no define —
+# pfm3_diag.h provides inline no-ops when this is absent.
+if(PFM3_DIAG_ENABLED)
+    target_compile_definitions(preenfm3 PRIVATE PFM3_DIAG_ENABLED=1)
+endif()
+
+# 8.8 SW5 UBSan trap mode. The -fsanitize and -fsanitize-trap lists MUST be
+# IDENTICAL: any check present in -fsanitize but missing from -fsanitize-
+# trap references a __ubsan_handle_* runtime symbol, and there is no
+# libubsan for a bare-metal Cortex-M7 link. Applied to BOTH languages (the
+# target mixes C and CXX sources). Verify after building:
+#   arm-none-eabi-nm build/ubsan-trap/firmware/preenfm3.elf | grep __ubsan
+# must print NOTHING.
+if(PFM3_UBSAN_TRAP)
+    set(PFM3_UBSAN_TRAP_CHECKS "alignment,shift,signed-integer-overflow,integer-divide-by-zero,float-cast-overflow")
+    target_compile_options(preenfm3 PRIVATE
+        -fsanitize=${PFM3_UBSAN_TRAP_CHECKS}
+        -fsanitize-trap=${PFM3_UBSAN_TRAP_CHECKS})
+endif()
 target_compile_options(preenfm3 PRIVATE -mslow-flash-data)
 
 # Static-analysis baseline warnings on the firmware's own code. -Wall -Wextra

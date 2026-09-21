@@ -71,6 +71,8 @@ RAM_D2_SECTION int32_t waveform1[64 * 2];
 RAM_D2_SECTION int32_t waveform2[64 * 2];
 RAM_D2_SECTION int32_t waveform3[64 * 2];
 
+#include "pfm3_diag.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -94,6 +96,11 @@ void dependencyInjection();
 void preenfm3Init() {
 
     uint32_t erreurSD = preenfm3LibInitSD();
+
+    // 8.1 diagnostics: cycle counter up (and Usage/Mem/Bus faults enabled)
+    // before anything time-critical runs. Inline no-op unless
+    // PFM3_DIAG_ENABLED (see pfm3_diag.h).
+    pfm3DiagInit();
 
     tft.init(&tftAlgo);
     ILI9341_Init();
@@ -156,6 +163,11 @@ void preenfm3Init() {
 
 void preenfm3Loop() {
     uint32_t currentMillis = HAL_GetTick();
+
+    // 8.1 diagnostics: SysTick watchdog (DWT-timed, so it still detects a
+    // stall when HAL_GetTick itself is frozen by a dead SysTick IRQ) +
+    // crash-capture replay. Inline no-op unless PFM3_DIAG_ENABLED.
+    pfm3DiagWatchdogMainLoop();
 
     /*
      * We process here the midi action the cannot be done in the high priori audio loop
@@ -288,16 +300,37 @@ void preenfm3Tic() {
 
 	tftCpt++;
 
+#ifdef PFM3_DIAG_ENABLED
+	// 8.1 famine instrumentation: DWT-cycle timing of the three sections.
+	// Gated (not header-no-op'd) because DWT->CYCCNT is volatile — a no-op
+	// pfm3DiagTicSections call would still leave the raw register reads in
+	// a non-diagnostic build.
+	uint32_t ticT0 = DWT->CYCCNT;
+	uint32_t ticT1 = ticT0;
+	uint32_t ticT2 = ticT0;
+	uint32_t ticT3 = ticT0;
+#endif
+
 	// check encoder/buttons status : 500 times per seconds
     if ((tftCpt & 0x1) == 0) {
         encoders.checkStatus(synthState.fullState.midiConfigValue[MIDICONFIG_ENCODER], synthState.fullState.midiConfigValue[MIDICONFIG_ENCODER_PUSH]);
     }
+#ifdef PFM3_DIAG_ENABLED
+    ticT1 = DWT->CYCCNT; ticT2 = ticT1;
+#endif
 
     // In case of sequencer running on internal BPM
     sequencer.ticMillis();
+#ifdef PFM3_DIAG_ENABLED
+    ticT3 = DWT->CYCCNT;
+#endif
 
     // TFT DMA2D opertations
     tft.tic(synthState.fullState.midiConfigValue[MIDICONFIG_TFT_AUTO_REINIT] == 1);
+#ifdef PFM3_DIAG_ENABLED
+    uint32_t ticT4 = DWT->CYCCNT;
+    pfm3DiagTicSections(ticT1 - ticT0, ticT3 - ticT2, ticT4 - ticT3, ticT4 - ticT0);
+#endif
 
     // Pfm3 Misc tics
     switch (tftCpt & 0xff) {
@@ -331,10 +364,12 @@ void preenfm3DecodeMidiIn() {
 
 void HAL_SAI_TxCpltCallback(SAI_HandleTypeDef *hsai) {
     if (hsai == &hsai_BlockA1) {
+        pfm3DiagAudioWatchdog();
         preenfm3DecodeMidiIn();
 
         saturatedOutput |= synth.buildNewSampleBlock(&waveform1[64], &waveform2[64], &waveform3[64]);
         tft.oscilloRecord32Samples(timbreSamples);
+        pfm3DiagAudioExit();
     }
 }
 

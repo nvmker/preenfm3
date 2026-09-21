@@ -21,6 +21,7 @@
 #include "FMDisplayMenu.h"
 #include "FMDisplayEditor.h"
 #include "FMDisplaySequencer.h"
+#include "pfm3_diag.h"
 #include "ili9341.h"
 
 extern struct WaveTable waveTables[NUMBER_OF_WAVETABLES];
@@ -262,6 +263,14 @@ void FMDisplay3::midiClock(bool show) {
 
 void FMDisplay3::noteOn(int timbre, bool show) {
     if (midiControllerMode != 0) {
+        return;
+    }
+    // 8.1: this runs from the SAI decode context on every incoming note-on
+    // and feeds the single-consumer TFT action queue that tft.tic() drains
+    // from SysTick — a second producer racing the main loop's inserts. Gate
+    // it for the bisect arm (gated: constant 0 unless PFM3_DIAG_ENABLED /
+    // PFM3_HOST — see pfm3_diag.h).
+    if (pfm3DiagSeqTftGate()) {
         return;
     }
     int x = 240 - (3 - (timbre % 3)) * TFT_SMALL_CHAR_WIDTH;
