@@ -251,15 +251,69 @@ test-asan:
 # PFM3_DIAG_ENABLED=ON, and every hook compiles to an inline no-op.
 UBSAN_TRAP_DIR ?= build/ubsan-trap
 
+.PHONY: ubsan-trap ubsan-trap-selfcheck
+
 ubsan-trap:
 	cmake -B $(UBSAN_TRAP_DIR) -DCMAKE_TOOLCHAIN_FILE=$(TOOLCHAIN_FILE) \
 	    -DCMAKE_BUILD_TYPE=Release -DPFM3_UBSAN_TRAP=ON -DPFM3_DIAG_ENABLED=ON
 	cmake --build $(UBSAN_TRAP_DIR) --target preenfm3 -j
-	@arm-none-eabi-nm $(UBSAN_TRAP_DIR)/firmware/preenfm3.elf | grep __ubsan \
-	    && { echo "ERR: __ubsan runtime refs present — trap list mismatch"; exit 1; } \
-	    || echo "OK: zero __ubsan runtime refs (trap-mode clean)"
-	@grep -q __noinit_start__ $(UBSAN_TRAP_DIR)/firmware/preenfm3.map \
-	    && echo "OK: .noinit present: $$(grep __noinit_start__ $(UBSAN_TRAP_DIR)/firmware/preenfm3.map)"
+	@$(MAKE) ubsan-trap-selfcheck UBSAN_TRAP_DIR=$(UBSAN_TRAP_DIR)
+
+# Self-verification of a built ubsan-trap image (run automatically by the
+# ubsan-trap target; standalone-able for ad-hoc checks, e.g. proving the
+# guards actually fail on a doctored image). Checks, in order:
+#   1. arm-none-eabi-nm RUNS (a missing tool or unreadable elf fails loudly
+#      instead of grepping an empty stream to a false OK); the output must
+#      contain ZERO __ubsan references — now with preenfm3lib instrumented
+#      too (P9), any trap-list mismatch anywhere in firmware + lib shows up.
+#   2. __noinit_start__ exists in the map (capture struct placement).
+#   3. Each of the five naked fault shims (NMI/Hard/MemManage/Bus/Usage)
+#      disassembles to EXACTLY the 7-instruction ABI sequence from
+#      stm32h7xx_it.c — no compiler-emitted prologue (that is what `naked`
+#      guarantees; the check turns a regression into a build failure),
+#      frame pointer in r1, faultId literal in r0, EXC_RETURN in r2, and a
+#      tail-branch to pfm3DiagFaultHook.
+ubsan-trap-selfcheck:
+	@elf=$(UBSAN_TRAP_DIR)/firmware/preenfm3.elf; \
+	map=$(UBSAN_TRAP_DIR)/firmware/preenfm3.map; \
+	nmout=`arm-none-eabi-nm $$elf 2>&1` || { \
+	    echo "ERR: arm-none-eabi-nm failed on $$elf:"; echo "$$nmout"; exit 1; }; \
+	if printf '%s\n' "$$nmout" | grep -q __ubsan; then \
+	    echo "ERR: __ubsan runtime refs present — trap list mismatch (fsanitize/-trap lists must be IDENTICAL):"; \
+	    printf '%s\n' "$$nmout" | grep __ubsan; exit 1; \
+	fi; \
+	echo "OK: nm ran clean — zero __ubsan runtime refs (trap-mode, preenfm3lib instrumented)"; \
+	if ! grep -q __noinit_start__ $$map; then \
+	    echo "ERR: __noinit_start__ missing from $$map"; exit 1; \
+	fi; \
+	echo "OK: .noinit present: `grep __noinit_start__ $$map`"; \
+	fail=0; \
+	check_shim() { \
+	    h=$$1; lit=$$2; \
+	    body=`arm-none-eabi-objdump -d $$elf --disassemble=$$h \
+	        | sed -n "/<$$h>:/,/^$$/p" | tail -n +2 \
+	        | sed -E 's/^[[:space:]]*[0-9a-f]+:[[:space:]]*[0-9a-f ]+[[:space:]]+//' \
+	        | tr '\t' ' ' | tr -s ' '`; \
+	    n=`printf '%s\n' "$$body" | wc -l | tr -d ' '`; \
+	    if [ "$$n" != 7 ]; then \
+	        echo "ERR: $$h: expected exactly 7 instructions (naked shim, no prologue), got $$n:"; \
+	        printf '%s\n' "$$body"; fail=1; return; \
+	    fi; \
+	    printf '%s\n' "$$body" | sed -n 1p | grep -qE '^tst(\.w)? lr, #4$$' || { echo "ERR: $$h: instr 1 is not 'tst lr, #4':"; printf '%s\n' "$$body"; fail=1; return; }; \
+	    printf '%s\n' "$$body" | sed -n 2p | grep -qE '^ite eq$$' || { echo "ERR: $$h: instr 2 is not 'ite eq'"; fail=1; return; }; \
+	    printf '%s\n' "$$body" | sed -n 3p | grep -qE '^mrseq r1, MSP$$' || { echo "ERR: $$h: instr 3 does not put the frame pointer in r1"; fail=1; return; }; \
+	    printf '%s\n' "$$body" | sed -n 4p | grep -qE '^mrsne r1, PSP$$' || { echo "ERR: $$h: instr 4 does not put the frame pointer in r1"; fail=1; return; }; \
+	    printf '%s\n' "$$body" | sed -n 5p | grep -qE "^mov(\\.w|s)? r0, #$$lit$$" || { echo "ERR: $$h: instr 5 does not load faultId $$lit into r0 (P1 ABI: r0=faultId)"; printf '%s\n' "$$body"; fail=1; return; }; \
+	    printf '%s\n' "$$body" | sed -n 6p | grep -qE '^mov(\.w|s)? r2, lr$$' || { echo "ERR: $$h: instr 6 does not pass EXC_RETURN in r2 (P3)"; fail=1; return; }; \
+	    printf '%s\n' "$$body" | sed -n 7p | grep -qE '^b(\.w|\.n)? [0-9a-f]+ <pfm3DiagFaultHook>$$' || { echo "ERR: $$h: instr 7 is not a tail-branch to pfm3DiagFaultHook"; printf '%s\n' "$$body"; fail=1; return; }; \
+	    echo "OK: $$h: naked shim ABI verified (r0=faultId $$lit, r1=frame, r2=EXC_RETURN)"; \
+	}; \
+	check_shim NMI_Handler 5; \
+	check_shim HardFault_Handler 1; \
+	check_shim MemManage_Handler 2; \
+	check_shim BusFault_Handler 3; \
+	check_shim UsageFault_Handler 4; \
+	exit $$fail
 
 # --- Static analysis (cppcheck + clang-tidy) --------------------------------
 # Runs over the firmware cross-build compile_commands.json. Requires the

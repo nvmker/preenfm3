@@ -74,6 +74,20 @@ include(stm32-post-build)
 # bootloader + lib. `make analyze` consumes it (see Makefile).
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# --- Diagnostic-build options (8.8 SW5) --------------------------------------
+# Declared HERE, BEFORE add_subdirectory(lib), so preenfm3lib (FatFs/SD/TFT/
+# encoders/RingBuffer — linked into the firmware) can see PFM3_UBSAN_TRAP and
+# apply the identical sanitizer+trap set. Without lib instrumentation the UB
+# soak has a blind spot over the whole lib tree (review P9). The bootloader
+# deliberately does NOT consume these options (diagnostic traps belong to the
+# firmware soak image only). firmware/CMakeLists.txt re-declares the same
+# options for its own scope (a no-op: the cache entries already exist).
+option(PFM3_DIAG_ENABLED "Compile the 8.1/8.8 SW5 diagnostic module into the firmware" OFF)
+option(PFM3_UBSAN_TRAP "UBSan trap-mode diagnostic build: -fsanitize/-fsanitize-trap on firmware + lib targets" OFF)
+if(PFM3_UBSAN_TRAP)
+    set(PFM3_DIAG_ENABLED ON)
+endif()
+
 add_subdirectory(lib)
 add_subdirectory(firmware)
 add_subdirectory(bootloader)

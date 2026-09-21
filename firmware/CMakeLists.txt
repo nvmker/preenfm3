@@ -19,6 +19,10 @@ option(PFM3_DIAG_ENABLED "Compile the 8.1/8.8 SW5 diagnostic module into the fir
 # UBSan trap-mode diagnostic build (make ubsan-trap): selective sanitizer
 # checks compiled to UDF traps (no libubsan) so a trap lands in UsageFault
 # and the fault hook captures it. Implies PFM3_DIAG_ENABLED.
+# NOTE (8.8 SW5 review round): both options are ALSO declared in the
+# top-level CMakeLists.txt BEFORE add_subdirectory(lib) so preenfm3lib can
+# consume PFM3_UBSAN_TRAP (lib instrumentation); these re-declarations are
+# no-ops on an existing cache entry and keep this file self-describing.
 option(PFM3_UBSAN_TRAP "UBSan trap-mode diagnostic build: -fsanitize/-fsanitize-trap on the preenfm3 target" OFF)
 if(PFM3_UBSAN_TRAP)
     set(PFM3_DIAG_ENABLED ON)
