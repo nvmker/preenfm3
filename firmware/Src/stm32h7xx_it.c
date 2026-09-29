@@ -301,13 +301,15 @@ void PendSV_Handler(void)
 void SysTick_Handler(void)
 {
   /* USER CODE BEGIN SysTick_IRQn 0 */
-
+#ifdef PFM3_DIAG_ENABLED
+  /* 8.1 diagnostics: alive counter FIRST — at the very top of the handler,
+   * BEFORE HAL_IncTick, exactly as the documented contract (pfm3_diag.h)
+   * states; a later position would undercount around tick-dependent paths. */
+  pfm3DiagSysTickEnter();
+#endif /* PFM3_DIAG_ENABLED */
   /* USER CODE END SysTick_IRQn 0 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
-#ifdef PFM3_DIAG_ENABLED
-  pfm3DiagSysTickEnter();
-#endif /* PFM3_DIAG_ENABLED */
   switch (midiControllerMode) {
   case 0:
       preenfm3Tic();
