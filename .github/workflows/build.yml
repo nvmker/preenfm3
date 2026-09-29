@@ -93,14 +93,20 @@ jobs:
       # would grow the image and shift behavior, so fail loudly on the FIRST
       # pfm3Diag symbol found. This is NOT a ubsan-trap gate (that build is
       # diagnostic-only, like test-asan) — it guards the release artifact.
+      # nm failure is FATAL: the elf is read by arm-none-eabi-nm (the job's
+      # toolchain — the runner's native nm cannot parse a Cortex-M7 elf) in
+      # its own capture assignment, so a missing tool or unreadable elf
+      # aborts the step instead of grepping empty output into a false OK.
       - name: Release purity (no diag symbols)
         run: |
           set -euo pipefail
-          syms="$(nm build/release/firmware/preenfm3.elf \
-            | grep pfm3Diag || true)"
-          if [ -n "$syms" ]; then
+          # Capture first: nm's own failure must be fatal under set -e, not
+          # masked by a `|| true` fallback into a vacuous pass (same idiom
+          # as "Parse versions" below).
+          nm_out="$(arm-none-eabi-nm build/release/firmware/preenfm3.elf)"
+          if grep -q pfm3Diag <<< "$nm_out"; then
             echo "FAIL: diag leak into release build:" >&2
-            echo "$syms" >&2
+            grep pfm3Diag <<< "$nm_out" >&2
             exit 1
           fi
           echo "OK: release elf references zero pfm3Diag symbols"
