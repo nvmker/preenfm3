@@ -70,12 +70,11 @@ extern volatile uint8_t pfm3DiagDeferSeqTft;
 /* 1 = watchdog + reporting active. Default 1. */
 extern volatile uint8_t pfm3DiagEnabled;
 
-/* Main loop drains these (never TX from decode context):
- *   pfm3DiagReportRequest — send one register snapshot immediately;
- *   pfm3DiagAckPending    — last accepted diag SysEx cmd, sent back as CC#63
- *                           on ch16 so the rig can confirm RX. */
+/* Main loop drains this (never TX from decode context):
+ *   pfm3DiagReportRequest — send one register snapshot immediately
+ *   (the CC#119 code-1 report-now command; there is no separate ack
+ *   path). */
 extern volatile uint8_t pfm3DiagReportRequest;
-extern volatile uint8_t pfm3DiagAckPending;
 
 /* --- fault capture (target only; filled by pfm3DiagFaultHook) ------------- */
 
@@ -156,7 +155,7 @@ extern "C" void pfm3DiagSysTickEnter();
  * DWT-timed (immune to a frozen HAL tick): on a SysTick stall it snapshots
  * SysTick/SCB/interrupt-state registers and sends them over USB MIDI via
  * midiDecoder.writeMidiCCOut — CC#48..63, channel 16, repeated every 2 s.
- * Also drains pfm3DiagReportRequest / pfm3DiagAckPending and streams any
+ * Also drains pfm3DiagReportRequest and streams any
  * boot-time crash-capture replay (consume-once). */
 void pfm3DiagWatchdogMainLoop();
 

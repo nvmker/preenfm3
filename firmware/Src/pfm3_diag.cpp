@@ -78,7 +78,6 @@ volatile uint8_t pfm3DiagDeferSeqTft = 0;
 volatile uint8_t pfm3DiagEnabled = 1;
 
 volatile uint8_t pfm3DiagReportRequest = 0;
-volatile uint8_t pfm3DiagAckPending = 0;
 
 // Host build has no .noinit section support (section attributes are a Mach-O
 // hard error there — see tests/CMakeLists.txt); a plain static stands in.
@@ -447,9 +446,10 @@ int pfm3DiagCcHook(uint8_t channel, uint8_t cc, uint8_t value) {
 int pfm3DiagSysexHook(const uint8_t *sysexBuffer, uint16_t size) {
     // Magic SysEx F0 7D 'P' '3' 'D' <cmd> <arg> F7, accepted from ANY channel
     // (real-time framing, no timbre routing). Accepted from the decode
-    // context but consumed by the main loop (report TX and acks never run in
+    // context but consumed by the main loop (report TX never runs in
     // IRQ context). Cmds: 'D'=defer bisect arm, 'W'=watchdog enable,
-    // 'R'=request one report. Ack comes back as CC#47 on MIDI channel 16.
+    // 'R'=request one report (same as CC#119 code 1 — the report-now
+    // command is the only acknowledgment; there is no separate ack CC).
     //
     // P15(c): MidiDecoder::analyseSysexBuffer delivers the payload WITHOUT
     // the F0/F7 framing — the documented 8-byte wire form arrives here as 6
@@ -913,7 +913,6 @@ void pfm3DiagTestReset(void) {
     pfm3DiagDeferSeqTft = 0;
     pfm3DiagEnabled = 1;
     pfm3DiagReportRequest = 0;
-    pfm3DiagAckPending = 0;
     for (uint32_t i = 0; i < sizeof(Pfm3DiagFaultInfo) / sizeof(uint32_t); i++) {
         ((uint32_t *)&pfm3DiagFault)[i] = 0;
     }
