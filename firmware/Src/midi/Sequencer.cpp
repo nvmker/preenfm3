@@ -405,7 +405,15 @@ void Sequencer::mainSequencerTic(uint16_t counter) {
     // function, so gate the whole block out under PFM3_HOST. See tests/SEAM.md.
     if ((current16bitTimer_ & 0x300) != lastBeat_) {
         lastBeat_ = current16bitTimer_ & 0x300;
-        displaySequencer_->displayBeat();
+        // 8.1 bisect arm: gate ONLY the decode-context entry. externalClock_
+        // is the exact discriminator — onMidiClock (MIDI decode IRQ) runs
+        // mainSequencerTic only when it is set, and ticMillis early-returns
+        // when it is set, so this call is decode-context iff externalClock_.
+        // Internal clock (SysTick via preenfm3Tic) stays live. Gated:
+        // constant 0 unless PFM3_DIAG_ENABLED / PFM3_HOST (pfm3_diag.h).
+        if (!externalClock_ || !pfm3DiagSeqTftGate()) {
+            displaySequencer_->displayBeat();
+        }
         HAL_GPIO_WritePin(LED_CONTROL_GPIO_Port, LED_CONTROL_Pin, GPIO_PIN_SET);
         ledTimer_ = HAL_GetTick();
     } else if (unlikely(HAL_GetTick() - ledTimer_ > 100)){

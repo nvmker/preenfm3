@@ -356,12 +356,11 @@ void FMDisplaySequencer::refreshStepSequencerByStep(int instrument, int &refresh
 }
 
 void FMDisplaySequencer::refreshPlayButton() {
-    // 8.1: reachable from the decode context via sequencerWasUpdated()
-    // (CC106 start/stop) — direct drawSimpleButton => TFT queue producer.
-    // Gated: constant 0 unless PFM3_DIAG_ENABLED / PFM3_HOST.
-    if (pfm3DiagSeqTftGate()) {
-        return;
-    }
+    // 8.1: shared renderer — also reached from the panel/button and refresh
+    // paths (buttonPressed / buttonLongPressed / refreshSequencerByStep /
+    // refreshStepSequencerByStep), so the bisect-arm gate must NOT live here.
+    // It sits at the decode-context entry instead: sequencerWasUpdated()
+    // (CC106 start/stop via Sequencer::setNewSeqValueFromMidi).
     tft_->drawSimpleButton("\x93", 270, 29, 5, sequencer_->isRunning() ? COLOR_BLACK : COLOR_LIGHT_GRAY,
         sequencer_->isRunning() ? COLOR_YELLOW : COLOR_DARK_YELLOW);
 }
@@ -444,12 +443,11 @@ void FMDisplaySequencer::noteOn(int instrument, bool show) {
 
 void FMDisplaySequencer::displayBeat() {
     if (unlikely(synthState_->fullState.synthMode == SYNTH_MODE_SEQUENCER)) {
-        // 8.1: called from the decode context (external clock: every beat
-        // boundary inside mainSequencerTic) — fillArea/print queue producers.
-        // Gated: constant 0 unless PFM3_DIAG_ENABLED / PFM3_HOST.
-        if (pfm3DiagSeqTftGate()) {
-            return;
-        }
+        // 8.1: shared renderer — also reached from the refresh path
+        // (refreshSequencerByStep case 17), so the bisect-arm gate must NOT
+        // live here. It sits at the decode-context callers instead: the
+        // beat-boundary displayBeat() calls inside Sequencer::mainSequencerTic
+        // (external clock — decode IRQ; see Sequencer.cpp).
         float precount = sequencer_->getPrecount();
         uint8_t measure;
         uint8_t beat;
@@ -723,12 +721,11 @@ void FMDisplaySequencer::buttonPressed(int instrument, int button) {
 }
 
 void FMDisplaySequencer::newNoteEntered(int instrumentNO) {
-    // 8.1: called from the decode context (step-record note-off via
-    // Sequencer::insertNote) — newNoteInSequence does direct fillArea.
-    // Gated: constant 0 unless PFM3_DIAG_ENABLED / PFM3_HOST.
-    if (pfm3DiagSeqTftGate()) {
-        return;
-    }
+    // 8.1: decode-context TFT path (step-record note-off via
+    // Sequencer::insertNote — newNoteInSequence does direct fillArea), but
+    // this method has NO panel/refresh caller, and the bisect-arm gate
+    // already sits at its one decode-context caller (Sequencer::insertNote,
+    // `if (!pfm3DiagSeqTftGate())`), so no gate is needed here.
     // We use current instrument and not the one we receive
     bool moreThanOneNote = sequencer_->stepRecordNotes(stepCurrentInstrument_, stepCursor_, stepSize_);
     newNoteInSequence(stepCurrentInstrument_, stepCursor_, stepCursor_ + stepSize_, moreThanOneNote);
@@ -800,6 +797,14 @@ void FMDisplaySequencer::cleanCurrentState() {
 
 
 void FMDisplaySequencer::sequencerWasUpdated(uint8_t timbre, uint8_t seqValue, uint8_t newValue) {
+    // 8.1: decode-context entry point (only caller is
+    // Sequencer::setNewSeqValueFromMidi, reached from MIDI decode — CC106
+    // start/stop etc.). Gate HERE, not inside the shared renderers it calls
+    // (refreshPlayButton / refresh), which also serve panel/button/refresh
+    // callers. Gated: constant 0 unless PFM3_DIAG_ENABLED / PFM3_HOST.
+    if (pfm3DiagSeqTftGate()) {
+        return;
+    }
     if (this->synthState_->fullState.synthMode != SYNTH_MODE_SEQUENCER) {
         return;
     }
