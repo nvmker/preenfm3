@@ -574,20 +574,28 @@ static void pfm3DiagSendReport() {
 // --- crash-capture replay (build #8) ----------------------------------------
 // On boot, if .noinit holds a valid capture (fault hook or stall watchdog
 // fired before the soft reset), stream it over USB MIDI once USB is up,
-// then clear it. Encoding (FROZEN — scripts/hardware/h8_crashwatch.py decodes
-// this; do not change): frames of CCs on ch16; CC#48 (slot 0) = 0xC7 replay
-// magic, #49 (slot 1) = frame index (0xFF marks the trailer frame), #50..63
-// carry payload pairs where each struct byte is two 7-bit values (b>>1, b&1).
-// 7 bytes per frame; the struct is 19 uint32 = 76 bytes -> 11 data frames +
-// trailer. Paced one frame per 5 ms (back-to-back USB transmits drop when the
-// previous is in flight).
+// then clear it. Encoding (FROZEN except the 2026-09-23 owner marker
+// amendment — scripts/hardware/h8_crashwatch.py decodes this): frames of
+// CCs on ch16; CC#48 (slot 0) = 0x7F replay magic, #49 (slot 1) = frame
+// index (0x7E marks the trailer frame), #50..63 carry payload pairs where
+// each struct byte is two 7-bit values (b>>1, b&1). 7 bytes per frame; the
+// struct is 19 uint32 = 76 bytes -> 11 data frames + trailer. Paced one
+// frame per 5 ms (back-to-back USB transmits drop when the previous is in
+// flight).
+//
+// 7-bit marker safety (owner amendment, Copilot C3): both markers carry
+// bit 7 CLEAR — legal MIDI CC data bytes, so a conforming/DIN-side parser
+// can never reinterpret them as status bytes (0xC7/0xFF could). They stay
+// unambiguous: payload pairs are 0..3, frameIdx 0..10, padding 0 — neither
+// 0x7E nor 0x7F can collide.
 //
 // Split (8.8 SW5) into a host-testable core + target-only TX: the encoder and
 // the phase machine below are compiled for BOTH target and host so the host
 // tests can prove the encoding + consume-once contract; pfm3DiagReplayEmit
 // swaps USB MIDI TX for a recording sink under PFM3_HOST.
 
-#define PFM3_DIAG_REPLAY_MAGIC 0xC7u
+#define PFM3_DIAG_REPLAY_MAGIC 0x7Fu    /* 7-bit-safe (bit 7 clear) — 2026-09-23 */
+#define PFM3_DIAG_REPLAY_TRAILER 0x7Eu  /* trailer frameIdx — 7-bit-safe likewise */
 #define PFM3_DIAG_REPLAY_SLOTS 16   // CC#48..63
 #define PFM3_DIAG_REPLAY_FRAMES_MAX 13   // 11 data frames + trailer + guard
 
@@ -621,7 +629,7 @@ static void pfm3DiagReplayEncodeFrame(int frameIdx, uint8_t cc[PFM3_DIAG_REPLAY_
     }
     cc[0] = PFM3_DIAG_REPLAY_MAGIC;
     if (frameIdx >= frames) {
-        cc[1] = 0xFF;                              // trailer marker
+        cc[1] = PFM3_DIAG_REPLAY_TRAILER;         // trailer marker (7-bit-safe)
         cc[2] = (uint8_t)pfm3DiagFault.faultId;
     } else {
         cc[1] = (uint8_t)frameIdx;

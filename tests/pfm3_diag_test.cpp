@@ -5,7 +5,8 @@
 //
 //   (a) the crash-capture replay engine: encoding (the FROZEN contract that
 //       scripts/hardware/h8_crashwatch.py decodes — CC#48..63 on ch16,
-//       [0]=0xC7 magic, [1]=frameIdx / 0xFF trailer, payload pairs b>>1/b&1,
+//       [0]=0x7F magic, [1]=frameIdx / 0x7E trailer — 7-bit-safe markers per
+//       the 2026-09-23 owner amendment — payload pairs b>>1/b&1,
 //       7 struct bytes per frame), the boot settle + 5 ms pacing, and the
 //       consume-once rule (magic cleared after the trailer, never streamed
 //       twice);
@@ -51,13 +52,13 @@ void pfm3DiagTestSecStats(Pfm3DiagTestSecStatsMirror *out);
 namespace {
 
 // Frames in a full burst: 76 struct bytes, 7 per frame -> 11 data frames,
-// then the 0xFF trailer. Mirrors pfm3DiagReplayPoll's formula.
+// then the 0x7E trailer. Mirrors pfm3DiagReplayPoll's formula.
 constexpr int kReplayDataFrames = (int)(sizeof(Pfm3DiagFaultInfo) + 6) / 7;  // 11
 constexpr int kReplayTotalFrames = kReplayDataFrames + 1;                     // 12
 
 // Faithful transcription of the FROZEN decoder's commit logic
 // (scripts/hardware/h8_crashwatch.py, main loop): a frame begins ONLY when a
-// slot-0 CC carries the 0xC7 replay magic; slots 1..15 accumulate into a
+// slot-0 CC carries the 0x7F replay magic; slots 1..15 accumulate into a
 // pending buffer; a frame is COMMITTED ONLY when its slot-15 CC arrives
 // (frames[fr[1]] = fr). An under-emitted final data frame or trailer is
 // therefore NEVER committed — the P7 defect this mirror exists to catch.
@@ -70,14 +71,14 @@ struct FrozenDecoderMirror {
     int commits = 0;
 
     void slot(uint8_t s, uint8_t v) {
-        if (s == 0 && v == 0xC7) {
+        if (s == 0 && v == 0x7F) {
             pendingLen = 0;
             pending[pendingLen++] = v;
         } else if (pendingLen > 0 && 1 <= s && s <= 15) {
             pending[pendingLen++] = v;
             if (s == 15) {
                 int idx = pending[1];
-                if (idx == 0xFF) {
+                if (idx == 0x7E) {
                     trailerCommitted = true;
                 } else if (idx < 16) {
                     memcpy(frames[idx], pending, 16);
@@ -232,7 +233,7 @@ TEST(Pfm3DiagReplay, EncodesFrozenContractAndConsumesOnce) {
     for (int f = 0; f < kReplayDataFrames; f++) {
         uint8_t cc[16];
         pfm3DiagTestReplayFrame(f, cc);
-        EXPECT_EQ(cc[0], 0xC7) << "frame " << f << " slot 0 replay magic";
+        EXPECT_EQ(cc[0], 0x7F) << "frame " << f << " slot 0 replay magic";
         EXPECT_EQ(cc[1], (uint8_t)f) << "frame " << f << " slot 1 index";
         for (int j = 0; j < 7; j++) {
             int byteIdx = f * 7 + j;
@@ -244,12 +245,12 @@ TEST(Pfm3DiagReplay, EncodesFrozenContractAndConsumesOnce) {
         }
     }
 
-    // Trailer: magic, 0xFF marker, faultId, slots 3..15 zero-padded (the
+    // Trailer: magic, 0x7E marker, faultId, slots 3..15 zero-padded (the
     // decoder commits ONLY on slot 15 — every frame emits all 16 slots).
     uint8_t trailer[16];
     pfm3DiagTestReplayFrame(kReplayDataFrames, trailer);
-    EXPECT_EQ(trailer[0], 0xC7);
-    EXPECT_EQ(trailer[1], 0xFF);
+    EXPECT_EQ(trailer[0], 0x7F);
+    EXPECT_EQ(trailer[1], 0x7E);
     EXPECT_EQ(trailer[2], (uint8_t)planted.faultId);
     for (int s = 3; s < 16; s++) {
         EXPECT_EQ(trailer[s], 0u) << "trailer slot " << s << " must be emitted (0-padded)";
@@ -285,6 +286,41 @@ TEST(Pfm3DiagReplay, EncodesFrozenContractAndConsumesOnce) {
     EXPECT_EQ(pfm3DiagTestReplayPoll(10000), 0);
     EXPECT_EQ(pfm3DiagTestReplayPoll(20000), 0);
     EXPECT_EQ(pfm3DiagTestReplayFrameCount(), kReplayTotalFrames);
+}
+
+// --- (a'') marker 7-bit safety + unambiguity (P-C3, 2026-09-23 amendment) ---
+
+// Every CC value in the emitted burst must be a legal MIDI data byte (bit 7
+// CLEAR) so a conforming/DIN-side parser can never reinterpret one as a
+// status byte — the defect that moved the markers from 0xC7/0xFF to
+// 0x7F/0x7E. And the markers must stay unambiguous against every other
+// emitted value: payload bit-pairs are 0..3, frameIdx 0..kReplayDataFrames-1,
+// padding 0.
+TEST(Pfm3DiagReplay, MarkersAre7BitSafeAndUnambiguous) {
+    pfm3DiagTestReset();
+    plantCapture(4, 0x00010000u);
+    for (uint32_t t = 3006; pfm3DiagTestReplayFrameCount() < kReplayTotalFrames; t += 6) {
+        pfm3DiagTestReplayPoll(t);
+    }
+    ASSERT_EQ(pfm3DiagTestReplayFrameCount(), kReplayTotalFrames);
+
+    for (int f = 0; f < kReplayTotalFrames; f++) {
+        uint8_t cc[16];
+        pfm3DiagTestReplayFrame(f, cc);
+        for (int s = 0; s < 16; s++) {
+            EXPECT_EQ(cc[s] & 0x80u, 0u)
+                << "frame " << f << " slot " << s
+                << " carries bit 7 set — not a valid MIDI CC data byte";
+        }
+    }
+
+    const uint8_t markers[2] = {0x7E, 0x7F};   // trailer idx, frame magic
+    for (int i = 0; i < 2; i++) {
+        EXPECT_GE(markers[i], 4u) << "marker collides with payload pairs 0..3";
+        EXPECT_GT(markers[i], (uint8_t)(kReplayDataFrames - 1))
+            << "marker collides with a data frameIdx";
+        EXPECT_NE(markers[i], 0u) << "marker collides with zero padding";
+    }
 }
 
 // --- (b) invalid magic -> no replay ------------------------------------------
