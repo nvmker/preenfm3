@@ -95,12 +95,16 @@ void dependencyInjection();
 
 void preenfm3Init() {
 
-    uint32_t erreurSD = preenfm3LibInitSD();
-
-    // 8.1 diagnostics: cycle counter up (and Usage/Mem/Bus faults enabled)
-    // before anything time-critical runs. Inline no-op unless
-    // PFM3_DIAG_ENABLED (see pfm3_diag.h).
+    // 8.1/8.8 SW5 diagnostics: FIRST, before any instrumented code — the
+    // cycle counter goes up and Usage/Mem/Bus faults are enabled before
+    // even preenfm3LibInitSD() (the lib is sanitizer-instrumented in the
+    // ubsan-trap build), so a trap during init lands in UsageFault
+    // (faultId 4) instead of escalating to HardFault. Touches only
+    // DWT/SCB/RCC-RSR registers — no SD/HAL dependency. Inline no-op
+    // unless PFM3_DIAG_ENABLED (see pfm3_diag.h).
     pfm3DiagInit();
+
+    uint32_t erreurSD = preenfm3LibInitSD();
 
     tft.init(&tftAlgo);
     ILI9341_Init();
