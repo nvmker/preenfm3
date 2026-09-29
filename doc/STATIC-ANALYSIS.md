@@ -163,6 +163,61 @@ cmake --build build/scan-ub 2>&1 | grep -E "warning:" | sort | uniq -c | sort -r
 (The C flags carry the vendor `-Wno-error` relaxations for ST's HAL C
 sources; the C++ escalation is the strict set the 8.8 harvest ran.)
 
+## UBSan trap-mode diagnostic build (8.8 SW5)
+
+Beside the reporting-only scans above, phase 8.8 SW5 ships an ON-DEVICE
+trap-mode build: the restored 8.1 fault-capture module (`pfm3_diag`) plus a
+selective sanitizer set compiled so every instrumented check emits a `UDF`
+trap instead of calling a runtime. `pfm3DiagInit()` enables
+Usage/MemManage/Bus faults, so a trap lands in UsageFault (faultId 4, UFSR
+bits in CFSR), the naked shim captures the 19×uint32 frame into `.noinit`, the
+unit soft-resets, and boot replays the capture over USB MIDI —
+`scripts/hardware/h8_crashwatch.py` decodes the burst unchanged.
+
+**Recipe** (diagnostic only — `test-asan` precedent, NOT a CI gate):
+
+```sh
+make ubsan-trap
+# → build/ubsan-trap/firmware/preenfm3.{bin,elf,map}; flashes by DFU like
+#   any firmware image. The target self-verifies at build time and fails
+#   loudly on ANY of: a leaked __ubsan runtime reference (firmware OR
+#   preenfm3lib — both targets are instrumented), a missing .noinit map
+#   symbol, or a fault-shim ABI regression (objdump-disassembles NMI/Hard/
+#   MemManage/Bus/Usage and asserts the exact 7-instruction naked sequence:
+#   no prologue, faultId in r0, frame in r1, EXC_RETURN in r2, tail-branch
+#   to pfm3DiagFaultHook).
+
+# Manual verification (must print NOTHING — zero libubsan refs, lib included):
+arm-none-eabi-nm build/ubsan-trap/firmware/preenfm3.elf | grep __ubsan
+
+# .noinit revalidation — ALWAYS re-derive from the fresh map:
+grep __noinit_start__ build/ubsan-trap/firmware/preenfm3.map
+# 2026-09-23 review-round build: 0x2001e6d4 (76 B, past _ebss). The parked
+# 8.1 value 0x2001de84 is OBSOLETE — .bss has grown past it; never assume
+# an old address, the capture struct overlaps .bss if you do.
+```
+
+The identical-list rule is absolute and applies to BOTH instrumented targets
+(`preenfm3` and `preenfm3lib` — FatFs/SD/TFT/encoders/RingBuffer; without
+lib instrumentation the soak has a blind spot over the whole lib tree):
+`firmware/CMakeLists.txt` and `lib/CMakeLists.txt` apply
+`-fsanitize=alignment,shift,signed-integer-overflow,integer-divide-by-zero,
+float-cast-overflow` and `-fsanitize-trap=` with the IDENTICAL list. Any
+check present in `-fsanitize` but missing from `-fsanitize-trap` references
+a `__ubsan_handle_*` symbol and the bare-metal link fails (there is no
+libubsan for Cortex-M7). Measured cost (2026-09-23, firmware+lib): text
+457,312 → 561,312 (+22.7%), bss +284 (counters + 76 B `.noinit`); well
+inside the 768 K flash budget — the size gate covers the RELEASE build only.
+
+**Policy:** this build is a diagnostic instrument for the owner's device
+soak (runbook: `_bmad-output/implementation-artifacts/p88-sw5-device-runbook.md`)
+and is deliberately NOT a CI gate. The release-flags question
+(`-fno-strict-aliasing`, `-fwrapv` on the shipping build) stays OWNER-GATED:
+SW5 only ships the measurement protocol — the trap soak's duty-cycle /
+real-time-fit data is the input to that decision, not the decision itself.
+Release builds are byte-identical to master (`pfm3_diag.h` inline no-ops; the
+empty `.noinit` section adds nothing to the load image).
+
 ## Resolved findings (triage history)
 
 Real bugs surfaced by the analyzers and fixed (behavior-preserving unless

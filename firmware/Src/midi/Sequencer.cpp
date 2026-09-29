@@ -21,6 +21,7 @@
 #include <string.h>  // memset for the B7 load-window owner scratch
 #include "Synth.h"
 #include "FMDisplaySequencer.h"
+#include "pfm3_diag.h"
 
 // Unaligned-safe serialization helpers for the sequencer state format.
 // The format packs float/uint16 fields into a uint8_t buffer at offsets that
@@ -253,7 +254,9 @@ void Sequencer::onMidiContinue(int songPosition) {
     if (externalClock_) {
         if (!extMidiRunning_) {
             extMidiRunning_ = true;
-            displaySequencer_->refresh(17, 17);
+            if (!pfm3DiagSeqTftGate()) {
+                displaySequencer_->refresh(17, 17);
+            }
         }
     }
 }
@@ -263,7 +266,9 @@ void Sequencer::onMidiStart() {
         if (!extMidiRunning_) {
             rewind();
             extMidiRunning_ = true;
-            displaySequencer_->refresh(17, 17);
+            if (!pfm3DiagSeqTftGate()) {
+                displaySequencer_->refresh(17, 17);
+            }
         }
     }
 }
@@ -276,7 +281,9 @@ void Sequencer::onMidiStop() {
                 synth_->stopArpegiator(i);
                 synth_->allNoteOff(i);
             }
-            displaySequencer_->refresh(17, 17);
+            if (!pfm3DiagSeqTftGate()) {
+                displaySequencer_->refresh(17, 17);
+            }
         }
     }
 }
@@ -398,7 +405,15 @@ void Sequencer::mainSequencerTic(uint16_t counter) {
     // function, so gate the whole block out under PFM3_HOST. See tests/SEAM.md.
     if ((current16bitTimer_ & 0x300) != lastBeat_) {
         lastBeat_ = current16bitTimer_ & 0x300;
-        displaySequencer_->displayBeat();
+        // 8.1 bisect arm: gate ONLY the decode-context entry. externalClock_
+        // is the exact discriminator — onMidiClock (MIDI decode IRQ) runs
+        // mainSequencerTic only when it is set, and ticMillis early-returns
+        // when it is set, so this call is decode-context iff externalClock_.
+        // Internal clock (SysTick via preenfm3Tic) stays live. Gated:
+        // constant 0 unless PFM3_DIAG_ENABLED / PFM3_HOST (pfm3_diag.h).
+        if (!externalClock_ || !pfm3DiagSeqTftGate()) {
+            displaySequencer_->displayBeat();
+        }
         HAL_GPIO_WritePin(LED_CONTROL_GPIO_Port, LED_CONTROL_Pin, GPIO_PIN_SET);
         ledTimer_ = HAL_GetTick();
     } else if (unlikely(HAL_GetTick() - ledTimer_ > 100)){
@@ -1049,7 +1064,9 @@ void Sequencer::insertNote(uint8_t instrument, uint8_t note, uint8_t velocity) {
             // Can be < 0 when we swap between normal and step mode while playuing
             stepNumberOfNotesOn_ --;
             if (stepNumberOfNotesOn_ == 0) {
-                displaySequencer_->newNoteEntered(instrument);
+                if (!pfm3DiagSeqTftGate()) {
+                    displaySequencer_->newNoteEntered(instrument);
+                }
             }
             if (stepNumberOfNotesOn_ < 0) {
                 stepNumberOfNotesOn_ = 0;

@@ -29,6 +29,7 @@ extern "C" {
 #include "MidiDecoder.h"
 #include "RingBuffer.h"
 #include <string.h>
+#include "pfm3_diag.h"
 
 // The two HAL-typed externs below are referenced only from the sendMidiDin5Out
 // / sendMidiUsbOut HW-touching helpers, which are stubbed out under PFM3_HOST
@@ -251,6 +252,16 @@ void MidiDecoder::newMessageType(unsigned char byte) {
 
 
 void MidiDecoder::midiEventReceived(MidiEvent& midiEvent) {
+    // 8.1 diagnostics control (gated): CC#119 on MIDI channel 16 ONLY
+    // (0-based 15), consumed before routing/timbre fan-out — the same
+    // private channel the report/replay traffic uses, so a legit CC#119 on
+    // any user channel routes normally and is never swallowed. Codes 1..6,
+    // see pfm3_diag.h. pfm3DiagCcHook folds to a constant 0 in
+    // non-diagnostic builds, so the site compiles away.
+    if (unlikely(midiEvent.eventType == MIDI_CONTROL_CHANGE
+            && pfm3DiagCcHook(midiEvent.channel, midiEvent.value[0], midiEvent.value[1]))) {
+        return;
+    }
     int timbreIndex = 0;
     int timbres[6];
     bool isInst1MPE = this->synthState_->mixerState.MPE_inst1_ > 0;
@@ -1427,6 +1438,18 @@ int MidiDecoder::getMemoryIndexFromMidi(int index) {
 
 
 uint8_t MidiDecoder::analyseSysexBuffer(uint8_t *sysexBuffer, uint16_t size) {
+    // 8.1 diagnostics (gated): magic SysEx F0 7D 'P' '3' 'D' <cmd> <arg> F7,
+    // accepted from ANY channel. The match + dispatch live in
+    // pfm3DiagSysexHook (pfm3_diag.cpp) so this site folds away in
+    // non-diagnostic builds (constant 0 — the buffer is never swallowed).
+    // The hook accepts BOTH the 6-byte payload delivered here (F0/F7 are
+    // framing, stripped by newByte) and the full 8-byte wire form.
+    // Secondary transport: CC#119 on channel 16 (see midiEventReceived) is
+    // the reliable path — USB-MIDI sysex reassembly can drop the terminating
+    // F7 depending on host packet batching. Same command codes.
+    if (pfm3DiagSysexHook(sysexBuffer, size)) {
+        return 1;
+    }
     if (size == 3 && sysexBuffer[0] == 0x7d) {
         switch (sysexBuffer[1]) {
         case 1:

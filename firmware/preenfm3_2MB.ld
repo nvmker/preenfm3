@@ -147,6 +147,23 @@ SECTIONS
     __bss_end__ = _ebss;
   } >DTCMRAM
 
+  /* 8.1 diagnostics (8.8 SW5): fault-capture struct (pfm3DiagFault).
+     NOLOAD — never zero-initialized by the startup code (it lives past
+     _ebss), so it survives a soft reset for SWD post-mortem; a power cycle
+     clears SRAM naturally and the magic field gates validity. Present
+     UNCONDITIONALLY: with no .noinit input section (every non-diagnostic
+     build) KEEP() keeps nothing and the section is empty — the release
+     load image is unchanged. Re-derive the address from the fresh diag
+     build map (__noinit_start__); never assume the old 0x2001de84. */
+  .noinit (NOLOAD) :
+  {
+    . = ALIGN(4);
+    __noinit_start__ = .;
+    KEEP(*(.noinit))
+    . = ALIGN(4);
+    __noinit_end__ = .;
+  } >DTCMRAM
+
   /* User_heap_stack section, used to check that there is enough RAM left */
   ._user_heap_stack :
   {

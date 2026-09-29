@@ -54,4 +54,19 @@ target_compile_options(preenfm3lib PRIVATE -Wcast-align)
 set_source_files_properties(Src/sd_diskio.c Src/adafruit_802_sd.c PROPERTIES
     COMPILE_OPTIONS "-Wno-cast-align")
 
+# 8.8 SW5 review round (P9): preenfm3lib (FatFs/SD/TFT/encoders/RingBuffer)
+# is linked into the firmware, so the trap-mode UB soak must instrument it
+# too — otherwise every lib TU is a blind spot the soak can never catch.
+# IDENTICAL -fsanitize / -fsanitize-trap list as the preenfm3 target in
+# firmware/CMakeLists.txt (same rule: any check instrumented but not
+# trapped references __ubsan_handle_* and the bare-metal link fails).
+# Diagnostic build only: PFM3_UBSAN_TRAP is OFF for release/debug, so the
+# lib archive in those builds is byte-identical to master's.
+if(PFM3_UBSAN_TRAP)
+    set(PFM3_UBSAN_TRAP_CHECKS "alignment,shift,signed-integer-overflow,integer-divide-by-zero,float-cast-overflow")
+    target_compile_options(preenfm3lib PRIVATE
+        -fsanitize=${PFM3_UBSAN_TRAP_CHECKS}
+        -fsanitize-trap=${PFM3_UBSAN_TRAP_CHECKS})
+endif()
+
 set_target_properties(preenfm3lib PROPERTIES OUTPUT_NAME preenfm3lib)
